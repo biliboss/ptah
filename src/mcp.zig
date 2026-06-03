@@ -9,12 +9,19 @@
 //
 //   initialize                → capability handshake (tools.listChanged = false)
 //   notifications/initialized → ack, no response
-//   tools/list                → 5 tools
-//   tools/call                → dispatch one of the 5
+//   tools/list                → 6 tools (say / queue / skip / clear / voices / say_stream)
+//   tools/call                → dispatch one of the 6
 //
-// The 5 tools are thin shims over the same UNIX socket the CLI uses
+// The base 5 tools are thin shims over the same UNIX socket the CLI uses
 // (see `client.zig`): say / queue / skip / clear / voices. No new wire
 // protocol, no daemon changes.
+//
+// v1.7 adds `say_stream(stream_id, chunk, final?)` — an incremental
+// counterpart to `say`. State for in-flight streams lives in a process-
+// scoped hashmap keyed by `stream_id`. Each call appends `chunk` into the
+// stream's `preproc.IncrementalChunker`; completed sentences are
+// forwarded to the daemon via `client.enqueueLine`. `final=true` flushes
+// the chunker, emits any remainder, and drops the stream from the map.
 //
 // Honest deferrals: prompts/, resources/, sampling, listChanged
 // notifications, server-initiated progress. Those land when somebody
@@ -25,12 +32,37 @@ const json = std.json;
 
 const ipc = @import("ipc.zig");
 const client = @import("client.zig");
+const preproc = @import("preproc.zig");
 
-pub const VERSION = "1.5.0";
+pub const VERSION = "1.7.0";
 pub const PROTOCOL_VERSION = "2024-11-05";
 
 const READ_BUF = 256 * 1024; // long agent monologues hit ~8 KB after escaping
 const WRITE_BUF = 64 * 1024;
+
+// v1.7 — in-flight say_stream sessions. Keyed by `stream_id` (caller-
+// chosen string). Each session owns an IncrementalChunker plus a long-
+// lived arena to back the chunker's buffer + dup'd chunk slices. When
+// `final=true` arrives the session flushes and is dropped from the map.
+//
+// Scope: process-local. A new `agent-tts mcp` process starts with an
+// empty map. Multiple clients sharing one MCP process see each other's
+// stream_ids — collisions are caller's responsibility (treat stream_id
+// like a UUID).
+const StreamSession = struct {
+    chunker: preproc.IncrementalChunker,
+    arena_state: *std.heap.ArenaAllocator,
+
+    fn deinit(self: *StreamSession) void {
+        // The chunker's buffer lives in arena_state — arena_deinit frees it.
+        // The arena_state struct itself lives on the heap (gpa); freed below.
+        const gpa = std.heap.smp_allocator;
+        self.arena_state.deinit();
+        gpa.destroy(self.arena_state);
+    }
+};
+
+var stream_sessions: std.StringHashMapUnmanaged(StreamSession) = .empty;
 
 // stdio loop. Exits on EOF (client disconnect) or a malformed line that
 // is not recoverable. Every JSON-RPC parse error is reported back as an
@@ -181,6 +213,7 @@ fn buildToolsListResponse(a: std.mem.Allocator, id: json.Value) ![]const u8 {
         try toolDescriptor(a, "skip", "Skip the currently playing TTS item. Returns the skipped id (0 = nothing playing).", try skipSchema(a)),
         try toolDescriptor(a, "clear", "Drop all pending TTS items. Returns the number dropped.", try emptySchema(a)),
         try toolDescriptor(a, "voices", "List installed voices for `say` and any piper ONNX models in ~/.cache/agent-tts/voices/.", try emptySchema(a)),
+        try toolDescriptor(a, "say_stream", "Stream-feed Pt-BR TTS chunk-by-chunk. The server buffers bytes per stream_id, emits sentences to the daemon as terminators arrive, and flushes any remainder when final=true. Returns the count of sentences enqueued by this call.", try sayStreamSchema(a)),
     });
     const result = try obj(a, &.{
         .{ "tools", tools },
@@ -240,6 +273,52 @@ fn saySchema(a: std.mem.Allocator) !json.Value {
     });
 }
 
+fn sayStreamSchema(a: std.mem.Allocator) !json.Value {
+    const engine_enum = try arr(a, &.{ str("say"), str("piper") });
+
+    const stream_id_prop = try obj(a, &.{
+        .{ "type", str("string") },
+        .{ "description", str("Caller-chosen stream identifier. Reuse across calls of the same stream; treat like a UUID to avoid collisions across MCP clients.") },
+    });
+    const chunk_prop = try obj(a, &.{
+        .{ "type", str("string") },
+        .{ "description", str("Bytes to feed. Newlines/tabs sanitized before forwarding to the daemon. May be partial — sentences emit only as terminators (. ! ? \\n) arrive.") },
+    });
+    const final_prop = try obj(a, &.{
+        .{ "type", str("boolean") },
+        .{ "description", str("When true, flush any remainder as a final chunk and drop the stream. Default: false.") },
+    });
+    const engine_prop = try obj(a, &.{
+        .{ "type", str("string") },
+        .{ "description", str("TTS backend for this stream's sentences. Set on the first call; subsequent calls keep the stream's initial choice. Default: piper if available.") },
+        .{ "enum", engine_enum },
+    });
+    const voice_prop = try obj(a, &.{
+        .{ "type", str("string") },
+        .{ "description", str("Voice name. say defaults to Luciana, piper to faber.") },
+    });
+    const rate_prop = try obj(a, &.{
+        .{ "type", str("integer") },
+        .{ "description", str("Words per minute (default 330, ignored by piper).") },
+    });
+
+    const props = try obj(a, &.{
+        .{ "stream_id", stream_id_prop },
+        .{ "chunk", chunk_prop },
+        .{ "final", final_prop },
+        .{ "engine", engine_prop },
+        .{ "voice", voice_prop },
+        .{ "rate", rate_prop },
+    });
+    const required = try arr(a, &.{ str("stream_id"), str("chunk") });
+
+    return try obj(a, &.{
+        .{ "type", str("object") },
+        .{ "properties", props },
+        .{ "required", required },
+    });
+}
+
 fn skipSchema(a: std.mem.Allocator) !json.Value {
     const id_prop = try obj(a, &.{
         .{ "type", str("integer") },
@@ -284,6 +363,7 @@ fn buildToolsCallResponse(
     if (std.mem.eql(u8, tool, "skip")) return callSkip(a, io, home, id);
     if (std.mem.eql(u8, tool, "clear")) return callClear(a, io, home, id);
     if (std.mem.eql(u8, tool, "voices")) return callVoices(a, io, home, id);
+    if (std.mem.eql(u8, tool, "say_stream")) return callSayStream(a, io, home, id, args_val);
 
     return try toolErrorResponse(a, id, "unknown tool");
 }
@@ -388,6 +468,135 @@ fn callClear(a: std.mem.Allocator, io: std.Io, home: []const u8, id: json.Value)
     };
     const payload = try obj(a, &.{
         .{ "cleared_count", int(@intCast(n)) },
+    });
+    const text_block = try formatJsonAsText(a, payload);
+    return try toolTextResponse(a, id, text_block);
+}
+
+// v1.7 — say_stream. Per-stream state lives in `stream_sessions`, keyed by
+// the caller's `stream_id`. Each call:
+//   1. Resolves the session (creating one on first sight).
+//   2. Feeds `chunk` into the IncrementalChunker.
+//   3. Forwards each emitted sentence to the daemon via enqueueLine.
+//   4. If `final=true`, flushes the remainder and drops the session.
+//
+// We hold engine/voice/rate per-session (locked in on first feed) so a
+// caller can switch the params on a new stream_id without affecting an
+// in-flight stream. The map keys + session state allocator is gpa
+// (smp_allocator) — survives across per-request arenas.
+fn callSayStream(
+    a: std.mem.Allocator,
+    io: std.Io,
+    home: []const u8,
+    id: json.Value,
+    args: json.Value,
+) ![]const u8 {
+    if (args != .object) return try toolErrorResponse(a, id, "arguments must be an object");
+    const ao = args.object;
+
+    const stream_id_val = ao.get("stream_id") orelse return try toolErrorResponse(a, id, "stream_id is required");
+    if (stream_id_val != .string) return try toolErrorResponse(a, id, "stream_id must be a string");
+    const stream_id = stream_id_val.string;
+    if (stream_id.len == 0) return try toolErrorResponse(a, id, "stream_id must be non-empty");
+
+    const chunk_val = ao.get("chunk") orelse return try toolErrorResponse(a, id, "chunk is required");
+    if (chunk_val != .string) return try toolErrorResponse(a, id, "chunk must be a string");
+    const chunk_text = chunk_val.string;
+
+    var final_flag: bool = false;
+    if (ao.get("final")) |f| {
+        if (f != .bool) return try toolErrorResponse(a, id, "final must be a boolean");
+        final_flag = f.bool;
+    }
+
+    var engine: ipc.Engine = .piper;
+    if (ao.get("engine")) |e| {
+        if (e != .string) return try toolErrorResponse(a, id, "engine must be a string");
+        engine = ipc.Engine.fromStr(e.string) orelse return try toolErrorResponse(a, id, "engine must be 'say' or 'piper'");
+    }
+    var voice: []const u8 = switch (engine) {
+        .say => client.DEFAULT_VOICE,
+        .piper => "faber",
+        .cloned => "",
+    };
+    if (ao.get("voice")) |v| {
+        if (v != .string) return try toolErrorResponse(a, id, "voice must be a string");
+        voice = v.string;
+    }
+    var rate: u32 = client.DEFAULT_RATE;
+    if (ao.get("rate")) |r| {
+        if (r != .integer) return try toolErrorResponse(a, id, "rate must be an integer");
+        if (r.integer <= 0 or r.integer > 1000) return try toolErrorResponse(a, id, "rate out of range (1..1000)");
+        rate = @intCast(r.integer);
+    }
+
+    // Resolve / create the session. Map storage allocator is gpa so the
+    // entry outlives the per-request arena `a`.
+    const gpa = std.heap.smp_allocator;
+    const gop = stream_sessions.getOrPut(gpa, stream_id) catch return try toolErrorResponse(a, id, "stream session allocation failed");
+    if (!gop.found_existing) {
+        // Dup the key into gpa so the map owns it independently of the
+        // request arena (the request arena dies when this handler returns).
+        const key_dup = gpa.dupe(u8, stream_id) catch {
+            _ = stream_sessions.remove(stream_id);
+            return try toolErrorResponse(a, id, "stream session key dup failed");
+        };
+        gop.key_ptr.* = key_dup;
+        const arena_box = gpa.create(std.heap.ArenaAllocator) catch {
+            gpa.free(key_dup);
+            _ = stream_sessions.remove(stream_id);
+            return try toolErrorResponse(a, id, "stream session arena alloc failed");
+        };
+        arena_box.* = std.heap.ArenaAllocator.init(gpa);
+        gop.value_ptr.* = .{
+            .chunker = .{},
+            .arena_state = arena_box,
+        };
+    }
+    const session = gop.value_ptr;
+    const session_arena = session.arena_state.allocator();
+
+    var n_enqueued: u32 = 0;
+
+    // Feed any non-empty chunk.
+    if (chunk_text.len > 0) {
+        const emitted = session.chunker.feed(session_arena, chunk_text) catch {
+            return try toolErrorResponse(a, id, "chunker feed failed");
+        };
+        for (emitted) |c| {
+            _ = client.enqueueLine(a, io, home, engine, voice, rate, c.text) catch |e| switch (e) {
+                error.DaemonUnreachable => return try toolErrorResponse(a, id, "daemon not running — start with `agent-tts daemon` or `agent-tts daemon install`"),
+                error.DaemonError => return try toolErrorResponse(a, id, "daemon returned an error mid-stream"),
+                error.UnexpectedResponse => return try toolErrorResponse(a, id, "daemon returned an unexpected response mid-stream"),
+                else => return e,
+            };
+            n_enqueued += 1;
+        }
+    }
+
+    if (final_flag) {
+        const tail = session.chunker.flush(session_arena) catch {
+            return try toolErrorResponse(a, id, "chunker flush failed");
+        };
+        for (tail) |c| {
+            _ = client.enqueueLine(a, io, home, engine, voice, rate, c.text) catch |e| switch (e) {
+                error.DaemonUnreachable => return try toolErrorResponse(a, id, "daemon not running"),
+                error.DaemonError => return try toolErrorResponse(a, id, "daemon returned an error on final flush"),
+                error.UnexpectedResponse => return try toolErrorResponse(a, id, "daemon returned an unexpected response on final flush"),
+                else => return e,
+            };
+            n_enqueued += 1;
+        }
+        // Drop the session. Free the key and the arena_state.
+        const key_dup = gop.key_ptr.*;
+        session.deinit();
+        _ = stream_sessions.remove(stream_id);
+        gpa.free(key_dup);
+    }
+
+    const payload = try obj(a, &.{
+        .{ "enqueued_count", int(@intCast(n_enqueued)) },
+        .{ "final", boolean(final_flag) },
     });
     const text_block = try formatJsonAsText(a, payload);
     return try toolTextResponse(a, id, text_block);

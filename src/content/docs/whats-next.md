@@ -1,34 +1,17 @@
 ---
 title: What's next
-description: Four next versions of agent-tts (v1.7 → v1.10) — streaming text input, SSML/prosody, web playground, and menubar UI.
+description: Three next versions of agent-tts (v1.8 → v1.10) — SSML/prosody, web playground, and menubar UI.
 ---
 
 ## TL;DR
 
-**v1.6 shipped on 2026-06-03** — voice cloning is real, the install path is validated, baseline is published in [`_qa/v1.6-baseline.md`](https://github.com/biliboss/agent-tts/blob/main/_qa/v1.6-baseline.md). The remaining slate (**v1.7 → v1.10**) takes the runtime and points it at four distinct audiences: people who want the agent to start speaking before it finishes thinking, people who want their agent to inflect, people who want to try every voice in a browser, and people who want a face on the daemon.
+**v1.6 + v1.7 shipped on 2026-06-03** — voice cloning is real (baseline in [`_qa/v1.6-baseline.md`](https://github.com/biliboss/agent-tts/blob/main/_qa/v1.6-baseline.md)) and streaming text input is live (`agent-tts stream` + `say_stream` MCP tool). The remaining slate (**v1.8 → v1.10**) takes the runtime and points it at three audiences: people who want their agent to inflect, people who want to try every voice in a browser, and people who want a face on the daemon.
 
 Vote, watch, or send a PR at [biliboss/agent-tts](https://github.com/biliboss/agent-tts).
 
 ---
 
-## v1.7 — Streaming text input · *Listen as your agent thinks*
-
-> Today, `agent-tts "long output"` waits for the full input before sentence-chunking. For a Claude Code reply being streamed token-by-token, that delay defeats the streaming UX of the LLM itself.
-
-**The problem today.** `agent-tts` is a one-shot enqueue. Each message is a complete utterance.
-
-**What ships.**
-- New `agent-tts stream` subcommand that reads from stdin and emits sentences to the daemon as the terminator tokens (`. ! ? \n`) arrive
-- New MCP tool `say_stream(stream_id, chunk, final?)` so MCP clients can push deltas the same way the OpenAI / Anthropic SDKs push response deltas
-- Daemon reuses the v1.2 streaming pipeline — synth/audio thread already exist, just hook them to an incrementally-fed chunk source
-- Bench captures *latency from first token-in to first audio-out* against a simulated stream — that is the headline number
-
-**Why now.** Token streaming is how every agent runner ships responses. agent-tts should match the input shape of the LLM, not run a beat behind it.
-
-**Who cares.**
-- Anyone wiring `claude --output-format stream-json` into a voice channel.
-- Voice-assistant builders (think Bestha, Ferrum) where reply latency owns the experience.
-- Accessibility users on long documents — start hearing while the agent is still composing.
+<!-- v1.6 voice cloning + v1.7 streaming text input shipped 2026-06-03; see Changelog. -->
 
 ---
 

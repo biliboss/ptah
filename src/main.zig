@@ -26,6 +26,7 @@
 // v1.3: cross-platform — Linux espeak-ng + systemd, Windows best-effort.
 // v1.4: `voice clone` + `voice list` subcommands; XTTS-v2 Python sidecar.
 // v1.5: stdio JSON-RPC MCP server (`agent-tts mcp`) for Claude Code / Cursor / Cline.
+// v1.7: streaming text input — `agent-tts stream` (stdin) + `say_stream` MCP tool.
 //
 // KPI = time-to-first-audio (TTFA).
 
@@ -40,9 +41,10 @@ const ipc = @import("ipc.zig");
 const audio = @import("audio.zig");
 const voice = @import("voice.zig");
 const mcp = @import("mcp.zig");
+const stream_mod = @import("stream.zig");
 const build_options = @import("build_options");
 
-pub const VERSION = "1.6.0";
+pub const VERSION = "1.7.0";
 
 const HELP =
     \\agent-tts v{s} — multilingual TTS via system voice or libpiper
@@ -64,6 +66,8 @@ const HELP =
     \\    --sample <wav> --name <slug>
     \\  agent-tts voice list             list installed voices (faber + cloned)
     \\  agent-tts mcp                    speak over stdio MCP (Claude Code / Cursor / Cline) (v1.5+)
+    \\  agent-tts stream                 read stdin, enqueue each sentence as terminators arrive (v1.7+)
+    \\    [--engine X] [--voice V] [--rate R]
     \\  agent-tts --voice "Felipe" "texto"
     \\  agent-tts --voice gabriel "..."  use a cloned voice (v1.4+)
     \\  agent-tts --rate 220 "texto"
@@ -73,9 +77,10 @@ const HELP =
     \\                                                 (requires -Dwith-piper=true
     \\                                                  + AGENT_TTS_PIPER=1 on daemon)
     \\  agent-tts piper-test "texto" out.wav           synth one WAV (cold init)
-    \\  agent-tts ttfa-bench --engine say|piper --warm N [--input short|long]
+    \\  agent-tts ttfa-bench --engine say|piper --warm N [--input short|long|stream]
     \\                                                 measure first-sample latency
-    \\                                                 (--input long enables v1.2 streaming bench)
+    \\                                                 (--input long enables v1.2 streaming bench;
+    \\                                                  --input stream simulates token-by-token feed)
     \\
     \\Options:
     \\  --engine say|piper  TTS backend (default: piper; say = system fallback)
@@ -174,6 +179,9 @@ pub fn main(init: std.process.Init) !void {
         }
         if (std.mem.eql(u8, cmd, "mcp")) {
             return mcp.run(arena, io, home);
+        }
+        if (std.mem.eql(u8, cmd, "stream")) {
+            return stream_mod.run(arena, io, home, args);
         }
         if (std.mem.eql(u8, cmd, "-h") or std.mem.eql(u8, cmd, "--help")) {
             std.debug.print(HELP, .{VERSION});
@@ -280,15 +288,17 @@ fn runTtfaBench(
         } else if (std.mem.eql(u8, a, "--input")) {
             i += 1;
             if (i >= args.len) {
-                std.debug.print("error: --input needs value (short|long)\n", .{});
+                std.debug.print("error: --input needs value (short|long|stream)\n", .{});
                 std.process.exit(2);
             }
             if (std.mem.eql(u8, args[i], "short")) {
                 input_mode = .short;
             } else if (std.mem.eql(u8, args[i], "long")) {
                 input_mode = .long;
+            } else if (std.mem.eql(u8, args[i], "stream")) {
+                input_mode = .stream;
             } else {
-                std.debug.print("error: --input must be short|long (got '{s}')\n", .{args[i]});
+                std.debug.print("error: --input must be short|long|stream (got '{s}')\n", .{args[i]});
                 std.process.exit(2);
             }
         }
@@ -310,7 +320,7 @@ fn runTtfaBench(
     // streaming is a piper-only optimization (say is one-shot per spawn).
     switch (engine) {
         .say => {
-            const text = if (input_mode == .long) try loadLongInput(arena, io) else "Olá, este é um teste de latência.";
+            const text = if (input_mode == .long or input_mode == .stream) try loadLongInput(arena, io) else "Olá, este é um teste de latência.";
             try benchSay(arena, io, warm, text);
         },
         .piper => switch (input_mode) {
@@ -318,6 +328,10 @@ fn runTtfaBench(
             .long => {
                 const text = try loadLongInput(arena, io);
                 try benchPiperLong(arena, io, home, warm, text);
+            },
+            .stream => {
+                const text = try loadLongInput(arena, io);
+                try benchPiperStream(arena, io, home, warm, text);
             },
         },
         .cloned => {
@@ -330,7 +344,7 @@ fn runTtfaBench(
     }
 }
 
-const InputMode = enum { short, long };
+const InputMode = enum { short, long, stream };
 
 // Hardcoded fallback: short paragraph if `_qa/v1.2-long-input.txt` isn't
 // readable from cwd (e.g. binary invoked outside the repo). Long enough to
@@ -725,4 +739,307 @@ fn benchPiperLong(
             sum_gap_med / n_f,             max_gap,
         },
     );
+}
+
+// v1.7 stream bench. Simulates a token-by-token feed: the input text is
+// sliced into ~ASCII-word tokens, each token fed into an
+// IncrementalChunker with a 10 ms sleep between tokens (mirrors LLM
+// streaming output speed). Captures: time from the FIRST token entering
+// the chunker → first audio frame entering zaudio.
+//
+// "Token" here is a delimiter-bounded slice (split on space). Whitespace
+// is preserved by attaching it to the trailing edge of the previous
+// token, so the chunker reconstructs the original text. 10 ms is the
+// observed inter-token gap from Claude streaming at ~100 tok/s.
+//
+// Pipeline shape mirrors benchPiperLong: a synth thread drains a chunk
+// queue, an audio thread plays. The difference is the synth-feed side:
+// instead of pre-computing all chunks, we feed bytes incrementally and
+// drain emitted chunks into the synth queue as they appear.
+fn benchPiperStream(
+    arena: std.mem.Allocator,
+    io: std.Io,
+    home: []const u8,
+    warm: u32,
+    text: []const u8,
+) !void {
+    if (!build_options.enabled) unreachable;
+    const piper = @import("piper.zig");
+    const preproc = @import("preproc.zig");
+
+    const voice_path = try std.fmt.allocPrint(
+        arena,
+        "{s}/.cache/agent-tts/voices/pt_BR-faber-medium.onnx",
+        .{home},
+    );
+    const espeak_data = "vendor/piper1-gpl/libpiper/dist/share/espeak-ng-data";
+
+    const t_init0 = std.Io.Clock.now(.awake, io);
+    var engine = try piper.PiperEngine.init(arena, voice_path, espeak_data);
+    defer engine.deinit();
+    const t_init1 = std.Io.Clock.now(.awake, io);
+    const init_ms = @as(f64, @floatFromInt(t_init1.nanoseconds - t_init0.nanoseconds)) / 1_000_000.0;
+
+    var player = audio.AudioPlayer.init(arena);
+    defer player.deinit();
+    if (!player.ready) {
+        std.debug.print("[ttfa-bench] zaudio init failed — stream bench requires zaudio; aborting\n", .{});
+        return;
+    }
+
+    // Tokenise the input on whitespace, attaching the trailing space to
+    // each token so the chunker sees the original byte sequence. The last
+    // token has no trailing space.
+    const tokens = try tokenizeForStream(arena, text);
+    std.debug.print("[ttfa-bench] stream-input bytes={d} tokens={d}\n", .{ text.len, tokens.len });
+    if (tokens.len == 0) {
+        std.debug.print("[ttfa-bench] stream-input produced 0 tokens — nothing to bench\n", .{});
+        return;
+    }
+
+    const TOKEN_GAP_NS: u64 = 10 * std.time.ns_per_ms;
+
+    var iter: u32 = 0;
+    var sum_first: f64 = 0;
+    var min_first: f64 = std.math.floatMax(f64);
+    var max_first: f64 = 0;
+    var sum_total: f64 = 0;
+    while (iter < warm) : (iter += 1) {
+        var chunker: preproc.IncrementalChunker = .{};
+        defer chunker.deinit(arena);
+
+        // Synth queue: simple bounded ring like benchPiperLong.
+        const RING_CAP: usize = 4;
+        const ChunkSlot = struct {
+            arena: ?std.heap.ArenaAllocator = null,
+            samples: []const i16 = &.{},
+            sample_rate: u32 = 0,
+            synth_err: bool = false,
+        };
+        var slots: [RING_CAP]ChunkSlot = [_]ChunkSlot{.{}} ** RING_CAP;
+        var head: std.atomic.Value(usize) = .init(0);
+        var tail: std.atomic.Value(usize) = .init(0);
+        var closed: std.atomic.Value(bool) = .init(false);
+        var pending_chunks: std.atomic.Value(usize) = .init(0);
+
+        const SynthCtx = struct {
+            engine: *piper.PiperEngine,
+            slots: *[RING_CAP]ChunkSlot,
+            head: *std.atomic.Value(usize),
+            tail: *std.atomic.Value(usize),
+            closed: *std.atomic.Value(bool),
+            pending: *std.atomic.Value(usize),
+            // Bounded ring of pending chunk texts (gpa-owned).
+            queue: *std.ArrayList([]const u8),
+            queue_mu: *std.atomic.Value(bool),
+
+            fn pushText(c: @This(), text_dup: []const u8) void {
+                while (c.queue_mu.swap(true, .acquire)) {
+                    const ts: std.c.timespec = .{ .sec = 0, .nsec = 1 * std.time.ns_per_ms };
+                    _ = std.c.nanosleep(&ts, null);
+                }
+                c.queue.append(std.heap.smp_allocator, text_dup) catch {};
+                _ = c.pending.fetchAdd(1, .release);
+                c.queue_mu.store(false, .release);
+            }
+
+            fn popText(c: @This()) ?[]const u8 {
+                while (c.queue_mu.swap(true, .acquire)) {
+                    const ts: std.c.timespec = .{ .sec = 0, .nsec = 1 * std.time.ns_per_ms };
+                    _ = std.c.nanosleep(&ts, null);
+                }
+                defer c.queue_mu.store(false, .release);
+                if (c.queue.items.len == 0) return null;
+                const item = c.queue.items[0];
+                _ = c.queue.orderedRemove(0);
+                _ = c.pending.fetchSub(1, .release);
+                return item;
+            }
+
+            fn run(c: @This()) void {
+                const ts_wait: std.c.timespec = .{ .sec = 0, .nsec = 2 * std.time.ns_per_ms };
+                while (true) {
+                    const maybe = c.popText();
+                    if (maybe) |txt| {
+                        // Wait for free ring slot.
+                        while (true) {
+                            const h = c.head.load(.acquire);
+                            const t = c.tail.load(.acquire);
+                            if (h - t < RING_CAP) break;
+                            _ = std.c.nanosleep(&ts_wait, null);
+                        }
+                        const gpa = std.heap.smp_allocator;
+                        const arena_box = gpa.create(std.heap.ArenaAllocator) catch {
+                            gpa.free(txt);
+                            continue;
+                        };
+                        arena_box.* = std.heap.ArenaAllocator.init(gpa);
+                        const samples = c.engine.synthToSamples(arena_box.allocator(), txt) catch {
+                            arena_box.deinit();
+                            gpa.destroy(arena_box);
+                            gpa.free(txt);
+                            const h2 = c.head.load(.acquire);
+                            c.slots[h2 % RING_CAP] = .{ .synth_err = true };
+                            c.head.store(h2 + 1, .release);
+                            continue;
+                        };
+                        const rate = c.engine.sampleRate();
+                        const h2 = c.head.load(.acquire);
+                        c.slots[h2 % RING_CAP] = .{
+                            .arena = arena_box.*,
+                            .samples = samples,
+                            .sample_rate = rate,
+                        };
+                        c.head.store(h2 + 1, .release);
+                        gpa.destroy(arena_box);
+                        gpa.free(txt);
+                        continue;
+                    }
+                    if (c.closed.load(.acquire) and c.pending.load(.acquire) == 0) break;
+                    _ = std.c.nanosleep(&ts_wait, null);
+                }
+            }
+        };
+
+        var queue: std.ArrayList([]const u8) = .empty;
+        defer queue.deinit(std.heap.smp_allocator);
+        var queue_mu: std.atomic.Value(bool) = .init(false);
+
+        const synth_ctx = SynthCtx{
+            .engine = &engine,
+            .slots = &slots,
+            .head = &head,
+            .tail = &tail,
+            .closed = &closed,
+            .pending = &pending_chunks,
+            .queue = &queue,
+            .queue_mu = &queue_mu,
+        };
+
+        // First-sample latch.
+        var first_sample_ns: i128 = 0;
+        const FsCtx = struct {
+            ns: *i128,
+            io: std.Io,
+            fn cb(opaque_ctx: ?*anyopaque) void {
+                const c: *@This() = @ptrCast(@alignCast(opaque_ctx.?));
+                if (c.ns.* != 0) return;
+                const now = std.Io.Clock.now(.awake, c.io);
+                c.ns.* = now.nanoseconds;
+            }
+        };
+        var fs_ctx = FsCtx{ .ns = &first_sample_ns, .io = io };
+        player.on_first_sample = FsCtx.cb;
+        player.on_first_sample_ctx = @ptrCast(&fs_ctx);
+
+        // Audio consumer thread: drains the synth ring into zaudio.
+        const AudioCtx = struct {
+            player: *audio.AudioPlayer,
+            slots: *[RING_CAP]ChunkSlot,
+            head: *std.atomic.Value(usize),
+            tail: *std.atomic.Value(usize),
+            closed: *std.atomic.Value(bool),
+            pending: *std.atomic.Value(usize),
+
+            fn run(c: @This()) void {
+                const ts_pop: std.c.timespec = .{ .sec = 0, .nsec = 2 * std.time.ns_per_ms };
+                while (true) {
+                    const h = c.head.load(.acquire);
+                    const t = c.tail.load(.acquire);
+                    if (h <= t) {
+                        if (c.closed.load(.acquire) and c.pending.load(.acquire) == 0) return;
+                        _ = std.c.nanosleep(&ts_pop, null);
+                        continue;
+                    }
+                    var slot = c.slots[t % RING_CAP];
+                    c.tail.store(t + 1, .release);
+                    if (slot.synth_err) {
+                        if (slot.arena) |*ar| @constCast(ar).deinit();
+                        continue;
+                    }
+                    c.player.streamS16leAppend(slot.samples, slot.sample_rate) catch {};
+                    if (slot.arena) |*ar| @constCast(ar).deinit();
+                }
+            }
+        };
+
+        const audio_ctx = AudioCtx{
+            .player = &player,
+            .slots = &slots,
+            .head = &head,
+            .tail = &tail,
+            .closed = &closed,
+            .pending = &pending_chunks,
+        };
+
+        const t0 = std.Io.Clock.now(.awake, io);
+        const synth_thread = try std.Thread.spawn(.{}, SynthCtx.run, .{synth_ctx});
+        const audio_thread = try std.Thread.spawn(.{}, AudioCtx.run, .{audio_ctx});
+
+        // Drive the producer side: feed each token with a 10 ms gap.
+        const ts_token: std.c.timespec = .{ .sec = 0, .nsec = @intCast(TOKEN_GAP_NS) };
+        for (tokens) |tok| {
+            const emitted = chunker.feed(arena, tok) catch &[_]preproc.Chunk{};
+            for (emitted) |c| {
+                const gpa = std.heap.smp_allocator;
+                const dup = gpa.dupe(u8, c.text) catch continue;
+                synth_ctx.pushText(dup);
+            }
+            _ = std.c.nanosleep(&ts_token, null);
+        }
+        const tail_chunks = chunker.flush(arena) catch &[_]preproc.Chunk{};
+        for (tail_chunks) |c| {
+            const gpa = std.heap.smp_allocator;
+            const dup = gpa.dupe(u8, c.text) catch continue;
+            synth_ctx.pushText(dup);
+        }
+
+        closed.store(true, .release);
+        synth_thread.join();
+        audio_thread.join();
+        const t_end = std.Io.Clock.now(.awake, io);
+
+        const first_audio_ms = if (first_sample_ns > 0)
+            @as(f64, @floatFromInt(first_sample_ns - t0.nanoseconds)) / 1_000_000.0
+        else
+            0.0;
+        const total_ms = @as(f64, @floatFromInt(t_end.nanoseconds - t0.nanoseconds)) / 1_000_000.0;
+        sum_first += first_audio_ms;
+        if (first_audio_ms < min_first) min_first = first_audio_ms;
+        if (first_audio_ms > max_first) max_first = first_audio_ms;
+        sum_total += total_ms;
+
+        std.debug.print(
+            "[ttfa-bench] stream iter={d}/{d} tokens={d} first_audio={d:.1}ms total={d:.1}ms\n",
+            .{ iter + 1, warm, tokens.len, first_audio_ms, total_ms },
+        );
+    }
+
+    const n_f: f64 = @floatFromInt(warm);
+    std.debug.print(
+        "[ttfa-bench] engine=piper input=stream warm={d} init={d:.1}ms first_audio avg={d:.1}ms min={d:.1}ms max={d:.1}ms total_avg={d:.1}ms token_gap=10ms\n",
+        .{
+            warm,            init_ms,
+            sum_first / n_f, min_first,
+            max_first,       sum_total / n_f,
+        },
+    );
+}
+
+// Slice `text` on whitespace boundaries; each returned token includes its
+// trailing whitespace so concatenating all tokens reproduces `text`. This
+// matches how an LLM streams: small bursts that almost always end at a
+// word boundary.
+fn tokenizeForStream(arena: std.mem.Allocator, text: []const u8) ![][]const u8 {
+    var out: std.ArrayList([]const u8) = .empty;
+    var i: usize = 0;
+    while (i < text.len) {
+        // Consume word bytes.
+        const start = i;
+        while (i < text.len and text[i] != ' ' and text[i] != '\t' and text[i] != '\n') : (i += 1) {}
+        // Consume one whitespace run (so the token carries its trailing ws).
+        while (i < text.len and (text[i] == ' ' or text[i] == '\t' or text[i] == '\n')) : (i += 1) {}
+        if (i > start) try out.append(arena, text[start..i]);
+    }
+    return out.toOwnedSlice(arena);
 }

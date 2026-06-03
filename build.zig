@@ -405,6 +405,19 @@ pub fn build(b: *std.Build) void {
     // ipc_tests already defined above for the v1.1 multilingual surface;
     // v1.4 added the `cloned` variant + test, which runs via that same step.
 
+    // v1.7 — stream.zig stands alone (CLI handler — imports preproc + client + ipc).
+    // addTest only collects tests from the entry source, so the streaming
+    // integration test gets its own step.
+    const stream_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/stream.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        }),
+    });
+    const run_stream_tests = b.addRunArtifact(stream_tests);
+
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_mod_tests.step);
     test_step.dependOn(&run_exe_tests.step);
@@ -415,4 +428,5 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_detect_tests.step);
     test_step.dependOn(&run_voice_tests.step);
     test_step.dependOn(&run_ipc_tests.step);
+    test_step.dependOn(&run_stream_tests.step);
 }

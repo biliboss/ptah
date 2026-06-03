@@ -129,6 +129,19 @@ For multi-sentence piper items, `runPiper` calls `preproc.chunkSentences` to spl
 
 Result on a 490-word Pt-BR monologue: first-audio drops from ~3 s (v0.7 serial) to **~50 ms** (v1.2 streaming). Inter-chunk gap median is 0.02 ms with back-to-back `AudioBuffer + Sound` plays — well below one device period, so a custom `decoderReadProc` ring isn't needed today (deferred to v1.2.1 if a workload proves the gap audible).
 
+### Incremental chunker (v1.7)
+
+The v1.2 pipeline assumes the full text is available before chunking. v1.7 adds an `IncrementalChunker` state machine in `preproc.zig` for the streaming-input case (`agent-tts stream` over stdin and `say_stream` MCP tool):
+
+- **`buffer: ArrayList(u8)`** — bytes received but not yet emitted. The chunker compacts the buffer (drops the consumed prefix) after every emission.
+- **`scan_idx`** — cursor into `buffer` for the next byte to inspect. Reset to 0 on compaction so each byte is touched O(1) amortized across all `feed` calls.
+- **`feed(arena, bytes) → []Chunk`** — appends `bytes`, walks `scan_idx` forward, emits every terminator-bounded sentence. Chunks are dup'd into `arena` (the internal buffer may reallocate on the next feed, so handing out internal slices would dangle). Abbreviation guard mirrors batch (`Sr./Dr./Sra./Dra./Av./cf./etc./vs.` do not split).
+- **`flush(arena)`** — emits the buffered remainder as a single chunk at EOF / `final=true`. Resets state for reuse.
+
+Emission policy is **eager**: a terminator run that touches end-of-buffer emits the chunk anyway. The cost is that an ellipsis split across two reads ("hmm.." + ".") emits as two chunks ("hmm.." + ".") instead of one ("hmm..."). For the voice UX, low-latency emission wins — the alternative (buffering across feeds, holding the chunk until a non-terminator confirms run closure) defeats the streaming goal whenever the agent stops typing mid-ellipsis.
+
+The CLI path (`stream.zig`) reads stdin in 4 KB blocks via `readSliceShort` and feeds each block. The MCP path (`mcp.zig` → `callSayStream`) holds a `StringHashMapUnmanaged(StreamSession)` keyed by caller-chosen `stream_id`; each session owns its own gpa-backed `ArenaAllocator` so chunker state survives across per-request arenas.
+
 ### libpiper FFI
 
 Vendored from [OHF-Voice/piper1-gpl](https://github.com/OHF-Voice/piper1-gpl) at tag `v1.4.2`. Built once via `scripts/build-libpiper.sh`. Links against `libpiper.dylib` + `libonnxruntime.1.22.0.dylib` (resolved via `@rpath`).

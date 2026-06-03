@@ -846,3 +846,309 @@ test "chunk newline after punctuation drops the newline" {
 test "chunk preserves combined punctuation" {
     try expectChunks("Sério?! Mesmo!?", &.{ "Sério?!", "Mesmo!?" });
 }
+
+// ──────────────────────────────────────────────────────────────────────
+// v1.7 — incremental chunker (state machine)
+// ──────────────────────────────────────────────────────────────────────
+//
+// `chunkSentences` is batch — input must be fully present. v1.7's streaming
+// path (CLI `stream` subcommand + MCP `say_stream` tool) needs to feed bytes
+// as they arrive and only emit a chunk when a sentence boundary fires. The
+// remainder stays buffered for the next feed.
+//
+// Design:
+//   - Caller owns an `IncrementalChunker` and a long-lived buffer arena.
+//   - On `feed(arena, bytes) → []Chunk`, the chunker appends `bytes` to its
+//     pending buffer, scans forward from the last scanned position, and emits
+//     every completed sentence. Returned chunk `text` slices live in `arena`
+//     (duped — the internal buffer may be compacted/reallocated on next feed).
+//   - Abbreviation handling matches batch: a `.` that closes `Sr./Dr./Sra./
+//     Dra./Av./cf./etc./vs.` is NOT a terminator.
+//   - Trailing terminator runs (`!?`, `...`, `?\n`) collapse to one boundary,
+//     same as batch — but the chunker only emits when the run ends, otherwise
+//     stays in the run waiting for more bytes (you might be mid-ellipsis).
+//   - `flush(arena) → []Chunk` emits the remaining buffered text as one chunk
+//     (no terminator required). Use at end-of-stream (stdin EOF, `final=true`).
+//
+// Why a state machine and not "scan the whole buffer every time": we don't
+// rescan already-classified bytes. The chunker keeps a `scan_idx` cursor so
+// each input byte is touched O(1) amortized across all feeds.
+//
+// Why dup into arena vs hand out internal slices: the internal buffer compacts
+// after each emit (drops the consumed prefix). A subsequent feed that grows
+// the buffer can realloc, invalidating any outstanding slice. Duping costs
+// one allocation per chunk — negligible vs the synth cost downstream.
+//
+// Corner cases the chunker accepts (same as batch):
+//   - Decimals "3.14" split. Acceptable: preproc's number stage doesn't handle
+//     decimals either, so callers reading numeric output are already losing.
+//   - "Sr." mid-utterance does not split even when the buffer happens to end
+//     on the dot — the chunker peeks one byte ahead and waits for confirmation
+//     when it can't yet decide. See `feed`'s "ambiguous terminator" comment.
+
+pub const IncrementalChunker = struct {
+    /// All bytes received but not yet emitted as a chunk.
+    buffer: std.ArrayList(u8) = .empty,
+    /// First byte index we have NOT yet inspected for terminators. Reset to
+    /// 0 after every emission (buffer compacts).
+    scan_idx: usize = 0,
+
+    pub fn deinit(self: *IncrementalChunker, arena: std.mem.Allocator) void {
+        self.buffer.deinit(arena);
+        self.scan_idx = 0;
+    }
+
+    /// Append `bytes` to the internal buffer, scan for boundaries, emit any
+    /// completed chunks. Returns a freshly-allocated slice of Chunks; chunk
+    /// `text` is duped into `arena`. Empty slice = no boundary yet.
+    ///
+    /// Emission policy: a chunk emits as soon as its terminator-run closes.
+    /// "Closes" means either:
+    ///   (a) the byte after the run is a non-terminator (run unambiguously
+    ///       ended within this feed), or
+    ///   (b) the run touches end-of-buffer (we cannot wait — the agent might
+    ///       have stopped writing, and holding the chunk would defeat the
+    ///       streaming UX). The chunk emits with the terminator chars seen
+    ///       so far. A following feed that begins with more terminator chars
+    ///       gets treated as the start of a new (empty-text) chunk, trimmed
+    ///       on emit. This is the same trade-off Whisper / GPT streaming
+    ///       chunkers make: prefer low-latency emission over perfectly
+    ///       collapsing ellipses across packet boundaries.
+    pub fn feed(
+        self: *IncrementalChunker,
+        arena: std.mem.Allocator,
+        bytes: []const u8,
+    ) ![]Chunk {
+        var out: std.ArrayList(Chunk) = .empty;
+        if (bytes.len == 0) return out.toOwnedSlice(arena);
+
+        try self.buffer.appendSlice(arena, bytes);
+
+        // Walk forward from scan_idx. Each iteration either advances over a
+        // non-terminator or emits a chunk on a confirmed boundary.
+        while (self.scan_idx < self.buffer.items.len) {
+            const c = self.buffer.items[self.scan_idx];
+            if (!isTerminator(c)) {
+                self.scan_idx += 1;
+                continue;
+            }
+            // Abbreviation guard mirrors batch. `.` that closes Sr./Dr./etc.
+            // is NOT a terminator. The check needs no lookahead — the abbrev
+            // src ends at this `.`, so all bytes are already buffered.
+            if (c == '.' and isAbbrevDotAt(self.buffer.items, self.scan_idx)) {
+                self.scan_idx += 1;
+                continue;
+            }
+
+            // We are at a terminator. Walk the run to its end (within the
+            // current buffer). j sits one past the last terminator byte or
+            // at buffer.len if the run touches end-of-buffer.
+            var j = self.scan_idx + 1;
+            while (j < self.buffer.items.len and isTerminator(self.buffer.items[j])) : (j += 1) {}
+
+            // `end_attached` = last non-newline byte of the run, inclusive.
+            // Same shape as batch `chunkSentences`. We always emit when we
+            // reach a terminator — see "Emission policy" doc comment above.
+            var end_attached: usize = self.scan_idx;
+            var has_punct = false;
+            var k = self.scan_idx;
+            while (k < j) : (k += 1) {
+                if (self.buffer.items[k] != '\n') {
+                    end_attached = k;
+                    has_punct = true;
+                }
+            }
+            const slice_end: usize = if (has_punct) end_attached + 1 else self.scan_idx;
+            const raw_slice = self.buffer.items[0..slice_end];
+            const trimmed = trimChunk(raw_slice);
+            if (trimmed.len != 0) {
+                const owned = try arena.dupe(u8, trimmed);
+                try out.append(arena, .{ .text = owned, .lang = .unknown });
+            }
+
+            // Drop the consumed prefix (everything up to j). When j ==
+            // buffer.len the buffer becomes empty and the outer while loop
+            // exits.
+            const remaining = self.buffer.items.len - j;
+            if (remaining > 0) {
+                std.mem.copyForwards(u8, self.buffer.items[0..remaining], self.buffer.items[j..]);
+            }
+            self.buffer.shrinkRetainingCapacity(remaining);
+            self.scan_idx = 0;
+        }
+
+        return out.toOwnedSlice(arena);
+    }
+
+    /// End-of-stream: emit whatever remains as a single chunk (no terminator
+    /// required). Resets the chunker to a reusable empty state.
+    pub fn flush(
+        self: *IncrementalChunker,
+        arena: std.mem.Allocator,
+    ) ![]Chunk {
+        var out: std.ArrayList(Chunk) = .empty;
+        const trimmed = trimChunk(self.buffer.items);
+        if (trimmed.len != 0) {
+            const owned = try arena.dupe(u8, trimmed);
+            try out.append(arena, .{ .text = owned, .lang = .unknown });
+        }
+        self.buffer.clearRetainingCapacity();
+        self.scan_idx = 0;
+        return out.toOwnedSlice(arena);
+    }
+};
+
+// ──────────────────────────────────────────────────────────────────────
+// v1.7 incremental chunker tests
+// ──────────────────────────────────────────────────────────────────────
+
+test "incremental: single feed with terminator emits one chunk" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    var chunker: IncrementalChunker = .{};
+    defer chunker.deinit(arena);
+
+    const got = try chunker.feed(arena, "Hello.");
+    try testing.expectEqual(@as(usize, 1), got.len);
+    try testing.expectEqualStrings("Hello.", got[0].text);
+}
+
+test "incremental: split across two feeds emits at boundary" {
+    // Spec example: feed "Hello. Wor" then "ld." → 2 chunks "Hello." + "World."
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    var chunker: IncrementalChunker = .{};
+    defer chunker.deinit(arena);
+
+    const first = try chunker.feed(arena, "Hello. Wor");
+    try testing.expectEqual(@as(usize, 1), first.len);
+    try testing.expectEqualStrings("Hello.", first[0].text);
+
+    const second = try chunker.feed(arena, "ld.");
+    try testing.expectEqual(@as(usize, 1), second.len);
+    try testing.expectEqualStrings("World.", second[0].text);
+}
+
+test "incremental: no boundary yet returns empty" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    var chunker: IncrementalChunker = .{};
+    defer chunker.deinit(arena);
+
+    const got = try chunker.feed(arena, "no terminator here");
+    try testing.expectEqual(@as(usize, 0), got.len);
+
+    const flushed = try chunker.flush(arena);
+    try testing.expectEqual(@as(usize, 1), flushed.len);
+    try testing.expectEqualStrings("no terminator here", flushed[0].text);
+}
+
+test "incremental: byte-by-byte feed assembles correctly" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    var chunker: IncrementalChunker = .{};
+    defer chunker.deinit(arena);
+
+    var total: std.ArrayList(Chunk) = .empty;
+    defer total.deinit(arena);
+
+    const text = "Um. Dois! Três?";
+    for (text) |byte| {
+        const slice = try chunker.feed(arena, &[_]u8{byte});
+        for (slice) |c| try total.append(arena, c);
+    }
+    const tail = try chunker.flush(arena);
+    for (tail) |c| try total.append(arena, c);
+
+    try testing.expectEqual(@as(usize, 3), total.items.len);
+    try testing.expectEqualStrings("Um.", total.items[0].text);
+    try testing.expectEqualStrings("Dois!", total.items[1].text);
+    try testing.expectEqualStrings("Três?", total.items[2].text);
+}
+
+test "incremental: ellipsis in a single feed emits one chunk" {
+    // Eager-emit policy: a `.` followed by more `.`s emits at the end of the
+    // run. Splitting an ellipsis across feeds is accepted as a known
+    // trade-off (low-latency emission > collapsing trailing terminators
+    // across packet boundaries).
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    var chunker: IncrementalChunker = .{};
+    defer chunker.deinit(arena);
+
+    const got = try chunker.feed(arena, "hmm... ok.");
+    try testing.expectEqual(@as(usize, 2), got.len);
+    try testing.expectEqualStrings("hmm...", got[0].text);
+    try testing.expectEqualStrings("ok.", got[1].text);
+}
+
+test "incremental: abbreviation Sr. does not split mid-feed" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    var chunker: IncrementalChunker = .{};
+    defer chunker.deinit(arena);
+
+    const a = try chunker.feed(arena, "Sr. Silva chegou.");
+    try testing.expectEqual(@as(usize, 1), a.len);
+    try testing.expectEqualStrings("Sr. Silva chegou.", a[0].text);
+}
+
+test "incremental: newline is a terminator" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    var chunker: IncrementalChunker = .{};
+    defer chunker.deinit(arena);
+
+    const a = try chunker.feed(arena, "linha 1\nlinha 2");
+    // After "linha 1\n" → boundary fires when "l" of "linha 2" arrives.
+    try testing.expectEqual(@as(usize, 1), a.len);
+    try testing.expectEqualStrings("linha 1", a[0].text);
+    const tail = try chunker.flush(arena);
+    try testing.expectEqual(@as(usize, 1), tail.len);
+    try testing.expectEqualStrings("linha 2", tail[0].text);
+}
+
+test "incremental: flush on empty buffer returns empty" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    var chunker: IncrementalChunker = .{};
+    defer chunker.deinit(arena);
+
+    const got = try chunker.flush(arena);
+    try testing.expectEqual(@as(usize, 0), got.len);
+}
+
+test "incremental: multiple sentences in one feed all emit" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    var chunker: IncrementalChunker = .{};
+    defer chunker.deinit(arena);
+
+    const got = try chunker.feed(arena, "One. Two. Three. Tail");
+    try testing.expectEqual(@as(usize, 3), got.len);
+    try testing.expectEqualStrings("One.", got[0].text);
+    try testing.expectEqualStrings("Two.", got[1].text);
+    try testing.expectEqualStrings("Three.", got[2].text);
+
+    const tail = try chunker.flush(arena);
+    try testing.expectEqual(@as(usize, 1), tail.len);
+    try testing.expectEqualStrings("Tail", tail[0].text);
+}

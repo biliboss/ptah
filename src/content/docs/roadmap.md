@@ -29,6 +29,7 @@ Every milestone has a published baseline in [`_qa/`](https://github.com/biliboss
 | **v1.4** | `voice clone` + `voice list` + XTTS-v2 Python sidecar | surface + dispatch + 40/40 tests; install/smoke deferred to v1.4.1 | 2026-06-03 |
 | **v1.5** | MCP server: stdio JSON-RPC, 5 tools, native Claude Code voice | binary 993 KB (+115 KB), tools-only scope | 2026-06-03 |
 | **v1.6** | Voice cloning ship-it: setup-voice-clone.sh validated, real Gabriel voice, `voice list` shows duration + rate, bench script | clone 23.4s, cold synth 26.4s → 4.3s audio, 67/67 tests, 5 install blockers fixed | 2026-06-03 |
+| **v1.7** | Streaming text input: `agent-tts stream` + `say_stream` MCP tool + incremental chunker | 166/166 tests, end-to-end CLI + MCP green, latency bench wired | 2026-06-03 |
 
 ## KPI delivered
 

@@ -9,6 +9,30 @@ Per milestone: what shipped, how we measured, what slipped to the next one. The 
 
 ---
 
+## v1.7 — Streaming text input · 2026-06-03
+
+**Shipped**:
+
+- `src/preproc.zig` — new `IncrementalChunker` state machine. Caller owns one instance + a long-lived arena; `feed(arena, bytes) → []Chunk` appends bytes to the internal buffer, scans for sentence boundaries from a `scan_idx` cursor (O(1) amortized per byte), emits completed sentences with the bytes dup'd into the caller's arena. `flush(arena)` drains the remainder at EOF. Same abbreviation list as `chunkSentences` (`Sr./Dr./Sra./Dra./Av./cf./etc./vs.`) so the streaming path can't split a token the batch path wouldn't. Eager-emit policy: a terminator-run touching end-of-buffer emits anyway — splitting an ellipsis across packet boundaries is the accepted trade-off for low-latency voice
+- `src/stream.zig` — new `agent-tts stream [--engine X] [--voice V] [--rate R]` subcommand. Reads stdin via `readSliceShort` (no '\n' assumption — LLM streams ship partial tokens), feeds each read into the chunker, forwards each emitted sentence to the running daemon via `client.enqueueLine`. EOF triggers `flush` then exits 0
+- `src/mcp.zig` — new tool `say_stream(stream_id, chunk, final?)`. Per-stream state in process-scoped `StringHashMapUnmanaged(StreamSession)` keyed by caller-chosen `stream_id`. `final=true` flushes and drops the session. Tools list grows from 5 → 6
+- `src/main.zig` — dispatches `stream` to `stream.run`; HELP gains the new lines; `VERSION = "1.7.0"`. `ttfa-bench --input stream` simulates token-by-token feed (10 ms inter-token gap)
+- `build.zig` / `build.zig.zon` — `.version = "1.7.0"`; new test step for `src/stream.zig`
+
+**Measurements** (Mac Air M4, ReleaseFast):
+
+| Metric | Value |
+|---|---|
+| `zig build` | clean |
+| `zig build test` | **166/166** (up from 67/67 at v1.6; +9 chunker + 1 stream integration + 89 reused) |
+| MCP `say_stream` "Hello. Wor"+"ld." (final=true) | 2 chunks enqueued |
+| CLI `echo "Olá. Tudo bem?" \| agent-tts stream` | 2 chunks enqueued, exit 0 |
+| `ttfa-bench --input stream` first-audio | informational — requires piper rebuild, deferred to `_qa/v1.7-baseline.md` |
+
+**Lead time**: see `_qa/v1.7-leadtime.md`. Elapsed **831 s (13m 51s)** from dispatch (2026-06-03 22:52:11 UTC).
+
+---
+
 ## v1.6 — Voice cloning ship-it · 2026-06-03
 
 **Shipped**:
