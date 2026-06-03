@@ -1,0 +1,64 @@
+---
+title: agent-tts
+description: Zig CLI global pra TTS Pt-BR no macOS — KPI é tempo até começar a ouvir.
+template: splash
+hero:
+  tagline: "Texto entra. Voz sai. KPI é uma só métrica: tempo até começar a ouvir."
+  actions:
+    - text: Arquitetura
+      link: /arquitetura/
+      icon: right-arrow
+      variant: primary
+    - text: Motor TTS
+      link: /motor/
+      icon: external
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+## North star
+
+**Time-to-first-audio (TTFA)**: do momento em que `agent-tts "texto"` é chamado até o primeiro sample audível no alto-falante.
+
+Alvo v1.0 no Mac Air M4: **< 300ms** com cache de daemon quente. Toda decisão de stack se justifica contra essa métrica.
+
+| Cenário | Alvo TTFA |
+|---------|-----------|
+| Daemon quente, voz já carregada | < 300ms |
+| Primeira chamada após boot (cold) | < 800ms |
+| Texto longo (>500 chars) — primeiro chunk | < 400ms |
+
+## Por que existe
+
+Agentes (Claude Code, scripts CI local, watchers) precisam falar updates sem roubar foco visual. Pop-ups interrompem, terminal scroll é silencioso, notificações somem. Voz preenche o canal de áudio inteiro e não atrapalha as mãos.
+
+Comandos previstos:
+
+```bash
+agent-tts "Build verde em 12s."
+agent-tts --rate 200 "Texto rápido."
+echo "stdin também" | agent-tts -
+agent-tts queue           # lista pendente
+agent-tts skip            # pula item atual
+```
+
+<CardGrid>
+  <Card title="Arquitetura" icon="setting">
+    Zig + daemon + UNIX socket + SQLite. Por que cada peça existe. [Ver →](/arquitetura/)
+  </Card>
+  <Card title="Motor TTS" icon="approve-check-circle">
+    `say` Premium Luciana ganha. Comparativo Piper/Kokoro/Coqui/ElevenLabs. [Ver →](/motor/)
+  </Card>
+  <Card title="Roadmap" icon="rocket">
+    v0.1 → v1.0 em ~6 semanas. Critérios por marco. [Ver →](/roadmap/)
+  </Card>
+</CardGrid>
+
+## Restrições travadas
+
+- **Plataforma**: Mac Air M4 only na v1.0 (Linux v1.1+)
+- **SSD**: binary < 2MB, zero modelo embutido
+- **Single binary**: CLI e daemon no mesmo executável
+- **Pt-BR humano**: voz natural, cadência 180wpm default, pausas por pontuação
+
+> Documento vivo. Cada decisão re-avaliada se TTFA medido sair do alvo.

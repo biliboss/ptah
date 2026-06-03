@@ -1,0 +1,9 @@
+zig-out/
+.zig-cache/
+
+node_modules/
+dist/
+.astro/
+
+.DS_Store
+*.log

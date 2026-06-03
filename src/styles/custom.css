@@ -1,0 +1,15 @@
+:root {
+  --sl-color-accent-low: #0a1a14;
+  --sl-color-accent: #5dd39e;
+  --sl-color-accent-high: #c3f3df;
+}
+
+:root[data-theme='dark'] {
+  --sl-color-bg: #0a0d0c;
+  --sl-color-bg-sidebar: #0d1110;
+}
+
+.site-title {
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
