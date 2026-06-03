@@ -1,40 +1,74 @@
 const std = @import("std");
 
-pub fn build(b: *std.Build) void {
-    const target = b.standardTargetOptions(.{});
-    const optimize = b.standardOptimizeOption(.{});
+// v1.0 packaging: a single host-target build (`zig build`) plus a
+// universal-binary step (`zig build universal`) that fuses
+// aarch64-macos + x86_64-macos with `lipo -create`.
+//
+// Cross-compile note: when targeting a non-host macOS arch we explicitly
+// add the host SDK's lib path (libsqlite3.tbd is multi-arch). Zig 0.16
+// does not auto-include the macOS SDK lib path for cross-targets, so the
+// linker would fail to find `-lsqlite3`. The tbd ships stubs for both
+// x86_64-macos and arm64e-macos; arm64 (Apple Silicon non-e) links it
+// fine because Zig falls back to arm64e symbols for non-secure arm64.
 
-    // v0.6: optional libpiper FFI. Default OFF so casual users don't need the
-    // libpiper.dylib + onnxruntime sidekicks just to use the `say` backend.
-    // Build vendor/piper1-gpl/libpiper first, then pass -Dwith-piper=true.
-    const with_piper = b.option(bool, "with-piper", "Link libpiper FFI (requires vendor build, see vendor/README.md)") orelse false;
-
-    const piper_opts = b.addOptions();
-    piper_opts.addOption(bool, "enabled", with_piper);
-
-    const mod = b.addModule("agent_tts", .{
-        .root_source_file = b.path("src/root.zig"),
-        .target = target,
-    });
-
-    const exe = b.addExecutable(.{
-        .name = "agent-tts",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/main.zig"),
-            .target = target,
-            .optimize = optimize,
-            // v0.3: SQLite WAL queue persists in ~/.cache/agent-tts/queue.db.
-            // macOS ships libsqlite3 in the SDK sysroot; @cImport in queue.zig
-            // pulls sqlite3.h from the same place. link_libc required for the
-            // C header to resolve typedefs (size_t, etc).
-            .link_libc = true,
-            .imports = &.{
-                .{ .name = "agent_tts", .module = mod },
-                .{ .name = "build_options", .module = piper_opts.createModule() },
-            },
-        }),
-    });
+fn configureExe(
+    b: *std.Build,
+    exe: *std.Build.Step.Compile,
+    with_piper: bool,
+    target: std.Build.ResolvedTarget,
+) void {
     exe.root_module.linkSystemLibrary("sqlite3", .{});
+
+    // Cross-compile fallback: point the linker at the host macOS SDK's lib
+    // directory so the multi-arch libsqlite3.tbd can resolve, the
+    // C compiler at the matching include dir so @cImport sqlite3.h works,
+    // and the framework search path so CoreAudio + friends (added below for
+    // zaudio) resolve. Zig auto-resolves these for the native target but
+    // not for cross-targets.
+    if (target.result.os.tag == .macos) {
+        if (sdkRoot(b)) |sdk_root| {
+            const sdk_lib = b.fmt("{s}/usr/lib", .{sdk_root});
+            const sdk_inc = b.fmt("{s}/usr/include", .{sdk_root});
+            const sdk_fw = b.fmt("{s}/System/Library/Frameworks", .{sdk_root});
+            exe.root_module.addLibraryPath(.{ .cwd_relative = sdk_lib });
+            exe.root_module.addSystemIncludePath(.{ .cwd_relative = sdk_inc });
+            exe.root_module.addFrameworkPath(.{ .cwd_relative = sdk_fw });
+        }
+    }
+
+    // v0.7: vendored zaudio (miniaudio C wrapper). Always compiled in — the
+    // daemon's AudioPlayer owns one zaudio.Engine for the lifetime of the
+    // process. Failure to init at runtime is non-fatal (piper path falls
+    // back to WAV+afplay). Sources live under vendor/zaudio/.
+    //
+    // We deliberately do NOT use the upstream zaudio build.zig.zon: that
+    // file invokes `linkLibC()` on a Compile step, an API removed in
+    // Zig 0.16. Vendoring the .zig + .c sources keeps us on the upstream
+    // SHA without forking.
+    if (target.result.os.tag == .macos) {
+        exe.root_module.addIncludePath(b.path("vendor/zaudio/libs/miniaudio"));
+        exe.root_module.addCSourceFile(.{
+            .file = b.path("vendor/zaudio/src/zaudio.c"),
+            .flags = &.{ "-std=c99", "-fno-sanitize=undefined" },
+        });
+        exe.root_module.addCSourceFile(.{
+            .file = b.path("vendor/zaudio/libs/miniaudio/miniaudio.c"),
+            .flags = &.{
+                "-DMA_NO_WEBAUDIO",
+                "-DMA_NO_NULL",
+                "-DMA_NO_JACK",
+                "-DMA_NO_DSOUND",
+                "-DMA_NO_WINMM",
+                "-DMA_NO_RUNTIME_LINKING",
+                "-std=c99",
+                "-fno-sanitize=undefined",
+            },
+        });
+        exe.root_module.linkFramework("CoreAudio", .{});
+        exe.root_module.linkFramework("CoreFoundation", .{});
+        exe.root_module.linkFramework("AudioUnit", .{});
+        exe.root_module.linkFramework("AudioToolbox", .{});
+    }
 
     if (with_piper) {
         const libpiper_root = b.path("vendor/piper1-gpl/libpiper");
@@ -55,8 +89,128 @@ pub fn build(b: *std.Build) void {
         const abs_lib_path = libpiper_dist_lib.getPath(b);
         exe.root_module.addRPath(.{ .cwd_relative = abs_lib_path });
     }
+}
+
+fn sdkRoot(b: *std.Build) ?[]const u8 {
+    // Probe the two canonical macOS SDK locations (CLT first, then Xcode).
+    // The first one whose usr/lib/libsqlite3.tbd opens wins. Returns null
+    // when neither is present — caller falls back to Zig's default search.
+    const candidates = [_][]const u8{
+        "/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk",
+    };
+    for (candidates) |root| {
+        const probe = std.fmt.allocPrint(b.allocator, "{s}/usr/lib/libsqlite3.tbd", .{root}) catch continue;
+        defer b.allocator.free(probe);
+        const probe_z = b.allocator.dupeZ(u8, probe) catch continue;
+        defer b.allocator.free(probe_z);
+        const fd = std.c.open(probe_z.ptr, .{ .ACCMODE = .RDONLY });
+        if (fd < 0) continue;
+        _ = std.c.close(fd);
+        return b.allocator.dupe(u8, root) catch null;
+    }
+    return null;
+}
+
+pub fn build(b: *std.Build) void {
+    const target = b.standardTargetOptions(.{});
+    const optimize = b.standardOptimizeOption(.{});
+
+    // v0.6: optional libpiper FFI. Default OFF so casual users don't need the
+    // libpiper.dylib + onnxruntime sidekicks just to use the `say` backend.
+    // Build vendor/piper1-gpl/libpiper first, then pass -Dwith-piper=true.
+    const with_piper = b.option(bool, "with-piper", "Link libpiper FFI (requires vendor build, see vendor/README.md)") orelse false;
+
+    const piper_opts = b.addOptions();
+    piper_opts.addOption(bool, "enabled", with_piper);
+
+    const mod = b.addModule("agent_tts", .{
+        .root_source_file = b.path("src/root.zig"),
+        .target = target,
+    });
+
+    // v0.7: zaudio Zig wrapper module. C sources are wired in configureExe.
+    const zaudio_mod = b.addModule("zaudio", .{
+        .root_source_file = b.path("vendor/zaudio/src/zaudio.zig"),
+        .target = target,
+    });
+
+    const exe = b.addExecutable(.{
+        .name = "agent-tts",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/main.zig"),
+            .target = target,
+            .optimize = optimize,
+            // v0.3: SQLite WAL queue persists in ~/.cache/agent-tts/queue.db.
+            // macOS ships libsqlite3 in the SDK sysroot; @cImport in queue.zig
+            // pulls sqlite3.h from the same place. link_libc required for the
+            // C header to resolve typedefs (size_t, etc).
+            .link_libc = true,
+            .imports = &.{
+                .{ .name = "agent_tts", .module = mod },
+                .{ .name = "build_options", .module = piper_opts.createModule() },
+                .{ .name = "zaudio", .module = zaudio_mod },
+            },
+        }),
+    });
+    configureExe(b, exe, with_piper, target);
 
     b.installArtifact(exe);
+
+    // -----------------------------------------------------------------
+    // v1.0: `zig build universal` → universal Mach-O via lipo -create
+    // -----------------------------------------------------------------
+    // Build aarch64-macos + x86_64-macos slices independently (ReleaseFast,
+    // piper OFF — we don't ship libpiper in the universal binary; users
+    // who want it build from source). Then run `lipo -create -output ...`.
+    //
+    // Output: zig-out/bin/agent-tts-universal
+    const universal_optimize: std.builtin.OptimizeMode = .ReleaseFast;
+    const universal_piper_opts = b.addOptions();
+    universal_piper_opts.addOption(bool, "enabled", false);
+
+    const arches = [_]std.Target.Query{
+        .{ .cpu_arch = .aarch64, .os_tag = .macos },
+        .{ .cpu_arch = .x86_64, .os_tag = .macos },
+    };
+    var slice_artifacts: [arches.len]*std.Build.Step.Compile = undefined;
+    for (arches, 0..) |q, i| {
+        const t = b.resolveTargetQuery(q);
+        const slice_mod = b.addModule(
+            b.fmt("agent_tts_{s}", .{@tagName(q.cpu_arch.?)}),
+            .{ .root_source_file = b.path("src/root.zig"), .target = t },
+        );
+        const slice_zaudio = b.addModule(
+            b.fmt("zaudio_{s}", .{@tagName(q.cpu_arch.?)}),
+            .{ .root_source_file = b.path("vendor/zaudio/src/zaudio.zig"), .target = t },
+        );
+        const slice_exe = b.addExecutable(.{
+            .name = b.fmt("agent-tts-{s}", .{@tagName(q.cpu_arch.?)}),
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/main.zig"),
+                .target = t,
+                .optimize = universal_optimize,
+                .link_libc = true,
+                .imports = &.{
+                    .{ .name = "agent_tts", .module = slice_mod },
+                    .{ .name = "build_options", .module = universal_piper_opts.createModule() },
+                    .{ .name = "zaudio", .module = slice_zaudio },
+                },
+            }),
+        });
+        configureExe(b, slice_exe, false, t);
+        slice_artifacts[i] = slice_exe;
+    }
+
+    const lipo = b.addSystemCommand(&.{ "lipo", "-create", "-output" });
+    const universal_out = lipo.addOutputFileArg("agent-tts-universal");
+    for (slice_artifacts) |slice_exe| {
+        lipo.addFileArg(slice_exe.getEmittedBin());
+    }
+
+    const universal_install = b.addInstallBinFile(universal_out, "agent-tts-universal");
+    const universal_step = b.step("universal", "Build universal (arm64+x86_64) macOS binary via lipo");
+    universal_step.dependOn(&universal_install.step);
 
     const run_step = b.step("run", "Run the app");
     const run_cmd = b.addRunArtifact(exe);

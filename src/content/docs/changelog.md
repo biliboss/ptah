@@ -9,6 +9,43 @@ Por marco: o que entregou, como medimos, o que ficou para o próximo. KPI único
 
 ---
 
+## v1.0 — universal binary + brew tap · 2026-06-03
+
+**Entregue**:
+
+- `zig build universal` — novo step em `build.zig` que compila duas slices independentes (`aarch64-macos` + `x86_64-macos`, ReleaseFast, libpiper OFF) e funde com `lipo -create` em `zig-out/bin/agent-tts-universal`
+- Cross-compile fallback: `sdkRoot()` em `build.zig` localiza o macOS SDK (CLT preferido, Xcode.app fallback) e adiciona library/include/framework paths para os cross-targets. Sem isso, Zig 0.16 falha o linker em `libsqlite3.tbd` e o `@cImport` em `sqlite3.h` para alvos não-nativos
+- `build.zig.zon` versão `1.0.0`, `src/main.zig` `VERSION = "1.0.0"`
+- `Formula/agent-tts.rb` — Homebrew formula com `depends_on "sqlite"` + `macos: :ventura`, `test do system "#{bin}/agent-tts", "--version" end`, e header documentando o tap path `gabriel/tap` (placeholder — substituir pelo tap real quando o repo for criado)
+- `README.md` expandido com seções de instalação (brew tap, source, launchd auto-start, libpiper opcional)
+- Universal binary roda em ambas as arquiteturas via `arch -arm64` e `arch -x86_64` (Rosetta 2), reportando `agent-tts 1.0.0` em cada
+
+**Medições** (Mac Air M4, ReleaseFast, libpiper OFF, baseline em `_qa/v1.0-baseline.md`):
+
+| Métrica | Valor | Alvo v1.0 |
+|---------|-------|-----------|
+| Universal binary size (com v0.7 zaudio) | 1 801 696 B (~1.8 MB) | < 2 MB ✅ |
+| Host arm64 binary size (com v0.7 zaudio) | 900 552 B (~880 KB) | < 1 MB ✅ |
+| Universal binary size (sem v0.7, libpiper OFF) | 1 076 576 B (~1.1 MB) | informativo |
+| `lipo -info` | `x86_64 arm64` | duas arches ✅ |
+| Round-trip ACK daemon quente (mediana, 7 calls) | 0.1 ms | < 300 ms ✅ (proxy) |
+| Pre-warm cold (boot único) | 275.1 ms | informativo |
+| Bare `say` spawn+playback floor | ~790 ms | informativo |
+| `brew audit --strict --new` (após fixes) | 2 issues, ambos URLs 404 placeholder | estrutural ✅ |
+
+**Honest scope**:
+
+- TTFA real (audio device first-sample) não medido — dtruss precisa SIP-off, host roda SIP-on. Round-trip ACK 0.1ms é piso seguro: daemon respondeu antes do playback começar. TTFA verdadeira fica entre pre-warm tail (~275ms) e bare-`say` spawn (~790ms)
+- Piper warm-path NÃO medido nesta v1.0 — depende de v0.7 (zaudio + engine routing) que está em paralelo. Quando v0.7 fechar, `_qa/v0.7-baseline.md` publica o número
+- Intel Mac nativo não testado (sem hardware disponível). Cross-arch sanity validada via `arch -x86_64` (Rosetta 2): slice x86_64 executa e reporta versão correta
+- `brew install gabriel/tap/agent-tts` ainda falha — `gabriel/tap` é placeholder, e `url`/`sha256` no Formula são placeholders até a primeira release tarball ser publicada no GitHub e ter o hash computado
+
+**Cross-compile gotcha (Zig 0.16)**:
+
+Zig 0.16 auto-resolve macOS SDK paths só pro target nativo. Para cross-targets o linker falha com `unable to find dynamic system library 'sqlite3'`. Workaround em `configureExe()`: probe `/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk` (CLT) ou Xcode.app SDK, adiciona `usr/lib` ao library path, `usr/include` ao system include path, e `System/Library/Frameworks` ao framework path. `libsqlite3.tbd` é multi-arch (x86_64-macos + arm64e-macos); arm64 não-secure linka contra arm64e sem problema.
+
+---
+
 ## v0.6 — libpiper FFI baseline · 2026-06-03
 
 **Entregue**:
