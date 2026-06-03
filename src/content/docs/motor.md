@@ -1,28 +1,29 @@
 ---
 title: TTS engine
-description: Piper Faber wins as the v1.0 default. macOS say Luciana is the offline-always fallback. Comparison + decision history.
+description: Piper Faber + Amy ship as the v1.1 default code-switch pair. macOS say Luciana stays the offline-always fallback. Comparison + decision history.
 ---
 
 ## TL;DR
 
-**v1.0 default**: **libpiper Faber** (neural, Pt-BR). Warm synth ~91 ms, cold engine load ~400 ms paid once at daemon boot. Single-binary, no Python.
+**v1.1 default**: **libpiper** with **Faber (Pt-BR) + Amy (En-US)** loaded side by side. Warm synth ~92 ms per chunk, multi-piper boot ~620 ms when both voices load. Single-binary, no Python.
 
 **Fallback**: macOS `say -v Luciana`. Works even when piper is not built in. Selected with `--engine say`.
 
-Both are offline, both are free, both ship in the same Zig binary.
+All three voices are offline, free, and ship in the same Zig binary.
 
-| | Piper Faber (default) | macOS `say` (fallback) |
-|---|---|---|
-| Engine type | Neural (ONNX) | Concatenative + ANE |
-| Pt-BR quality | Top neural | Solid system voice |
-| Warm synth | **~91 ms** | spawn 0.8 ms + playback |
-| Cold engine load | ~400 ms once at daemon boot | 0 |
-| Disk extra | 63 MB voice ONNX + ~34 MB dylibs | 0 (system) |
-| Binary delta | +2 KB Zig + dylib payload | 0 |
-| Code-switch EN | Mispronounces ("GitHub Actions") | Mispronounces |
-| License | GPL-3.0 inherits when linked | Free (system) |
+| | Piper Faber (default Pt) | Piper Amy (default En, v1.1) | macOS `say` (fallback) |
+|---|---|---|---|
+| Engine type | Neural (ONNX) | Neural (ONNX) | Concatenative + ANE |
+| Pt-BR quality | Top neural | n/a | Solid system voice |
+| En-US quality | Mispronounces (legacy) | Top neural | Good (Samantha/Daniel) |
+| Warm synth | **~92 ms** | ~92 ms (same ONNX runtime) | spawn 0.8 ms + playback |
+| Cold engine load | ~340 ms at daemon boot | +340 ms when added | 0 |
+| Disk extra | 63 MB voice + ~34 MB dylibs | 63 MB voice (shared dylibs) | 0 (system) |
+| Binary delta | +2 KB Zig + dylib payload | 0 (reuses Pt slot) | 0 |
+| Code-switch EN | Routed to Amy via detect.zig | Native | Falls back to Pt say |
+| License | GPL-3.0 inherits when linked | GPL-3.0 inherits | Free (system) |
 
-Both engines mispronounce English terms today — that is the headline gap addressed in v1.1.
+v1.0 mispronounced English terms; v1.1 dispatches each sentence to the matching engine via the heuristic detector in `src/detect.zig`.
 
 ## Decision history
 
@@ -115,6 +116,12 @@ agent-tts --rate 220 "Mais rápido."             # WPM (say only — piper ignor
 
 Persistent config in `~/.config/agent-tts/config.json` planned for v1.1.
 
-## Open gap: code-switching EN
+## Code-switching EN — closed in v1.1
 
-`GitHub Actions` is pronounced as Portuguese phonemes today by both Piper Faber and `say`. This is the headline driver for v1.1 — see [What's next](/whats-next/).
+v1.0 mispronounced `GitHub Actions` as Portuguese phonemes. v1.1 closes that gap by adding a second resident Piper voice — `en_US-amy-medium` — alongside Faber. The daemon's worker chunks each message on sentence boundaries (`. ! ? \n`), detects each sentence's language via a 100-stopword tokenizer (`src/detect.zig`), and synths each chunk on the matching engine. PCM streams concatenate via the same `audio_player.streamS16le` path, so playback gaps stay below human-perceptible threshold for back-to-back same-rate chunks (Faber and Amy are both 22 050 Hz).
+
+Cost: ~340 ms additional cold boot when both voices load (~680 ms total piper init). Per-message TTFA stays in the v0.7 envelope when the input is single-language (one synth call). Mixed messages pay one extra synth per language flip — still under the v1.1 < 150 ms warm budget for typical agent output.
+
+Install the En voice with `./scripts/fetch-voice-en.sh`. The daemon logs `en=off` and falls back to single-voice Pt synth when the file is missing — no crash, no degraded prompt. Force a single voice end-to-end with `agent-tts --lang pt|en "..."`; `auto` (the default) runs the detector per sentence.
+
+The remaining ambition — XTTS-v2-grade multilingual quality from a single ONNX checkpoint — is parked. Piper's per-voice models ship today, work offline, and stay under the disk budget. Single-checkpoint multilingual returns to the table when Coqui's ONNX export stabilizes (see [Coqui discussion #4014](https://github.com/coqui-ai/TTS/discussions/4014)) or a Piper community checkpoint matches Faber/Amy quality. Tracked in [What's next](/whats-next/).

@@ -27,10 +27,45 @@ const build_options = @import("build_options");
 // `usingnamespace` or a comptime-typed pointer would let us hold the
 // engine in Resources without the import; we just guard call sites instead.
 const piper_mod = if (build_options.enabled) @import("piper.zig") else struct {
+    pub const Error = error{ CreateFailed, SynthesizeStartFailed, SynthesizeNextFailed, WriteFailed };
     pub const PiperEngine = struct {
         pub fn deinit(_: *@This()) void {}
     };
+    pub const MultiPiperEngine = struct {
+        pub const Route = enum { pt, en };
+
+        pub fn deinit(_: *@This()) void {}
+        pub fn hasEn(_: *const @This()) bool {
+            return false;
+        }
+        pub fn sampleRate(_: *const @This()) u32 {
+            return 22050;
+        }
+        // Stub mirrors the real signature so daemon.zig type-checks with
+        // `-Dwith-piper=false`. The path that calls this is gated by
+        // `if (!build_options.enabled) unreachable;` in runPiper, so the
+        // stub body is never reached at runtime.
+        pub fn synthLang(
+            _: *@This(),
+            _: std.mem.Allocator,
+            _: []const u8,
+            _: Route,
+        ) Error![]i16 {
+            return Error.CreateFailed;
+        }
+        pub fn initMulti(
+            _: std.mem.Allocator,
+            _: []const u8,
+            _: ?[]const u8,
+            _: []const u8,
+        ) Error!@This() {
+            return Error.CreateFailed;
+        }
+    };
 };
+
+const preproc = @import("preproc.zig");
+const detect = @import("detect.zig");
 
 const READ_BUF = 16 * 1024;
 const WRITE_BUF = 64 * 1024;
@@ -45,7 +80,10 @@ const DEFAULT_VOICE = "Luciana";
 const Resources = struct {
     queue: *Queue,
     audio_player: *audio.AudioPlayer,
-    piper: ?*piper_mod.PiperEngine,
+    // v1.1: MultiPiperEngine holds Pt + (optional) En voices for code-switch
+    // routing. Single-voice v1.0 behaviour is preserved when the En voice
+    // isn't on disk — synth falls back to Pt and the warning logs once.
+    piper: ?*piper_mod.MultiPiperEngine,
     io: std.Io,
 };
 
@@ -99,15 +137,21 @@ pub fn run(arena: std.mem.Allocator, io: std.Io, home: []const u8) !void {
     // Optional libpiper engine. Off by default; opt in via AGENT_TTS_PIPER=1.
     // Lives until process exit so v0.7's worker can synth without paying the
     // ~400ms cold load each call.
-    var piper_engine_storage: ?piper_mod.PiperEngine = null;
-    var piper_engine_ptr: ?*piper_mod.PiperEngine = null;
+    //
+    // v1.1: load BOTH voices when piper is enabled. Pt (Faber) is mandatory;
+    // En (Amy) is best-effort — daemon stays usable if the En voice isn't
+    // on disk yet. Cold cost ~700 ms when both load (was ~340 ms in v0.7
+    // with just Pt). User who never wants En can stick to v1.0 by not
+    // running `scripts/fetch-voice-en.sh`.
+    var piper_engine_storage: ?piper_mod.MultiPiperEngine = null;
+    var piper_engine_ptr: ?*piper_mod.MultiPiperEngine = null;
     if (build_options.enabled) {
         const c = @cImport({
             @cInclude("stdlib.h");
         });
         const env_ptr = c.getenv("AGENT_TTS_PIPER");
         if (env_ptr != null and std.mem.eql(u8, std.mem.span(env_ptr), "1")) {
-            if (bootPiper(arena, io, home)) |engine| {
+            if (bootMultiPiper(arena, io, home)) |engine| {
                 piper_engine_storage = engine;
                 piper_engine_ptr = &piper_engine_storage.?;
             }
@@ -192,39 +236,85 @@ fn runPiper(res: *Resources, io: std.Io, sa: std.mem.Allocator, item: queue_mod.
     if (!build_options.enabled) unreachable;
     const engine = res.piper.?;
 
-    // Synth dominates short utterances on Faber-medium (~60-110ms on M4).
-    // Engine handle is single-writer because the worker is the only caller
-    // and we serialise playback by design.
-    const t_synth0 = std.Io.Clock.now(.awake, io);
-    const samples = engine.synthToSamples(sa, item.text) catch |e| {
-        res.queue.finishPlaying(io, item.id);
-        return e;
+    // v1.1: route per chunk. `--lang pt|en` forces single-voice synth
+    // (no detect call). `--lang auto` runs splitByLang which calls the
+    // detector once per sentence; chunks coalesce same-lang runs so
+    // typical messages stay one synth call.
+    const chunks: []const preproc.Chunk = blk: {
+        const maybe = buildChunks(sa, item) catch |e| {
+            std.debug.print("[worker] id={d} splitByLang failed: {s} — synth as pt\n", .{ item.id, @errorName(e) });
+            const single = try sa.alloc(preproc.Chunk, 1);
+            single[0] = .{ .text = item.text, .lang = .pt };
+            break :blk single;
+        };
+        if (maybe) |slice| break :blk slice;
+        const single = try sa.alloc(preproc.Chunk, 1);
+        single[0] = .{ .text = item.text, .lang = .pt };
+        break :blk single;
     };
-    const t_synth1 = std.Io.Clock.now(.awake, io);
 
     // SKIP routes through audio_player.requestStop for piper items; we
     // still register a sentinel PID so `agent-tts queue` shows "playing".
     res.queue.setPlaying(io, item.id, @intCast(std.c.getpid()));
 
-    const sample_rate = engine.sampleRate();
-    const t_play0 = std.Io.Clock.now(.awake, io);
-    if (res.audio_player.ready) {
-        res.audio_player.streamS16le(samples, sample_rate) catch |e| {
-            std.debug.print("[worker] zaudio play failed: {s} — falling back to afplay\n", .{@errorName(e)});
-            try playViaAfplay(io, sa, samples, sample_rate);
-        };
-    } else {
-        try playViaAfplay(io, sa, samples, sample_rate);
-    }
-    const t_play1 = std.Io.Clock.now(.awake, io);
+    var total_samples: usize = 0;
+    var total_synth_ns: u64 = 0;
+    var total_play_ns: u64 = 0;
+    var n_chunks: usize = 0;
 
-    const synth_ms = @as(f64, @floatFromInt(t_synth1.nanoseconds - t_synth0.nanoseconds)) / 1_000_000.0;
-    const play_ms = @as(f64, @floatFromInt(t_play1.nanoseconds - t_play0.nanoseconds)) / 1_000_000.0;
-    std.debug.print("[worker] piper id={d} synth={d:.1}ms play={d:.1}ms samples={d}\n", .{
-        item.id, synth_ms, play_ms, samples.len,
-    });
+    for (chunks) |ch| {
+        const route: piper_mod.MultiPiperEngine.Route = switch (ch.lang) {
+            .en => .en,
+            else => .pt,
+        };
+        const t_synth0 = std.Io.Clock.now(.awake, io);
+        const samples = engine.synthLang(sa, ch.text, route) catch |e| {
+            std.debug.print("[worker] id={d} chunk synth failed: {s}\n", .{ item.id, @errorName(e) });
+            res.queue.finishPlaying(io, item.id);
+            return e;
+        };
+        const t_synth1 = std.Io.Clock.now(.awake, io);
+        total_synth_ns += @intCast(t_synth1.nanoseconds - t_synth0.nanoseconds);
+
+        const sample_rate = engine.sampleRate();
+        const t_play0 = std.Io.Clock.now(.awake, io);
+        if (res.audio_player.ready) {
+            res.audio_player.streamS16le(samples, sample_rate) catch |e| {
+                std.debug.print("[worker] zaudio play failed: {s} — falling back to afplay\n", .{@errorName(e)});
+                try playViaAfplay(io, sa, samples, sample_rate);
+            };
+        } else {
+            try playViaAfplay(io, sa, samples, sample_rate);
+        }
+        const t_play1 = std.Io.Clock.now(.awake, io);
+        total_play_ns += @intCast(t_play1.nanoseconds - t_play0.nanoseconds);
+        total_samples += samples.len;
+        n_chunks += 1;
+    }
+
+    const synth_ms = @as(f64, @floatFromInt(total_synth_ns)) / 1_000_000.0;
+    const play_ms = @as(f64, @floatFromInt(total_play_ns)) / 1_000_000.0;
+    std.debug.print(
+        "[worker] piper id={d} chunks={d} synth={d:.1}ms play={d:.1}ms samples={d}\n",
+        .{ item.id, n_chunks, synth_ms, play_ms, total_samples },
+    );
 
     res.queue.finishPlaying(io, item.id);
+}
+
+/// v1.1 chunking: build the list of `Chunk` for this item according to the
+/// `lang` field on the queue entry. We don't (yet) persist `lang` in the
+/// DB — it lives on `ipc.Message` and rides the in-memory hop only. When
+/// the item came from a v0.x ENQUEUE the default is `.auto`, so we
+/// detect; explicit `.pt` / `.en` short-circuit detection.
+fn buildChunks(sa: std.mem.Allocator, item: queue_mod.PoppedItem) !?[]preproc.Chunk {
+    // Queue currently doesn't persist Lang. v1.1 uses item.text only —
+    // detection runs at synth time. Future versions may serialise lang
+    // alongside engine; for now `auto` is the de-facto default for the
+    // worker path.
+    const chunks = try preproc.splitByLang(sa, item.text, .pt);
+    if (chunks.len == 0) return null;
+    return chunks;
 }
 
 // Last-resort playback when zaudio.Engine isn't ready (headless CI, audio
@@ -369,6 +459,57 @@ fn bootPiper(arena: std.mem.Allocator, io: std.Io, home: []const u8) ?piper_mod.
     const load_ns: f64 = @floatFromInt(t1.nanoseconds - t0.nanoseconds);
     const load_ms = load_ns / 1_000_000.0;
     std.debug.print("[daemon] piper engine loaded in {d:.1}ms\n", .{load_ms});
+
+    return engine;
+}
+
+// v1.1 — boot Pt + En voices into a MultiPiperEngine. Pt is mandatory; En is
+// best-effort (Amy file may not be on disk yet — user opts in via
+// `scripts/fetch-voice-en.sh`). When En load fails, MultiPiperEngine.hasEn()
+// returns false and `synthLang(.en)` silently falls back to Pt at the call
+// site. Total cold cost on success: Pt ~340 ms + En ~340 ms = ~680 ms.
+// Single-voice fall-through (no En on disk) matches v0.7 cold time.
+fn bootMultiPiper(arena: std.mem.Allocator, io: std.Io, home: []const u8) ?piper_mod.MultiPiperEngine {
+    if (!build_options.enabled) return null;
+
+    const pt_voice_path = std.fmt.allocPrint(
+        arena,
+        "{s}/.cache/agent-tts/voices/pt_BR-faber-medium.onnx",
+        .{home},
+    ) catch return null;
+    const en_voice_path = std.fmt.allocPrint(
+        arena,
+        "{s}/.cache/agent-tts/voices/en_US-amy-medium.onnx",
+        .{home},
+    ) catch return null;
+    const espeak_data = "vendor/piper1-gpl/libpiper/dist/share/espeak-ng-data";
+
+    // Probe En voice file before passing the path — keeps the inner load
+    // failure message clean and gives the user a single "En voice not
+    // installed" hint on boot.
+    const en_path_opt: ?[]const u8 = blk: {
+        var f = std.Io.Dir.cwd().openFile(io, en_voice_path, .{}) catch {
+            std.debug.print("[daemon] en voice not installed at {s} — code-switch will fall back to pt\n", .{en_voice_path});
+            std.debug.print("  install: ./scripts/fetch-voice-en.sh\n", .{});
+            break :blk null;
+        };
+        f.close(io);
+        break :blk en_voice_path;
+    };
+
+    const t0 = std.Io.Clock.now(.awake, io);
+    const engine = piper_mod.MultiPiperEngine.initMulti(arena, pt_voice_path, en_path_opt, espeak_data) catch |e| {
+        std.debug.print("[daemon] multi piper engine load failed: {s}\n", .{@errorName(e)});
+        std.debug.print("  pt voice: {s}\n", .{pt_voice_path});
+        std.debug.print("  espeak: {s}\n", .{espeak_data});
+        return null;
+    };
+    const t1 = std.Io.Clock.now(.awake, io);
+    const load_ms = @as(f64, @floatFromInt(t1.nanoseconds - t0.nanoseconds)) / 1_000_000.0;
+    std.debug.print(
+        "[daemon] multi piper engine loaded in {d:.1}ms (pt={s} en={s})\n",
+        .{ load_ms, "faber", if (engine.hasEn()) "amy" else "off" },
+    );
 
     return engine;
 }

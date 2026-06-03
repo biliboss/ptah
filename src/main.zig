@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-// agent-tts — Pt-BR TTS via macOS `say` + libpiper (v0.7+).
+// agent-tts — multilingual TTS via macOS `say` + libpiper (v1.1+).
 //
 // Single binary, modes:
 //   agent-tts daemon                       → daemon (foreground)
@@ -13,13 +13,15 @@
 //   agent-tts ttfa-bench --engine X --warm N → measure first-sample latency
 //   agent-tts -h | --help                  → help
 //   agent-tts -V | --version               → version
-//   agent-tts [--engine X] [--voice V] [--rate R] "..." → enqueue on daemon
+//   agent-tts [--engine X] [--lang L] [--voice V] [--rate R] "..." → enqueue
 //
 // v0.3: SQLite WAL queue at ~/.cache/agent-tts/queue.db.
 // v0.4: launchd LaunchAgent (~/Library/LaunchAgents/io.github.biliboss.agent-tts.plist).
 // v0.5: Pt-BR text preprocessor (abbreviations, cardinals 0..9999, [[slnc N]] pauses).
 // v0.6: libpiper FFI baseline (PiperEngine loaded but not routed yet).
 // v0.7: zaudio streaming PCM + --engine routing. Piper resident in daemon.
+// v1.0: universal binary + brew tap + GitHub Pages docs.
+// v1.1: language detection + En Piper voice routing (code-switch Pt+En).
 //
 // KPI = time-to-first-audio (TTFA).
 
@@ -37,11 +39,13 @@ const build_options = @import("build_options");
 pub const VERSION = "1.3.0";
 
 const HELP =
-    \\agent-tts v{s} — Pt-BR TTS via system voice or libpiper
+    \\agent-tts v{s} — multilingual TTS via system voice or libpiper
     \\
     \\Usage:
     \\  agent-tts "texto"                send to running daemon
     \\  agent-tts --engine piper "..."   route to libpiper instead of system voice
+    \\  agent-tts --lang en "Hello"      force English voice (Amy)
+    \\  agent-tts --lang pt "Olá"        force Portuguese voice (Faber)
     \\  agent-tts queue                  list pending + playing items
     \\  agent-tts skip                   skip current playing item
     \\  agent-tts clear                  drop all pending items
@@ -62,6 +66,7 @@ const HELP =
     \\
     \\Options:
     \\  --engine say|piper  TTS backend (default: piper; say = system fallback)
+    \\  --lang auto|pt|en   language routing (default: auto; piper-only)
     \\  --voice NAME        voice name (default: Luciana for say, faber for piper;
     \\                      on Linux Luciana auto-maps to espeak-ng pt-br)
     \\  --rate WPM          words per minute (default: 330; ignored by piper)
@@ -72,6 +77,12 @@ const HELP =
     \\  macOS    /usr/bin/say                  (Luciana / Felipe Premium)
     \\  Linux    espeak-ng -v pt-br            (apt install espeak-ng)
     \\  Windows  powershell System.Speech      (best-effort, runtime untested)
+    \\
+    \\Multilingual code-switching (v1.1): the daemon loads both Pt (Faber) and
+    \\En (Amy) voices when -Dwith-piper=true. Each enqueued message is
+    \\sentence-split, each sentence detected via a stopword tokenizer, and
+    \\routed to the matching voice. Force a single voice with --lang pt|en.
+    \\Install voices: scripts/fetch-voice.sh + scripts/fetch-voice-en.sh.
     \\
     \\Auto-start per platform:
     \\  macOS    ~/Library/LaunchAgents/io.github.biliboss.agent-tts.plist

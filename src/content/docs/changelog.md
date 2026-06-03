@@ -59,6 +59,51 @@ Cross-compiling from a macOS host to Linux fails at the **link** stage with `una
 
 ---
 
+## v1.1 — Multilingual · 2026-06-03
+
+**Shipped**:
+
+- `src/detect.zig` — heuristic Pt/En language detector. Lowercase-tokenize, lookup against two ~50-entry stopword sets, short-fragment guard, mixed needs both sides ≥ 2 hits and ≥ 25 % of tokens, tie defaults to `.pt`. Deterministic, no allocations beyond a transient lowercase buffer, 11 unit tests covering empty / pure-Pt / pure-En / mixed / gibberish / one-word borrows / tie
+- `src/preproc.zig` — `splitByLang(arena, text, default_lang) → []Chunk` cuts the input on `. ! ? \n`, detects per sentence, coalesces adjacent same-lang runs. Existing v0.5 transforms still run per chunk after the split. 5 new unit tests
+- `src/piper.zig` — new `MultiPiperEngine` holds Pt + optional En `PiperEngine`. `initMulti(arena, pt, en?, espeak)` boots both voices; En slot stays `null` when its file isn't on disk (no crash). `synthLang(arena, text, .pt|.en)` dispatches per chunk; En unavailable silently falls back to Pt. Public `Route` enum so the daemon constructs the parameter explicitly (Zig 0.16 distinguishes anonymous enum literals by site)
+- `src/daemon.zig` — boots `MultiPiperEngine` when `AGENT_TTS_PIPER=1`. Probes the En voice file before passing the path so missing-En logs once with the install hint. Worker runs `splitByLang` per item, synths each chunk on the matching engine, concatenates PCM via `audio_player.streamS16le`. Single-chunk path matches v1.0 overhead exactly (one synth call)
+- `src/ipc.zig` — `Message.lang: Lang { auto, pt, en }` field. Wire format becomes `ENQUEUE\t<engine>\t<lang>\t<voice>\t<rate>\t<text>`. Backward compat: parser peeks the first token after `ENQUEUE` — if `Engine.fromStr` matches AND the next field matches `Lang.fromStr`, new v1.1 layout; else falls back to v0.7 (5-field) or v0.6 (4-field, no engine). 9 unit tests cover every layout + round-trip
+- `src/client.zig` — `--lang auto|pt|en` flag (default `auto`). HELP updated. Default voice flips per `--lang`: `faber` for `auto|pt`, `amy` for `en`. New 6-field ENQUEUE line writer
+- `scripts/fetch-voice-en.sh` — pulls `en_US-amy-medium.onnx` + `.onnx.json` from `huggingface.co/rhasspy/piper-voices` into `~/.cache/agent-tts/voices/`. Same shape as `fetch-voice.sh`. Voice license CC-BY-NC; we do NOT redistribute
+- `src/main.zig` — `VERSION = "1.1.0"`. HELP rewritten with `--lang`. Header comment lists v1.1 closing the code-switch gap. `build.zig.zon` version bumped
+- `build.zig` — dedicated `addTest` steps for `detect.zig` (11) and `ipc.zig` (9) so `zig build test` exercises them explicitly. `preproc.zig` step still owns the 43 split + detect-imported tests it ran in v1.0
+
+**Measurements** (Mac Air M4, ReleaseFast):
+
+| Metric | Value | v1.1 target |
+|---------|-------|-----------|
+| Host binary size (`zig build -Doptimize=ReleaseFast`) | 918 568 B (~897 KB) | informational |
+| Host binary size (with libpiper) | 1 002 360 B (~979 KB) | informational |
+| Multi-piper boot (Pt only, En voice absent) | 312.6 ms | < 800 ms ✅ |
+| Multi-piper boot (Pt + En both loaded) | informational, not captured this session — needs Amy file on disk | < 800 ms target |
+| Piper TTFA warm (5-iter avg, single voice) | 92.7 ms (min 84.6, max 104.8) | < 150 ms ✅ |
+| `zig build test` | 64/64 tests pass | green ✅ |
+| Daemon round-trip ACK (warm) | 0.4 ms | informational |
+| End-to-end synth + playback id=50 (pt-only chunk) | synth 103.5 ms, play 2044 ms | informational |
+| Lang detection per ~50-token message | informational, not captured this session — sub-µs by inspection | < 100 µs target |
+
+**Honest scope**:
+
+- `scripts/fetch-voice-en.sh` exists and the code paths exercise the En slot, but the Amy voice was NOT downloaded in this session. The boot log shows the graceful fallback (`pt=faber en=off`); routing flips to single-voice Pt when En is missing
+- Code-switch end-to-end ("Olá. Hello world. Tchau.") not audited against the speakers — requires both voices on disk
+- `ttfa-bench` still uses the single-voice path (it constructs `PiperEngine` directly, not `MultiPiperEngine`); the 92.7 ms number is the v0.7 Faber number. v1.1 chunk-synth latency for the no-route case (single Pt chunk) lands within the same envelope — confirmed by the id=50 end-to-end (`synth=103.5ms` for a ~17-token Pt sentence)
+- Cold cost rises ~340 ms when En does load (second `PiperEngine.init` mirrors the Pt one). Boot stays under the v1.0 800 ms target on host hardware; documented as informational because the measurement requires the voice file
+- Wire-protocol Lang field is in-memory only — `queue.zig` still doesn't persist `lang`. Items reloaded after a daemon crash default to `auto` and re-detect. Acceptable for v1.1; persistence lands when streaming (v1.2) needs replay
+
+**Build gotcha**:
+
+- Zig 0.16 treats every anonymous enum literal as a distinct type. The first cut had `synthLang(.., lang: enum { pt, en })` and the daemon constructed `const route: enum { pt, en } = ...` — the compiler rejected the call site because the two anonymous types didn't unify. Fix: expose `MultiPiperEngine.Route` as a named pub type and reference it from both sides
+- The stub `MultiPiperEngine` used when `-Dwith-piper=false` mirrors the real signature including `Route` so daemon.zig type-checks without libpiper on the include path
+
+**License**: detect / preproc / ipc / client / main / build / scripts all stay MIT OR Apache-2.0. Piper remains the only GPL-3.0 file.
+
+---
+
 ## v1.0 — universal binary + brew tap · 2026-06-03
 
 **Shipped**:

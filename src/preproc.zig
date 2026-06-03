@@ -13,6 +13,108 @@
 // stage is O(N) in the input length with no regex / no global state.
 
 const std = @import("std");
+const detect = @import("detect.zig");
+
+// ─── v1.1: sentence-level language chunks ────────────────────────────────
+//
+// `splitByLang` slices the input on sentence boundaries (`.` `!` `?` `\n`),
+// detects the dominant language per sentence, then coalesces adjacent
+// same-lang sentences into a single chunk. The daemon synthesizes each
+// chunk on the matching Piper voice and concatenates the PCM.
+//
+// `unknown` / `mixed` outputs collapse to a default lang argument the
+// caller passes in (typically `.pt` for Brazilian users). This keeps
+// short fragments ("ok.", numbers-only) from spawning empty chunks.
+pub const Chunk = struct {
+    text: []const u8,
+    lang: detect.Lang,
+};
+
+/// Split `text` on sentence boundaries, detect per-sentence lang, coalesce
+/// adjacent same-lang spans into one chunk. Each chunk's `.text` is a slice
+/// freshly allocated from `arena` (trim of leading/trailing whitespace
+/// preserved internally — punctuation survives because the daemon's
+/// preproc.process() still needs it for `[[slnc]]` insertion).
+///
+/// `default_lang` is what `unknown`/`mixed` collapse to. Pass `.pt` from
+/// the daemon for Brazilian-default behaviour; the client's `--lang`
+/// override flows through ipc.Message.lang and short-circuits this
+/// function entirely (one chunk, that lang).
+pub fn splitByLang(
+    arena: std.mem.Allocator,
+    text: []const u8,
+    default_lang: detect.Lang,
+) ![]Chunk {
+    if (text.len == 0) return arena.alloc(Chunk, 0);
+
+    // Stage 1: cut on sentence boundaries. We keep the trailing punctuation
+    // on the *previous* sentence so the preproc that runs after us still
+    // sees the `.`/`!`/`?` and inserts pauses correctly.
+    var sentences: std.ArrayList([]const u8) = .empty;
+    defer sentences.deinit(arena);
+
+    var start: usize = 0;
+    var i: usize = 0;
+    while (i < text.len) : (i += 1) {
+        const c = text[i];
+        if (c == '.' or c == '!' or c == '?' or c == '\n') {
+            // Extend the sentence to include the punctuation char.
+            const end = i + 1;
+            if (end > start) {
+                const trimmed = std.mem.trim(u8, text[start..end], " \t\r");
+                if (trimmed.len > 0) {
+                    try sentences.append(arena, trimmed);
+                }
+            }
+            start = end;
+        }
+    }
+    // Trailing fragment without sentence-ending punctuation.
+    if (start < text.len) {
+        const tail = std.mem.trim(u8, text[start..], " \t\r\n");
+        if (tail.len > 0) try sentences.append(arena, tail);
+    }
+
+    if (sentences.items.len == 0) return arena.alloc(Chunk, 0);
+
+    // Stage 2: detect lang per sentence + coalesce runs.
+    var chunks: std.ArrayList(Chunk) = .empty;
+    defer chunks.deinit(arena);
+
+    var cur_lang: detect.Lang = .unknown;
+    var cur_buf: std.ArrayList(u8) = .empty;
+    defer cur_buf.deinit(arena);
+
+    for (sentences.items) |sent| {
+        var lang = try detect.detect(arena, sent);
+        // Collapse unknown/mixed to the default. The daemon doesn't have
+        // a multilingual voice — every PCM has to come from a single
+        // engine, so we pick.
+        if (lang == .unknown or lang == .mixed) lang = default_lang;
+
+        if (cur_buf.items.len == 0) {
+            cur_lang = lang;
+            try cur_buf.appendSlice(arena, sent);
+            continue;
+        }
+        if (lang == cur_lang) {
+            try cur_buf.append(arena, ' ');
+            try cur_buf.appendSlice(arena, sent);
+        } else {
+            const owned = try cur_buf.toOwnedSlice(arena);
+            try chunks.append(arena, .{ .text = owned, .lang = cur_lang });
+            cur_buf = .empty;
+            cur_lang = lang;
+            try cur_buf.appendSlice(arena, sent);
+        }
+    }
+    if (cur_buf.items.len > 0) {
+        const owned = try cur_buf.toOwnedSlice(arena);
+        try chunks.append(arena, .{ .text = owned, .lang = cur_lang });
+    }
+
+    return chunks.toOwnedSlice(arena);
+}
 
 pub const Pause = struct {
     pub const COMMA_MS: u32 = 150;
@@ -486,4 +588,72 @@ test "out of range 0..9999 leaves raw" {
 
 test "leading number" {
     try runProcess("7 anões", "sete anões");
+}
+
+// ─── v1.1 splitByLang tests ──────────────────────────────────────────────
+
+fn runSplit(
+    text: []const u8,
+    expected: []const struct { text: []const u8, lang: detect.Lang },
+) !void {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const got = try splitByLang(arena_state.allocator(), text, .pt);
+    testing.expectEqual(expected.len, got.len) catch |e| {
+        std.debug.print("\ninput: {s}\n", .{text});
+        std.debug.print("expected {d} chunks, got {d}\n", .{ expected.len, got.len });
+        for (got, 0..) |ch, i| {
+            std.debug.print("  [{d}] lang={s} text={s}\n", .{ i, ch.lang.str(), ch.text });
+        }
+        return e;
+    };
+    for (got, expected, 0..) |ch, exp, idx| {
+        testing.expectEqual(exp.lang, ch.lang) catch |e| {
+            std.debug.print("\nchunk {d} lang mismatch: expected {s} got {s}\n", .{
+                idx, exp.lang.str(), ch.lang.str(),
+            });
+            return e;
+        };
+        testing.expectEqualStrings(exp.text, ch.text) catch |e| {
+            std.debug.print("\nchunk {d} text mismatch\n", .{idx});
+            return e;
+        };
+    }
+}
+
+test "splitByLang empty returns empty" {
+    try runSplit("", &.{});
+}
+
+test "splitByLang single Pt sentence is one chunk" {
+    try runSplit("Olá, tudo bem?", &.{
+        .{ .text = "Olá, tudo bem?", .lang = .pt },
+    });
+}
+
+test "splitByLang Pt then En routes two chunks" {
+    try runSplit("Deploy concluído. The build is green.", &.{
+        .{ .text = "Deploy concluído.", .lang = .pt },
+        .{ .text = "The build is green.", .lang = .en },
+    });
+}
+
+test "splitByLang adjacent same-lang sentences coalesce" {
+    try runSplit("Olá. Tudo bem. Como vai?", &.{
+        .{ .text = "Olá. Tudo bem. Como vai?", .lang = .pt },
+    });
+}
+
+test "splitByLang unknown sentence falls back to default" {
+    // "xyz." has no stopwords on either side — defaults to .pt and
+    // coalesces with the Pt neighbour.
+    try runSplit("Olá. xyz. Tudo bem.", &.{
+        .{ .text = "Olá. xyz. Tudo bem.", .lang = .pt },
+    });
+}
+
+test "splitByLang trailing fragment without punctuation captured" {
+    try runSplit("Olá mundo", &.{
+        .{ .text = "Olá mundo", .lang = .pt },
+    });
 }

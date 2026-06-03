@@ -17,7 +17,7 @@ const READ_BUF = 64 * 1024;
 const WRITE_BUF = 16 * 1024;
 
 const HELP =
-    \\agent-tts — Pt-BR TTS via macOS `say` or libpiper (v0.7+)
+    \\agent-tts — multilingual TTS via macOS `say` or libpiper (v1.1+)
     \\
     \\Usage:
     \\  agent-tts "texto"                enqueue text on the running daemon
@@ -28,6 +28,7 @@ const HELP =
     \\
     \\Options (for enqueue):
     \\  --engine say|piper  TTS backend (default: piper; say = fallback)
+    \\  --lang auto|pt|en   language routing (default: auto; piper-only)
     \\  --voice NAME        voice name (default: Luciana for say, faber for piper)
     \\  --rate WPM          words per minute (default: 330; ignored by piper)
     \\  -h, --help          this help
@@ -49,6 +50,7 @@ pub fn run(arena: std.mem.Allocator, io: std.Io, home: []const u8, args: []const
 
 fn cmdEnqueue(arena: std.mem.Allocator, io: std.Io, home: []const u8, args: []const []const u8) !void {
     var engine: ipc.Engine = .piper;
+    var lang: ipc.Lang = .auto;
     var voice_arg: ?[]const u8 = null;
     var rate: u32 = DEFAULT_RATE;
     var text: ?[]const u8 = null;
@@ -64,6 +66,16 @@ fn cmdEnqueue(arena: std.mem.Allocator, io: std.Io, home: []const u8, args: []co
             }
             engine = ipc.Engine.fromStr(args[i]) orelse {
                 std.debug.print("error: --engine invalid (got '{s}') — expected say|piper\n", .{args[i]});
+                std.process.exit(2);
+            };
+        } else if (std.mem.eql(u8, a, "--lang")) {
+            i += 1;
+            if (i >= args.len) {
+                std.debug.print("error: --lang needs value (auto|pt|en)\n", .{});
+                std.process.exit(2);
+            }
+            lang = ipc.Lang.fromStr(args[i]) orelse {
+                std.debug.print("error: --lang invalid (got '{s}') — expected auto|pt|en\n", .{args[i]});
                 std.process.exit(2);
             };
         } else if (std.mem.eql(u8, a, "--voice")) {
@@ -93,16 +105,26 @@ fn cmdEnqueue(arena: std.mem.Allocator, io: std.Io, home: []const u8, args: []co
         std.process.exit(2);
     }
 
-    // Engine-specific voice defaults. Piper ignores `voice` for now (Faber
-    // is the only one shipped) but we still pass it through for protocol
-    // consistency and future-proofing.
+    // Engine-specific voice defaults. For piper we pick Pt vs En default
+    // model name based on `--lang`. When `--lang auto`, the daemon may
+    // override per-chunk; the value here is just the catch-all voice the
+    // daemon falls back to for the default lang.
     const voice: []const u8 = voice_arg orelse switch (engine) {
         .say => DEFAULT_VOICE,
-        .piper => "faber",
+        .piper => switch (lang) {
+            .auto, .pt => "faber",
+            .en => "amy",
+        },
     };
 
     const clean = try ipc.sanitizeText(arena, text.?);
-    const msg = ipc.Message{ .engine = engine, .voice = voice, .rate = rate, .text = clean };
+    const msg = ipc.Message{
+        .engine = engine,
+        .lang = lang,
+        .voice = voice,
+        .rate = rate,
+        .text = clean,
+    };
 
     var stream = try openSocket(arena, io, home);
     defer stream.close(io);
@@ -113,7 +135,12 @@ fn cmdEnqueue(arena: std.mem.Allocator, io: std.Io, home: []const u8, args: []co
     var sw = stream.writer(io, &write_buf);
 
     const t_start = std.Io.Clock.now(.awake, io);
-    try sw.interface.print("ENQUEUE\t{s}\t{s}\t{d}\t{s}\n", .{ msg.engine.str(), msg.voice, msg.rate, msg.text });
+    // v1.1 6-field ENQUEUE: engine, lang, voice, rate, text. Daemon handles
+    // older 4/5-field forms for ABI compatibility — see ipc.parseRequest.
+    try sw.interface.print(
+        "ENQUEUE\t{s}\t{s}\t{s}\t{d}\t{s}\n",
+        .{ msg.engine.str(), msg.lang.str(), msg.voice, msg.rate, msg.text },
+    );
     try sw.interface.flush();
 
     const line = try sr.interface.takeDelimiterExclusive('\n');

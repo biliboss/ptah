@@ -1,30 +1,13 @@
 ---
 title: What's next
-description: Five next versions of agent-tts — multilingual, streaming, cross-platform, voice cloning, and native Claude Code voice via MCP.
+description: Three next versions of agent-tts — streaming, voice cloning, and native Claude Code voice via MCP.
 ---
 
 ## TL;DR
 
-v1.0 shipped the runtime: single binary, neural Pt-BR by default, persistent queue, launchd auto-start, sub-100 ms warm synth. v1.3 shipped Linux + Windows code paths and a CI matrix that proves the Linux build green. **What follows is about reach, not plumbing.** Four themes pulled out of the v1.0 backlog and pointed at the audiences that will care.
+v1.1 shipped multilingual code-switch (`MultiPiperEngine` + `--lang auto|pt|en` + En Amy voice routing). v1.3 shipped Linux espeak-ng + systemd + CI matrix. **What follows is about reach, not plumbing.** Three themes pulled out of the v1.1+v1.3 backlog and pointed at the audiences that will care.
 
 Vote, watch, or send a PR at [biliboss/agent-tts](https://github.com/biliboss/agent-tts).
-
----
-
-## v1.1 — Multilingual · *Speak your stack*
-
-> Your agents read README files in English and write Brazilian Portuguese commit messages all day. `agent-tts` v1.1 stops fighting the code-switch.
-
-**The problem today.** Both engines pronounce `GitHub Actions` and `Coolify deploy` as if they were Portuguese. The Brazilian dev hears noise; the international viewer doesn't get the joke.
-
-**What ships.** A multilingual ONNX voice plugged into the existing `PiperEngine` slot. Same FFI surface, new model. Auto-detect of Pt vs En tokens via lightweight tokenizer — no extra prompt, no flag.
-
-**Why now.** Coqui XTTS-v2 ONNX export keeps stabilizing and the Piper community is pushing multilingual checkpoints monthly. The cost is ~150 MB extra disk for the voice. The TTFA budget holds because synth stays under 150 ms.
-
-**Who cares.**
-- Brazilian devs working on English-named tools (everyone).
-- International audiences for screencasts and demos.
-- Accessibility users mixing languages naturally.
 
 ---
 
