@@ -15,3 +15,7 @@ vendor/piper1-gpl/
 # v0.7 zaudio + miniaudio vendored sources (~100k LoC single-header lib).
 # Reproduce via vendor/README.md. Pinned commit in vendor/zaudio/COMMIT.
 vendor/zaudio/
+
+playwright-report/
+test-results/
+.playwright-cache/
