@@ -238,6 +238,29 @@ pub fn build(b: *std.Build) void {
     });
     const run_preproc_tests = b.addRunArtifact(preproc_tests);
 
+    // v1.1: dedicated test steps for the new language detector and the
+    // extended IPC parser. Both files own tests that exercise the
+    // backward-compatible parsing path (v0.6 / v0.7 / v1.1) and the
+    // sub-µs stopword detector.
+    const detect_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/detect.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_detect_tests = b.addRunArtifact(detect_tests);
+
+    const ipc_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/ipc.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        }),
+    });
+    const run_ipc_tests = b.addRunArtifact(ipc_tests);
+
     // Benchmark executable for the preprocessor (used to populate
     // _qa/v0.5-baseline.md). Build in ReleaseFast for realistic numbers.
     const preproc_mod = b.createModule(.{
@@ -262,4 +285,6 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_mod_tests.step);
     test_step.dependOn(&run_exe_tests.step);
     test_step.dependOn(&run_preproc_tests.step);
+    test_step.dependOn(&run_detect_tests.step);
+    test_step.dependOn(&run_ipc_tests.step);
 }

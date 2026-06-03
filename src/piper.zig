@@ -155,6 +155,95 @@ pub const PiperEngine = struct {
     }
 };
 
+// ─── v1.1: MultiPiperEngine ──────────────────────────────────────────────
+//
+// Holds two PiperEngines — one Pt (Faber by default), one En (Amy by default)
+// — and routes synth per chunk via `synthLang`. The En slot is optional:
+// if it fails to load (no `en_US-amy-medium.onnx` on disk yet), the engine
+// stays nullable and `synthLang(.en)` falls back to the Pt voice. v1.1
+// ships the code paths even if the user hasn't run `scripts/fetch-voice-en.sh`
+// yet.
+//
+// Lifetime: caller owns the storage; deinit cascades to both child engines.
+// Memory: each child engine carries its own ONNX graph + espeak data —
+// expect ~180 MB RSS with both loaded (Pt 90 MB + En 90 MB).
+pub const MultiPiperEngine = struct {
+    /// Per-chunk routing tag the worker passes to `synthLang`. Kept as a
+    /// pub type so call sites (daemon.zig) can construct it explicitly
+    /// instead of relying on inferred anonymous enums — Zig 0.16 treats
+    /// every anonymous enum literal as a distinct type, which breaks the
+    /// call signature.
+    pub const Route = enum { pt, en };
+
+    pt: PiperEngine,
+    en: ?PiperEngine,
+    allocator: std.mem.Allocator,
+
+    /// Boot both voices. `pt_voice_path` must point at a working voice
+    /// (failure is fatal — Pt is the default and can't be skipped).
+    /// `en_voice_path` is optional; pass null to disable En routing
+    /// entirely. Returns the multi-engine on success.
+    pub fn initMulti(
+        allocator: std.mem.Allocator,
+        pt_voice_path: []const u8,
+        en_voice_path: ?[]const u8,
+        espeak_data_path: []const u8,
+    ) Error!MultiPiperEngine {
+        var pt_engine = try PiperEngine.init(allocator, pt_voice_path, espeak_data_path);
+        errdefer pt_engine.deinit();
+
+        var en_engine: ?PiperEngine = null;
+        if (en_voice_path) |path| {
+            en_engine = PiperEngine.init(allocator, path, espeak_data_path) catch null;
+        }
+
+        return .{
+            .pt = pt_engine,
+            .en = en_engine,
+            .allocator = allocator,
+        };
+    }
+
+    pub fn deinit(self: *MultiPiperEngine) void {
+        self.pt.deinit();
+        if (self.en) |*en| en.deinit();
+        self.en = null;
+    }
+
+    /// Synthesize `text` using the engine matching `lang`. `.pt` always
+    /// routes to the Pt voice. `.en` routes to the En voice when loaded;
+    /// otherwise falls back to Pt (with a one-line warn on stderr —
+    /// callers swallow it). Any other value (`.auto`, `.mixed`,
+    /// `.unknown`) routes to Pt as the safe default.
+    pub fn synthLang(
+        self: *MultiPiperEngine,
+        arena: std.mem.Allocator,
+        text: []const u8,
+        lang: Route,
+    ) Error![]i16 {
+        return switch (lang) {
+            .pt => self.pt.synthToSamples(arena, text),
+            .en => if (self.en) |*en| en.synthToSamples(arena, text)
+            else self.pt.synthToSamples(arena, text),
+        };
+    }
+
+    /// True iff the En voice loaded successfully. Used by the daemon to
+    /// log the boot state and by the worker to decide whether to bother
+    /// detecting English at all.
+    pub fn hasEn(self: *const MultiPiperEngine) bool {
+        return self.en != null;
+    }
+
+    /// Sample rate of the Pt engine. Faber-medium = 22050; Amy-medium =
+    /// 22050 — same. zaudio resamples to device rate either way, so a
+    /// single value works for the daemon's playback path. If we ever
+    /// pair voices with different rates, surface this per-chunk instead.
+    pub fn sampleRate(self: *const MultiPiperEngine) u32 {
+        return self.pt.sampleRate();
+    }
+};
+
 /// Minimal RIFF/WAVE writer — 16-bit PCM mono.
 fn writeWav(io: std.Io, path: []const u8, samples: []const i16, sample_rate: u32) !void {
     var file = try std.Io.Dir.cwd().createFile(io, path, .{ .truncate = true });
