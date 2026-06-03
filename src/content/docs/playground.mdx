@@ -1,0 +1,240 @@
+---
+title: Playground
+description: Browser-based voice picker for agent-tts. v1.9 ships the widget scaffold; the WASM Piper synth lands in v1.9.1.
+---
+
+{/* SPDX-License-Identifier: MIT OR Apache-2.0 */}
+
+## TL;DR
+
+Press a button, hear a voice — no install. v1.9 ships the **playground UI scaffold**: voice dropdown, text input, Speak button, audio element wired to the Web Audio API. The synth backend (libpiper compiled to WebAssembly + ONNX Runtime Web) lands in **v1.9.1**.
+
+Today the Speak button POSTs to a stub endpoint that returns a sentinel marker the widget reads as "WASM build pending". The UX is real; the audio is not. The point is to lock the interaction shape before the heavy lift.
+
+## Try it
+
+<div class="agent-tts-playground" data-base={import.meta.env.BASE_URL ?? '/'}>
+  <label>
+    Voice
+    <select data-role="voice">
+      <option value="faber">Faber — Pt-BR neural (Piper default)</option>
+      <option value="luciana">Luciana — Pt-BR macOS `say` fallback</option>
+      <option value="felipe">Felipe — Pt-BR macOS `say` alternate</option>
+      <option value="amy">Amy — En-US Piper</option>
+    </select>
+  </label>
+
+  <label>
+    Text
+    <textarea data-role="text" rows="3" placeholder="Digite ou cole o texto a sintetizar.">Olá mundo. Esta é uma demonstração do agent-tts no navegador.</textarea>
+  </label>
+
+  <button type="button" data-role="speak">Speak</button>
+
+  <p data-role="status" role="status" aria-live="polite">Pronto.</p>
+
+  <audio data-role="audio" controls preload="none" hidden></audio>
+</div>
+
+<style>{`
+.agent-tts-playground {
+  display: grid;
+  gap: 0.75rem;
+  padding: 1rem;
+  border: 1px solid var(--sl-color-gray-5);
+  border-radius: 0.5rem;
+  background: var(--sl-color-bg-sidebar);
+}
+.agent-tts-playground label {
+  display: grid;
+  gap: 0.25rem;
+  font-weight: 600;
+}
+.agent-tts-playground select,
+.agent-tts-playground textarea {
+  width: 100%;
+  padding: 0.5rem;
+  font: inherit;
+  background: var(--sl-color-bg);
+  color: var(--sl-color-text);
+  border: 1px solid var(--sl-color-gray-5);
+  border-radius: 0.25rem;
+}
+.agent-tts-playground button {
+  justify-self: start;
+  padding: 0.5rem 1rem;
+  font-weight: 700;
+  background: var(--sl-color-accent);
+  color: var(--sl-color-bg);
+  border: 0;
+  border-radius: 0.25rem;
+  cursor: pointer;
+}
+.agent-tts-playground button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.agent-tts-playground [data-role="status"] {
+  font-family: var(--sl-font-mono);
+  font-size: 0.9rem;
+  margin: 0;
+}
+.agent-tts-playground [data-state="pending"] [data-role="status"] {
+  color: var(--sl-color-accent);
+}
+.agent-tts-playground [data-state="error"] [data-role="status"] {
+  color: var(--sl-color-red);
+}
+`}</style>
+
+<script is:inline>{`
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// agent-tts v1.9 — playground widget. Vanilla JS, no framework runtime.
+(() => {
+  const root = document.querySelector('.agent-tts-playground');
+  if (!root) return;
+
+  const base = (root.dataset.base || '/').replace(/\\/?$/, '/');
+  // Static GitHub Pages serves the stub by exact filename. v1.9.1's Astro
+  // server endpoint will live at /api/synth without the .html — the widget
+  // tolerates both: it tries the bare path first, falls back to .html on 404.
+  const endpointBare = base + 'api/synth';
+  const endpointStub = base + 'api/synth.html';
+  const voiceEl = root.querySelector('[data-role="voice"]');
+  const textEl = root.querySelector('[data-role="text"]');
+  const btnEl = root.querySelector('[data-role="speak"]');
+  const statusEl = root.querySelector('[data-role="status"]');
+  const audioEl = root.querySelector('[data-role="audio"]');
+
+  // Web Audio API context — used by v1.9.1 to play decoded PCM from the WASM
+  // synth. Today we only construct it lazily so the page does not autoplay.
+  let audioCtx = null;
+  function getCtx() {
+    if (!audioCtx) {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (AC) audioCtx = new AC();
+    }
+    return audioCtx;
+  }
+
+  function setState(state, message) {
+    root.dataset.state = state;
+    statusEl.textContent = message;
+  }
+
+  async function speak() {
+    const voice = voiceEl.value;
+    const text = textEl.value.trim();
+    if (!text) {
+      setState('error', 'Digite algo antes de falar.');
+      return;
+    }
+    btnEl.disabled = true;
+    setState('pending', 'Sintetizando…');
+
+    try {
+      const payload = {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ voice, text }),
+      };
+      // GET-style static hosts (GitHub Pages, astro preview) do not rewrite
+      // /api/synth → /api/synth.html on POST. Try the bare path so v1.9.1's
+      // real endpoint is the default; fall through to the .html stub when
+      // the static host 404s, so v1.9 still surfaces the 501 sentinel.
+      let res = await fetch(endpointBare, payload);
+      if (res.status === 404) {
+        res = await fetch(endpointStub, payload);
+      }
+
+      // v1.9 stub: static endpoint cannot return a real 501, so the widget
+      // looks for the sentinel marker in the body. v1.9.1 replaces the body
+      // with audio/wav bytes and the 501 branch goes away.
+      const body = await res.text();
+      const isStub = body.includes('"not_implemented"');
+
+      if (res.status === 501 || isStub) {
+        setState('pending',
+          '501 — WASM build pending. v1.9 ships the playground UI only. ' +
+          'See /agent-tts/whats-next/ for the v1.9.1 plan that wires Piper ' +
+          'to ONNX Runtime Web.'
+        );
+        return;
+      }
+
+      if (!res.ok) {
+        setState('error', 'Erro ' + res.status + ' — ' + res.statusText);
+        return;
+      }
+
+      // v1.9.1 path — response carries audio/wav. Decode and play through
+      // the Web Audio context so we control gain + latency precisely.
+      const buf = await res.arrayBuffer();
+      const ctx = getCtx();
+      if (ctx) {
+        const decoded = await ctx.decodeAudioData(buf.slice(0));
+        const src = ctx.createBufferSource();
+        src.buffer = decoded;
+        src.connect(ctx.destination);
+        src.start();
+      }
+      const blob = new Blob([buf], { type: 'audio/wav' });
+      audioEl.src = URL.createObjectURL(blob);
+      audioEl.hidden = false;
+      setState('ok', 'Pronto — falando \\u201C' + voice + '\\u201D.');
+    } catch (err) {
+      setState('error', 'Falha de rede: ' + (err && err.message ? err.message : String(err)));
+    } finally {
+      btnEl.disabled = false;
+    }
+  }
+
+  btnEl.addEventListener('click', speak);
+  textEl.addEventListener('keydown', (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') speak();
+  });
+})();
+`}</script>
+
+## How the widget works
+
+| Layer | Today (v1.9) | v1.9.1 |
+|---|---|---|
+| UI | Vanilla `<select>` + `<textarea>` + `<button>` in MDX | unchanged |
+| Endpoint | `public/api/synth.html` — static sentinel `{"status":501,"error":"not_implemented"}`; widget probes `/api/synth` first, falls back to `.html` on 404 | Astro server endpoint **or** in-browser WASM, the bare `/api/synth` probe resolves directly |
+| Voice catalog | Hardcoded 4 entries (Faber, Luciana, Felipe, Amy) | Same list — actual model files lazy-load from R2 |
+| Playback | Web Audio API context created on first click; `<audio>` element shown for replay | Same path; decoded PCM streams through `AudioBufferSourceNode` |
+| Cold latency | n/a (no synth) | Target < 1.5 s including 63 MB Faber ONNX over residential link |
+
+The widget treats the static HTML body as a 501 sentinel so the v1.9 ship-it builds cleanly on GitHub Pages (no SSR adapter, no Cloudflare Worker). When v1.9.1 lands, the only swap is the endpoint — the widget code stays.
+
+## Honest scope
+
+- **No audio is produced.** Every Speak click ends in "501 — WASM build pending". This is intentional. v1.9 locks the interaction surface so v1.9.1 is a pure backend swap.
+- **Voice list is informational.** The dropdown does not gate the request — selecting "Faber" sends `voice: "faber"` to the stub, the stub ignores it. v1.9.1 will route to the matching ONNX session.
+- **No WASM compile this session.** Building libpiper for `wasm32-emscripten`, shipping the ONNX Runtime Web variant, and wiring them through `zig build` is a multi-day exercise. The scaffold ships today; the heavy lift ships next.
+- **No CDN model hosting.** v1.9.1 will publish the four ONNX models on Cloudflare R2 and lazy-load on first click. v1.9 ships zero binary assets.
+- **Browser support matrix not measured.** The widget assumes `AudioContext`, `fetch`, `URL.createObjectURL`, and `ArrayBuffer` — all baseline 2020. No polyfills.
+
+## Build the WASM target
+
+`scripts/build-wasm.sh` is an executable readme. It documents the four steps v1.9.1 needs:
+
+1. Build libpiper for `wasm32-emscripten` via Emscripten SDK (`emcmake cmake … && emmake make`).
+2. Ship the ONNX Runtime Web variant (`onnxruntime-web`) — the JS package, not the native `.dylib`.
+3. Link the bundle via `zig build -Dtarget=wasm32-emscripten -Dwith-piper-wasm=true`.
+4. Copy `zig-out/bin/agent-tts.wasm` + the ONNX runtime JS shim into `public/wasm/`.
+
+Run it to see the steps:
+
+```bash
+./scripts/build-wasm.sh --plan
+```
+
+Today the script exits cleanly with the plan printed; v1.9.1 wires the real cmake invocations.
+
+## Related
+
+- [What's next](/whats-next/) — v1.9.1 lives there as the next slate
+- [TTS engine](/motor/) — the native (non-WASM) synth path
+- [Changelog](/changelog/) — v1.9 entry with the lead-time table

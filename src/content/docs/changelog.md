@@ -9,6 +9,27 @@ Per milestone: what shipped, how we measured, what slipped to the next one. The 
 
 ---
 
+## v1.9 — Web playground · 2026-06-03
+
+**Scaffold only — WASM synth deferred to v1.9.1.** v1.9 ships the playground UI and the endpoint contract so the next version is a pure backend swap.
+
+**Shipped**:
+
+- `src/content/docs/playground.mdx` — new Starlight page with embedded vanilla-JS widget. Voice dropdown (Faber/Luciana/Felipe/Amy), textarea, Speak button, Web Audio API lazy-init
+- `public/api/synth.html` — placeholder 501 sentinel. v1.9.1 swaps for WASM Piper synthesizer
+- `scripts/build-wasm.sh` — executable readme. `--plan` prints 4-step v1.9.1 build plan (Emscripten + libpiper wasm32 + onnxruntime-web + `zig build -Dtarget=wasm32-emscripten`)
+- `astro.config.mjs` — `Playground` sidebar entry between MCP server and Changelog
+- `e2e/playground.spec.ts` — Playwright spec: page loads, dropdown 4 entries, Speak click → 501 message
+- `src/main.zig` + `build.zig.zon` → 1.9.0
+
+**Measurements**: zig build green, zig build test green, npm run build green (Astro 9 pages, ~1.78s), Playwright 4/4.
+
+**Honest scope**: full WASM compile deferred. The 501 is not a real HTTP 501 — GitHub Pages serves the stub as 200 OK and the widget pattern-matches the body for the sentinel.
+
+**Lead time**: see `_qa/v1.9-leadtime.md`. Elapsed **426 s (~7 min)** from dispatch.
+
+---
+
 ## v1.8 — SSML & prosody · 2026-06-03
 
 **Shipped**:

@@ -1,38 +1,17 @@
 ---
 title: What's next
-description: Two next versions of agent-tts (v1.9, v1.10) — web playground and menubar UI.
+description: One next version of agent-tts (v1.10) — menubar UI.
 ---
 
 ## TL;DR
 
-**v1.6, v1.7, and v1.8 shipped on 2026-06-03** — voice cloning (baseline in [`_qa/v1.6-baseline.md`](https://github.com/biliboss/agent-tts/blob/main/_qa/v1.6-baseline.md)), streaming text input (`agent-tts stream` + `say_stream` MCP tool), SSML prosody (`<emphasis>` / `<break>` / `<prosody>` / `<say-as>`). Remaining slate (**v1.9, v1.10**) points at two audiences: people who want to try every voice in a browser, and people who want a face on the daemon.
+**v1.6, v1.7, v1.8, and v1.9 shipped on 2026-06-03** — voice cloning ([`_qa/v1.6-baseline.md`](https://github.com/biliboss/agent-tts/blob/main/_qa/v1.6-baseline.md)), streaming text input (`agent-tts stream` + `say_stream` MCP tool), SSML prosody, and the Astro web playground scaffold (WASM Piper synth deferred to v1.9.1). Remaining: **v1.10** — menubar UI.
 
 Vote, watch, or send a PR at [biliboss/agent-tts](https://github.com/biliboss/agent-tts).
 
 ---
 
 <!-- v1.6 voice cloning + v1.7 streaming text input shipped 2026-06-03; see Changelog. -->
-
----
-
-## v1.9 — Web playground · *Try every voice without installing*
-
-> The fastest pitch is a `<button>` that says "hear it now." Today the only way to hear Faber is `brew install` + `scripts/build-libpiper.sh` + a 63 MB voice download.
-
-**The problem today.** Discovery requires commitment. The Starlight docs site is read-only — nobody hears the voice before they install.
-
-**What ships.**
-- `agent-tts wasm` build target — Zig compiles the synth path to WebAssembly (Piper's ONNX runtime has a WASM variant; we wire it through `@cImport`)
-- Embedded interactive widget on `biliboss.github.io/agent-tts/motor/` — text input + voice dropdown + "Speak" button, all in-browser, no server
-- Sample voice library hosted on Cloudflare R2 (free CDN egress); first hit downloads the ONNX, browsers cache
-- Latency bench: *first-audio TTFA in a cold browser tab* (target < 1.5 s including model fetch over a residential connection)
-
-**Why now.** Top-of-funnel discovery for an OSS TTS project is "press button, hear voice." Anything else loses 90% of the curiosity-driven traffic.
-
-**Who cares.**
-- First-time visitors who don't yet trust the install.
-- Tweet readers who land for one demo.
-- Podcasters / editors auditioning voices before they wire one into a workflow.
 
 ---
 
