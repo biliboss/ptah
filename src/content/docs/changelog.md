@@ -9,6 +9,62 @@ Per milestone: what shipped, how we measured, what slipped to the next one. The 
 
 ---
 
+## v1.9 — Web playground · 2026-06-03
+
+**Scaffold only — WASM synth deferred to v1.9.1.** v1.9 ships the playground UI and the endpoint contract so the next version is a pure backend swap. No audio is produced today.
+
+**Shipped**:
+
+- `src/content/docs/playground.mdx` — new Starlight page with an embedded vanilla-JS widget (no framework runtime). Voice dropdown (Faber, Luciana, Felipe, Amy), `<textarea>` text input, Speak button. Web Audio API context wired and lazy-constructed on first click; `<audio>` element reserved for replay. `Cmd+Enter` / `Ctrl+Enter` in the textarea also triggers Speak
+- `public/api/synth.html` — placeholder endpoint. Static-site builds (GitHub Pages) cannot return a real HTTP 501 from a POST, so the body carries a sentinel `{"status":501,"error":"not_implemented"}` the widget reads. v1.9.1 swaps this file for a real WASM Piper synthesizer (Astro server endpoint OR in-browser WASM)
+- `scripts/build-wasm.sh` — executable readme. `--plan` prints the 4-step v1.9.1 build plan (Emscripten SDK + libpiper wasm32-emscripten + onnxruntime-web + `zig build -Dtarget=wasm32-emscripten`); `--check` adds a toolchain audit; `--run` is a no-op today. Doesn't actually compile — exits cleanly
+- `astro.config.mjs` — `Playground` sidebar entry inserted between `MCP server` and `Changelog`. No conflict with the v1.6–v1.8/v1.10 sidebar plans (those add other pages; sidebar order is stable)
+- `e2e/playground.spec.ts` — Playwright spec: page loads, voice dropdown has the 4 expected entries, text input + Speak button visible, Speak click surfaces the 501 "WASM build pending — see v1.9.1" message via the static stub
+- `e2e/pages.spec.ts` — `Playground` added to the navigation entries; `MCP server` also added (was missing from the original list, drift caught while editing)
+- `src/main.zig` — `VERSION = "1.9.0"`
+- `build.zig.zon` — `.version = "1.9.0"`
+- `src/content/docs/whats-next.md` — v1.9 section removed (shipped); v1.6/v1.7/v1.8/v1.10 unchanged
+- `src/content/docs/roadmap.md` — v1.9 row added to the shipped table
+
+**Measurements** (Mac Air M4, ReleaseFast, Astro 5.x + Node 25):
+
+| Metric | Value | v1.9 target |
+|---|---|---|
+| `zig build` | clean | green ✅ |
+| `zig build test` | green | green ✅ |
+| `npm run build` (Astro static) | clean | green ✅ |
+| Playground page rendered | yes — H1, dropdown, button, status | scaffold ✅ |
+| Speak click → 501 sentinel surfaced | yes — widget renders "WASM build pending" copy | scaffold ✅ |
+| Cold TTFA in browser | n/a — no synth | informational, lands in v1.9.1 |
+
+**Lead time**:
+
+| event | unix ts | delta |
+|---|---|---|
+| start | 1780527235 | — |
+| commit | see `_qa/v1.9-leadtime.md` | see file |
+
+**Honest scope**:
+
+- **Full WASM compile of Piper + ONNX Runtime in one session was not feasible.** v1.9 ships the scaffold + the Astro widget + a clear handoff for the heavy lift. **Pretending v1.9 shipped Piper WASM end-to-end would be dishonest.** v1.9.1 owns the cmake + emmake + zig build wasm32 work.
+- **The 501 is not a real HTTP 501.** GitHub Pages serves the stub as `200 OK text/html`; the widget pattern-matches the body for the sentinel. The behaviour is indistinguishable to the user; the code path that handles a real 501 is also live.
+- **No voice ONNX hosting.** Cloudflare R2 wiring + the 63 MB Faber model upload land in v1.9.1.
+- **Browser support matrix not measured.** Widget assumes baseline 2020 (`AudioContext`, `fetch`, `URL.createObjectURL`, `ArrayBuffer`). No polyfills.
+- **Sidebar conflict risk vs v1.6/v1.7/v1.8/v1.10**: low. v1.6 (voice cloning) and v1.7 (streaming) reuse the `motor` page; v1.8 (SSML) and v1.10 (menubar UI) get their own pages if they ship, slotted around `Playground`. The slot between `MCP server` and `Changelog` is stable for the doc-site IA.
+
+**Try it**:
+
+```bash
+cd 99-development/agent-tts
+npm install
+npm run build          # static GitHub Pages bundle
+npm run preview        # http://localhost:4321/agent-tts/playground/
+```
+
+Click Speak — the widget renders the 501 "WASM build pending" message. That is the v1.9 ship-it.
+
+---
+
 ## v1.5 — MCP server · 2026-06-03
 
 **Shipped**:

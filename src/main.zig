@@ -42,7 +42,7 @@ const voice = @import("voice.zig");
 const mcp = @import("mcp.zig");
 const build_options = @import("build_options");
 
-pub const VERSION = "1.5.0";
+pub const VERSION = "1.9.0";
 
 const HELP =
     \\agent-tts v{s} — multilingual TTS via system voice or libpiper

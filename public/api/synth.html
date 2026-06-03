@@ -1,0 +1,20 @@
+<!--
+SPDX-License-Identifier: MIT OR Apache-2.0
+
+agent-tts v1.9 — placeholder synth endpoint.
+
+Static-site builds (GitHub Pages) cannot return a real HTTP 501 from a POST
+endpoint. v1.9 ships the playground scaffold only: the widget POSTs here,
+reads back this sentinel, and renders the "WASM build pending — see v1.9.1"
+message.
+
+v1.9.1 replaces this file with a real WASM Piper synthesizer:
+- swap to `src/pages/api/synth.ts` (Astro server endpoint, SSR adapter)
+- or load `agent-tts.wasm` in the browser and run synth client-side, fetch()
+  resolves locally without a network round trip
+- response body becomes audio/wav binary instead of this stub
+-->
+<!doctype html>
+<meta charset="utf-8">
+<title>agent-tts /api/synth — 501 placeholder</title>
+<pre data-stub="not-implemented" data-version="1.9.0">{"status":501,"error":"not_implemented","message":"WASM synth deferred to v1.9.1","upgrade":"see /agent-tts/whats-next/ for the v1.9.1 plan"}</pre>

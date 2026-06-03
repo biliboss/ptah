@@ -1,11 +1,11 @@
 ---
 title: What's next
-description: Five next versions of agent-tts (v1.6 → v1.10) — voice cloning ship-it, streaming text input, SSML/prosody, web playground, and menubar UI.
+description: Four next versions of agent-tts (v1.6 → v1.10, minus v1.9 which shipped) — voice cloning ship-it, streaming text input, SSML/prosody, and menubar UI.
 ---
 
 ## TL;DR
 
-The whole **v1.1 → v1.5** marketing slate shipped on **2026-06-03**. The next slate (**v1.6 → v1.10**) takes the runtime and points it at five distinct audiences: people who want their cloned voice to actually work, people who want the agent to start speaking before it finishes thinking, people who want their agent to inflect, people who want to try every voice in a browser, and people who want a face on the daemon.
+The whole **v1.1 → v1.5** marketing slate shipped on **2026-06-03**, plus **v1.9** (Web playground scaffold) the same day. The remaining slate (**v1.6 → v1.10**, minus v1.9) takes the runtime and points it at four distinct audiences: people who want their cloned voice to actually work, people who want the agent to start speaking before it finishes thinking, people who want their agent to inflect, and people who want a face on the daemon. The v1.9.1 follow-up (WASM Piper synth wired into the playground) is tracked separately.
 
 Vote, watch, or send a PR at [biliboss/agent-tts](https://github.com/biliboss/agent-tts).
 
@@ -72,27 +72,6 @@ Vote, watch, or send a PR at [biliboss/agent-tts](https://github.com/biliboss/ag
 - Studios producing AI narration / podcasts.
 - Educational tools where pacing affects comprehension.
 - Anyone building a voice agent that should sound less robotic than the *current* state-of-the-art.
-
----
-
-## v1.9 — Web playground · *Try every voice without installing*
-
-> The fastest pitch is a `<button>` that says "hear it now." Today the only way to hear Faber is `brew install` + `scripts/build-libpiper.sh` + a 63 MB voice download.
-
-**The problem today.** Discovery requires commitment. The Starlight docs site is read-only — nobody hears the voice before they install.
-
-**What ships.**
-- `agent-tts wasm` build target — Zig compiles the synth path to WebAssembly (Piper's ONNX runtime has a WASM variant; we wire it through `@cImport`)
-- Embedded interactive widget on `biliboss.github.io/agent-tts/motor/` — text input + voice dropdown + "Speak" button, all in-browser, no server
-- Sample voice library hosted on Cloudflare R2 (free CDN egress); first hit downloads the ONNX, browsers cache
-- Latency bench: *first-audio TTFA in a cold browser tab* (target < 1.5 s including model fetch over a residential connection)
-
-**Why now.** Top-of-funnel discovery for an OSS TTS project is "press button, hear voice." Anything else loses 90% of the curiosity-driven traffic.
-
-**Who cares.**
-- First-time visitors who don't yet trust the install.
-- Tweet readers who land for one demo.
-- Podcasters / editors auditioning voices before they wire one into a workflow.
 
 ---
 
