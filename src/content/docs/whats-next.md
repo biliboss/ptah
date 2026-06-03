@@ -1,11 +1,11 @@
 ---
 title: What's next
-description: Five next versions of agent-tts — voice cloning ship-it, streaming text input, SSML/prosody, web playground, and menubar UI.
+description: Five next versions of agent-tts (v1.6 → v1.10) — voice cloning ship-it, streaming text input, SSML/prosody, web playground, and menubar UI.
 ---
 
 ## TL;DR
 
-The whole **v1.1 → v1.5** marketing slate shipped on **2026-06-03**. The next slate (**v1.6 → v2.0**) takes the runtime and points it at five distinct audiences: people who want their cloned voice to actually work, people who want the agent to start speaking before it finishes thinking, people who want their agent to inflect, people who want to try every voice in a browser, and people who want a face on the daemon.
+The whole **v1.1 → v1.5** marketing slate shipped on **2026-06-03**. The next slate (**v1.6 → v1.10**) takes the runtime and points it at five distinct audiences: people who want their cloned voice to actually work, people who want the agent to start speaking before it finishes thinking, people who want their agent to inflect, people who want to try every voice in a browser, and people who want a face on the daemon.
 
 Vote, watch, or send a PR at [biliboss/agent-tts](https://github.com/biliboss/agent-tts).
 
@@ -96,9 +96,9 @@ Vote, watch, or send a PR at [biliboss/agent-tts](https://github.com/biliboss/ag
 
 ---
 
-## v2.0 — Menubar UI · *Voice agent gets a face*
+## v1.10 — Menubar UI · *Voice agent gets a face*
 
-> The daemon runs invisible. Skip/clear/queue are CLI verbs. v2.0 ships a 200×400 menubar app showing the queue, the currently-playing item, and a one-click voice picker.
+> The daemon runs invisible. Skip/clear/queue are CLI verbs. v1.10 ships a 200×400 menubar app showing the queue, the currently-playing item, and a one-click voice picker.
 
 **The problem today.** `agent-tts queue` is the only window into the daemon. There is no skip button, no volume slider, no visual cue that the agent just started speaking.
 
@@ -110,7 +110,7 @@ Vote, watch, or send a PR at [biliboss/agent-tts](https://github.com/biliboss/ag
 - Linux equivalent ships as a GTK4 status icon (best-effort, less polish)
 - The daemon stays unchanged — UI is a thin LiveView-style client, all state lives on the socket
 
-**Why now.** Once an agent speaks well, the next question is "how do I see what it's doing?" v2.0 makes the daemon legible. Also, "menubar app" is the proof-point that puts agent-tts on Product Hunt and into "AI tools for Mac" lists.
+**Why now.** Once an agent speaks well, the next question is "how do I see what it's doing?" v1.10 makes the daemon legible. Also, "menubar app" is the proof-point that puts agent-tts on Product Hunt and into "AI tools for Mac" lists.
 
 **Who cares.**
 - Power users who like agent voice but want visible controls.
