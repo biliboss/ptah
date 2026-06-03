@@ -6,7 +6,7 @@ on:
   pull_request:
 
 jobs:
-  build-test:
+  build-test-macos:
     name: build + test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
@@ -41,10 +41,71 @@ jobs:
           pkill -f "agent-tts daemon" || true
           cat /tmp/daemon.log
 
+  # v1.3 — Linux build proves the cross-platform refactor compiles and
+  # links on a real Linux host. The macOS host cannot link the Linux
+  # binary (missing libsqlite3 + libasound system libs); CI is the
+  # source of truth for the Linux green build.
+  build-test-linux:
+    name: build + test (ubuntu-latest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Zig 0.16
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Install Linux system libs
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libsqlite3-dev \
+            libasound2-dev \
+            espeak-ng
+
+      - name: zig fmt --check
+        run: zig fmt --check src build.zig
+
+      - name: zig build (host, no piper)
+        run: zig build -Doptimize=ReleaseFast
+
+      - name: zig build test
+        run: zig build test --summary all
+
+      - name: smoke daemon + enqueue (espeak-ng)
+        run: |
+          ./zig-out/bin/agent-tts --version
+          ./zig-out/bin/agent-tts daemon > /tmp/daemon.log 2>&1 &
+          sleep 3
+          ./zig-out/bin/agent-tts --engine say "CI smoke test"
+          sleep 1
+          ./zig-out/bin/agent-tts queue
+          pkill -f "agent-tts daemon" || true
+          cat /tmp/daemon.log
+
+  # v1.3 — Windows is best-effort. Marked continue-on-error: tts.zig
+  # spawns powershell System.Speech but the path has never been runtime-
+  # tested. CI guarantees the source compiles; nothing more.
+  build-windows:
+    name: build (windows-latest, best-effort)
+    runs-on: windows-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Zig 0.16
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: zig build (host, no piper)
+        run: zig build -Doptimize=ReleaseFast
+
   universal:
     name: universal binary build
     runs-on: macos-14
-    needs: build-test
+    needs: build-test-macos
     steps:
       - uses: actions/checkout@v4
       - uses: mlugg/setup-zig@v2

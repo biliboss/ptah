@@ -10,6 +10,16 @@ const std = @import("std");
 // linker would fail to find `-lsqlite3`. The tbd ships stubs for both
 // x86_64-macos and arm64e-macos; arm64 (Apple Silicon non-e) links it
 // fine because Zig falls back to arm64e symbols for non-secure arm64.
+//
+// v1.3 — Cross-platform: per-target audio backend wiring.
+//   macOS    → CoreAudio + AudioUnit + AudioToolbox frameworks
+//   linux    → ALSA (asound) + PulseAudio runtime-linked by miniaudio
+//   windows  → winmm + ole32 (best-effort, runtime untested)
+//
+// `configureExe` switches on `target.result.os.tag` for the audio system
+// libs + miniaudio compile defines. The cross-compile SDK probe stays
+// macOS-only — Linux/Windows resolve system libs via the standard zig
+// search paths (or the GitHub-Actions-installed `libasound2-dev`).
 
 fn configureExe(
     b: *std.Build,
@@ -45,29 +55,93 @@ fn configureExe(
     // file invokes `linkLibC()` on a Compile step, an API removed in
     // Zig 0.16. Vendoring the .zig + .c sources keeps us on the upstream
     // SHA without forking.
-    if (target.result.os.tag == .macos) {
-        exe.root_module.addIncludePath(b.path("vendor/zaudio/libs/miniaudio"));
-        exe.root_module.addCSourceFile(.{
-            .file = b.path("vendor/zaudio/src/zaudio.c"),
-            .flags = &.{ "-std=c99", "-fno-sanitize=undefined" },
-        });
-        exe.root_module.addCSourceFile(.{
-            .file = b.path("vendor/zaudio/libs/miniaudio/miniaudio.c"),
-            .flags = &.{
-                "-DMA_NO_WEBAUDIO",
-                "-DMA_NO_NULL",
-                "-DMA_NO_JACK",
-                "-DMA_NO_DSOUND",
-                "-DMA_NO_WINMM",
-                "-DMA_NO_RUNTIME_LINKING",
-                "-std=c99",
-                "-fno-sanitize=undefined",
-            },
-        });
-        exe.root_module.linkFramework("CoreAudio", .{});
-        exe.root_module.linkFramework("CoreFoundation", .{});
-        exe.root_module.linkFramework("AudioUnit", .{});
-        exe.root_module.linkFramework("AudioToolbox", .{});
+    //
+    // v1.3: per-target backend. miniaudio compiles all backends into the
+    // same C source; the MA_NO_<BACKEND> defines flip them off so we only
+    // pull link-time symbols for the platform we're building. The vendored
+    // zaudio.zig is unchanged across targets — only the underlying linkage
+    // and miniaudio defines change.
+    exe.root_module.addIncludePath(b.path("vendor/zaudio/libs/miniaudio"));
+    exe.root_module.addCSourceFile(.{
+        .file = b.path("vendor/zaudio/src/zaudio.c"),
+        .flags = &.{ "-std=c99", "-fno-sanitize=undefined" },
+    });
+
+    const ma_flags: []const []const u8 = switch (target.result.os.tag) {
+        .macos => &.{
+            "-DMA_NO_WEBAUDIO",
+            "-DMA_NO_NULL",
+            "-DMA_NO_JACK",
+            "-DMA_NO_DSOUND",
+            "-DMA_NO_WINMM",
+            "-DMA_NO_RUNTIME_LINKING",
+            "-std=c99",
+            "-fno-sanitize=undefined",
+        },
+        .linux => &.{
+            // ALSA + PulseAudio enabled; PulseAudio uses runtime linking
+            // (dlopen) so we don't need libpulse-dev at build time. ALSA
+            // is linked statically against libasound — provided by
+            // libasound2-dev on Debian / alsa-lib-devel on Fedora.
+            "-DMA_NO_WEBAUDIO",
+            "-DMA_NO_NULL",
+            "-DMA_NO_JACK",
+            "-DMA_NO_DSOUND",
+            "-DMA_NO_WINMM",
+            "-DMA_NO_COREAUDIO",
+            "-std=c99",
+            "-fno-sanitize=undefined",
+        },
+        .windows => &.{
+            // WASAPI is the modern path; winmm kept as fallback for older
+            // hosts. DSOUND off — needs DirectX SDK. No runtime linking
+            // because we link ole32 statically below.
+            "-DMA_NO_WEBAUDIO",
+            "-DMA_NO_NULL",
+            "-DMA_NO_JACK",
+            "-DMA_NO_COREAUDIO",
+            "-DMA_NO_ALSA",
+            "-DMA_NO_PULSEAUDIO",
+            "-DMA_NO_RUNTIME_LINKING",
+            "-std=c99",
+            "-fno-sanitize=undefined",
+        },
+        else => &.{
+            "-DMA_NO_WEBAUDIO",
+            "-DMA_NO_NULL",
+            "-DMA_NO_JACK",
+            "-std=c99",
+            "-fno-sanitize=undefined",
+        },
+    };
+    exe.root_module.addCSourceFile(.{
+        .file = b.path("vendor/zaudio/libs/miniaudio/miniaudio.c"),
+        .flags = ma_flags,
+    });
+
+    switch (target.result.os.tag) {
+        .macos => {
+            exe.root_module.linkFramework("CoreAudio", .{});
+            exe.root_module.linkFramework("CoreFoundation", .{});
+            exe.root_module.linkFramework("AudioUnit", .{});
+            exe.root_module.linkFramework("AudioToolbox", .{});
+        },
+        .linux => {
+            // ALSA is the lowest-common-denominator on Linux — every
+            // pulseaudio/pipewire stack still falls back to it for direct
+            // hardware access. Header is asound.h; library is libasound.so.
+            // PulseAudio is runtime-linked by miniaudio (no -lpulse needed).
+            // libpthread + libm are pulled in transitively via link_libc=true
+            // set on the root module (see build() below).
+            exe.root_module.linkSystemLibrary("asound", .{});
+        },
+        .windows => {
+            // winmm provides waveOut* for the legacy backend; ole32 is
+            // required by WASAPI for CoInitializeEx + IMMDeviceEnumerator.
+            exe.root_module.linkSystemLibrary("winmm", .{});
+            exe.root_module.linkSystemLibrary("ole32", .{});
+        },
+        else => {},
     }
 
     if (with_piper) {
@@ -238,6 +312,40 @@ pub fn build(b: *std.Build) void {
     });
     const run_preproc_tests = b.addRunArtifact(preproc_tests);
 
+    // v1.3 — platform dispatcher tests (pure: std + builtin only).
+    const platform_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/platform.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_platform_tests = b.addRunArtifact(platform_tests);
+
+    // v1.3 — tts.zig tests (mapLinuxVoice + comptime platform dispatch
+    // smoke). Pulls preproc + ipc + platform via @import; none of them
+    // require sqlite/zaudio/libc beyond std defaults.
+    const tts_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/tts.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_tts_tests = b.addRunArtifact(tts_tests);
+
+    // v1.3 — systemd unit rendering tests. Compiles on every host because
+    // the module is pure std (no Linux-only syscalls at parse time); the
+    // tests only render strings, never spawn systemctl.
+    const systemd_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/systemd.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_systemd_tests = b.addRunArtifact(systemd_tests);
+
     // Benchmark executable for the preprocessor (used to populate
     // _qa/v0.5-baseline.md). Build in ReleaseFast for realistic numbers.
     const preproc_mod = b.createModule(.{
@@ -262,4 +370,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_mod_tests.step);
     test_step.dependOn(&run_exe_tests.step);
     test_step.dependOn(&run_preproc_tests.step);
+    test_step.dependOn(&run_platform_tests.step);
+    test_step.dependOn(&run_tts_tests.step);
+    test_step.dependOn(&run_systemd_tests.step);
 }

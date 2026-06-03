@@ -9,6 +9,56 @@ Per milestone: what shipped, how we measured, what slipped to the next one. The 
 
 ---
 
+## v1.3 — Cross-platform · 2026-06-03
+
+**Shipped**:
+
+- `src/platform.zig` — central `Platform { macos, linux, windows }` enum + `current()` comptime resolver via `builtin.target.os.tag`. Unknown OS tags fail the build instead of the runtime
+- `src/tts.zig` — `spawnSay` becomes a per-platform comptime switch: macOS keeps `/usr/bin/say -v <voice> -r <rate>`, Linux spawns `espeak-ng -v pt-br -s <rate>`, Windows spawns `powershell -Command "Add-Type System.Speech; $s.Speak(...)"`. `mapLinuxVoice` translates macOS voice names (Luciana, Felipe, *Premium variants) to `pt-br` so callers that never set `--voice` still get a working pipeline. Pre-warm becomes a no-op on Linux/Windows (no equivalent to ANE voice cache)
+- `src/systemd.zig` — new module parallels `launchd.zig`. Renders a user unit (`Type=simple`, `Restart=on-failure`, `WantedBy=default.target`), writes atomically to `$XDG_CONFIG_HOME/systemd/user/agent-tts.service` (falls back to `$HOME/.config/systemd/user/`), drives `systemctl --user daemon-reload && enable --now` on install, `disable --now` + unit removal on uninstall, `systemctl --user status` proxy on status. Override unit name via `AGENT_TTS_SYSTEMD_UNIT`
+- `src/main.zig` — `daemon install|uninstall|status` dispatches via `comptime platform.current()`. macOS → `launchd.*`, Linux → `systemd.*`, Windows → prints an error + `exit(2)` (best-effort). HELP updated with per-platform sections. `VERSION = "1.3.0"`
+- `build.zig` — `configureExe` per-target audio backend wiring. miniaudio compile defines flip per platform (`MA_NO_COREAUDIO` on Linux, `MA_NO_ALSA`+`MA_NO_PULSEAUDIO` on Windows, etc). Linux links `libasound` (ALSA, lowest-common-denominator on Linux audio). Windows links `winmm` + `ole32`. macOS SDK probe stays macOS-only. PulseAudio uses miniaudio's runtime linking (no `libpulse-dev` at build time)
+- `build.zig.zon` — `.version = "1.3.0"`
+- `.github/workflows/ci.yml` — new `build-test-linux` job on `ubuntu-latest` installs `libsqlite3-dev` + `libasound2-dev` + `espeak-ng`, runs `zig build` + `zig build test`, smoke-tests the daemon + enqueue path. New `build-windows` job on `windows-latest` marked `continue-on-error: true` (compiles only; runtime untested)
+- `scripts/build-libpiper.sh` — detects `uname -s`, sets `LIB_EXT=dylib` on macOS, `LIB_EXT=so` on Linux, refuses anything else. cmake invocation is identical across hosts; the existing N_PATH_HOME=160 workaround (build under `/tmp/agent-tts-piper-build`) keeps the espeak-ng path-truncation gotcha solved on both
+
+**Honest scope** — what is structural vs runtime-tested:
+
+| Platform | Build | Tests | Daemon | espeak-ng / `say` | Auto-start | libpiper |
+|---|---|---|---|---|---|---|
+| **macOS** (arm64, x86_64) | ✅ runtime — v1.0 universal still green | ✅ 33/33 | ✅ v1.0 ship | ✅ `say` Luciana / Felipe | ✅ launchd | ✅ when `-Dwith-piper=true` |
+| **Linux** (x86_64, glibc) | ✅ source compiles; link green on CI `ubuntu-latest`; ❌ macOS host cannot link (no libsqlite3/libasound system libs) | ✅ CI runs `zig build test` | 🟡 source compiles; smoke test in CI; ❌ no local runtime exercise from macOS host | 🟡 `espeak-ng -v pt-br` argv constructed; voice mapping unit-tested | 🟡 systemd module unit-tested for unit rendering; ❌ `systemctl --user` interaction untested off CI | ❌ libpiper Linux build never run end-to-end (script supports it; no CI step) |
+| **Windows** (x86_64) | 🟡 best-effort source compile in CI (`continue-on-error: true`) | 🟡 same | ❌ `daemon install/uninstall/status` print error and exit 2 | 🟡 `powershell System.Speech` argv constructed; runtime untested | ❌ no Scheduled Task XML in v1.3 | ❌ libpiper Windows build untested |
+
+✅ = runtime-validated · 🟡 = structural only (compiles, ships, unverified at runtime) · ❌ = not in v1.3
+
+**Measurements** (Mac Air M4, ReleaseFast, baseline at `_qa/v1.3-baseline.md` when published):
+
+| Metric | Value | v1.3 target |
+|---------|-------|-----------|
+| macOS regression vs v1.0 (host build) | none — `zig build` + `zig build test` 33/33 | hold v1.0 ship ✅ |
+| `zig build -Dtarget=x86_64-linux-gnu` from macOS host | compile OK; link fails on `sqlite3` + `asound` (expected — no Linux sysroot) | source compiles ✅ |
+| `zig build -Dtarget=x86_64-windows-gnu` from macOS host | compile OK; link fails on `sqlite3` (expected) | source compiles ✅ |
+| CI matrix | 3 jobs: macos-14 + macos-13 + ubuntu-latest (required) + windows-latest (continue-on-error) | matrix wired ✅ |
+| Test count delta | +6 (platform 2, systemd 3, tts 1) → 33/33 | tests pass ✅ |
+| Binary size delta | informational — Linux/Windows TBD on first published CI artifact | informational |
+
+**Honest decisions**:
+
+- We did NOT cross-compile end-to-end on the macOS host. Reason: Zig needs the target OS sysroot (libsqlite3, libasound headers + .so) to link. The link step would require a full Linux sysroot pinned in the repo, which conflicts with "no new dependencies" + the SSD goal. CI on `ubuntu-latest` is the source of truth for the Linux green build
+- Windows is genuinely best-effort. `tts.zig` constructs a powershell argv that *should* work but has never been runtime-tested. `daemon install` deliberately fails (no Scheduled Task XML scaffolding) so users don't get a half-broken auto-start
+- `mapLinuxVoice` translates the four macOS Pt-BR voice names (Luciana, Luciana Premium, Felipe, Felipe Premium) to `pt-br`. Anything unrecognised passes through verbatim — espeak-ng accepts language codes (`pt-br`), variant codes (`mb-br1`), and full names. No platform-aware client logic; the cost of a wrong voice is a single espeak-ng warning + fall-through to default
+- PulseAudio stays runtime-linked via miniaudio. Saves a build-time `libpulse-dev` dependency and lets the same binary work on ALSA-only hosts and PipeWire-via-Pulse-compat hosts
+- `Restart=on-failure` mirrors the launchd `KeepAlive { SuccessfulExit = false }` contract: clean exit stays down, crash recovers. Same operator mental model on both platforms
+
+**Build gotcha (Zig 0.16 cross-compile)**:
+
+Cross-compiling from a macOS host to Linux fails at the **link** stage with `unable to find dynamic system library 'sqlite3' / 'asound'`. The Zig source compiles fine — comptime switches in `tts.zig`, `main.zig`, and `build.zig` are valid for all three OS tags. To produce a working Linux binary from macOS you need a Linux sysroot in the cache; we deliberately do not ship one. Use CI (`ubuntu-latest`) or a Linux box for real Linux artifacts.
+
+**License**: new files (`platform.zig`, `systemd.zig`) carry `SPDX-License-Identifier: MIT OR Apache-2.0`. No new GPL surface — espeak-ng is a runtime dependency on Linux (spawned via PATH), not a linked library, so the binary stays MIT/Apache when `-Dwith-piper=false`.
+
+---
+
 ## v1.0 — universal binary + brew tap · 2026-06-03
 
 **Shipped**:

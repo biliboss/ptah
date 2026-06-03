@@ -1,15 +1,15 @@
 ---
 title: Roadmap
-description: v0.1 → v1.0 shipped 2026-06-03 in a single session. v1.1 → v1.5 in What's next.
+description: v0.1 → v1.3 shipped 2026-06-03 in a single session. v1.1, v1.2, v1.4, v1.5 in What's next.
 ---
 
 ## TL;DR
 
-v0.1 → v1.0 shipped on **2026-06-03**, in one session, behind one KPI. Eight milestones, each with a published measurement. Universal binary, brew tap, and launchd auto-start landed in v1.0.
+v0.1 → v1.0 shipped on **2026-06-03**, in one session, behind one KPI. v1.3 (cross-platform) landed the same day. Nine milestones, each with a published measurement. Universal binary, brew tap, launchd auto-start, systemd user unit, Linux CI matrix.
 
-v1.1 and beyond are scoped for marketing and engineering value in [What's next](/whats-next/).
+v1.1, v1.2, v1.4, and v1.5 are scoped for marketing and engineering value in [What's next](/whats-next/).
 
-## v0.1 → v1.0 — Shipped
+## v0.1 → v1.3 — Shipped
 
 Every milestone has a published baseline in [`_qa/`](https://github.com/biliboss/agent-tts/tree/main/_qa) and a section in the [Changelog](/changelog/).
 
@@ -23,6 +23,7 @@ Every milestone has a published baseline in [`_qa/`](https://github.com/biliboss
 | **v0.6** | libpiper FFI baseline | piper init 400 ms, synth + WAV 100 ms warm | 2026-06-03 |
 | **v0.7** | zaudio streaming + `--engine say\|piper` routing | piper synth warm **91 ms** | 2026-06-03 |
 | **v1.0** | Universal binary + brew formula + GitHub Pages docs | universal 1.8 MB, host 918 KB | 2026-06-03 |
+| **v1.3** | Cross-platform — Linux espeak-ng + systemd + CI matrix | macOS green, Linux green on CI, Windows compile-only | 2026-06-03 |
 
 ## KPI delivered
 
@@ -38,8 +39,10 @@ Baselines: [`_qa/v0.1` … `_qa/v1.0`](https://github.com/biliboss/agent-tts/tre
 
 ## Installation
 
+**macOS** (v1.0):
+
 ```bash
-# v1.0 — via tap (waiting for first signed release tarball):
+# Via tap (waiting for first signed release tarball):
 brew tap biliboss/tap
 brew install biliboss/tap/agent-tts
 
@@ -49,11 +52,28 @@ cd agent-tts
 zig build -Doptimize=ReleaseFast
 cp zig-out/bin/agent-tts /opt/homebrew/bin/
 
-# Auto-start at login:
+# Auto-start at login (launchd):
 agent-tts daemon install
 ```
 
-Piper engine requires the vendor build:
+**Linux** (v1.3 — Debian/Ubuntu; adapt apt → dnf/pacman as needed):
+
+```bash
+sudo apt install libasound2 libsqlite3-0 espeak-ng
+git clone https://github.com/biliboss/agent-tts.git
+cd agent-tts
+zig build -Doptimize=ReleaseFast
+sudo cp zig-out/bin/agent-tts /usr/local/bin/
+
+# Auto-start at login (systemd user unit):
+agent-tts daemon install
+```
+
+Build deps add `libasound2-dev libsqlite3-dev` if you compile yourself.
+
+**Windows** (v1.3 best-effort): source compiles via `zig build` on `windows-latest`, runtime untested. `daemon install` deliberately errors out — run `agent-tts daemon` foreground or wire your own Startup folder shortcut.
+
+Piper engine requires the vendor build (macOS + Linux; Windows untested):
 
 ```bash
 ./scripts/build-libpiper.sh
@@ -61,9 +81,11 @@ Piper engine requires the vendor build:
 zig build -Doptimize=ReleaseFast -Dwith-piper=true
 ```
 
-launchd plist lives at `~/Library/LaunchAgents/io.github.biliboss.agent-tts.plist`.
+Auto-start unit paths:
+- macOS: `~/Library/LaunchAgents/io.github.biliboss.agent-tts.plist`
+- Linux: `~/.config/systemd/user/agent-tts.service`
 
-## What's next (v1.1 → v1.5)
+## What's next (v1.1, v1.2, v1.4, v1.5)
 
 See [What's next](/whats-next/) for the marketing roadmap. Short version:
 
@@ -71,14 +93,13 @@ See [What's next](/whats-next/) for the marketing roadmap. Short version:
 |---|---|---|
 | v1.1 | Multilingual | Speak your stack — code-switch Pt + En cleanly |
 | v1.2 | Streaming | First word before the last is written |
-| v1.3 | Cross-platform | agent-tts on Linux (and Windows when you ask) |
 | v1.4 | Voice cloning | Your voice, your agent |
 | v1.5 | MCP server | Native Claude Code voice — drop the shell-out |
 
 ## Locked nots
 
 - No embedded voice model in the binary (breaks the SSD goal).
-- No Windows in v1.0. Linux v1.3.
+- No Windows runtime guarantee in v1.3 (code paths exist, untested).
 - No parallel TTS (overlap = bad UX).
 - No Cocoa / AVSpeechSynthesizer until `say` proves insufficient.
 - No YAML config before v1.1 (YAGNI).

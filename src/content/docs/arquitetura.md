@@ -130,11 +130,13 @@ Vendored from [zig-gamedev/zaudio](https://github.com/zig-gamedev/zaudio). Linke
 
 `AudioPlayer.streamS16le(samples, 22050)` creates an `AudioBuffer` data source pinned to the source rate (22050 Hz for Faber). Without the explicit sample rate, miniaudio upsamples to the device rate (48000 Hz) and pitch shifts ~2.18× higher — a fix shipped in v1.0.
 
-### Drive: `say` (libexec)
+### Drive: `say` / `espeak-ng` / System.Speech
 
-`/usr/bin/say -v "Luciana (Premium)" -r 330`. Used as the fallback engine.
+System engine spawn per platform — selected at comptime via `platform.zig` (see [Platform abstraction](#platform-abstraction-v13) below):
 
-Pre-warm: the daemon boots `say -v Luciana ""` to load the voice into the Neural Engine. Without pre-warm, the first call pays an extra 200-400 ms.
+- **macOS**: `/usr/bin/say -v "Luciana (Premium)" -r 330`. Pre-warm at daemon boot loads the voice into the Neural Engine; without it, the first call pays an extra 200-400 ms.
+- **Linux**: `espeak-ng -v pt-br -s <rate> <text>`. Lowest-common-denominator Pt-BR voice. No pre-warm (no equivalent to the ANE cache). Quality is below macOS Luciana — Piper Faber is the recommended Linux default.
+- **Windows**: `powershell -Command "Add-Type System.Speech; $s.Speak(...)"`. Best-effort; runtime untested in v1.3.
 
 ### Pt-BR preprocessor (v0.5)
 
@@ -160,20 +162,50 @@ Total wall time: 2-5 µs per message. No TTFA risk.
 
 Plist write is atomic (`createFileAtomic` + `replace`). The `HOME` env var is injected explicitly because launchd does not inherit it pre-login.
 
+### Platform abstraction (v1.3)
+
+Three small surfaces, one comptime dispatcher, zero runtime branches in the hot path.
+
+`src/platform.zig` exports `Platform { macos, linux, windows }` and `current()`, a comptime function that resolves to a single tag via `builtin.target.os.tag`. Unknown OS tags are a `@compileError` — better to fail the build than to ship a binary that does the wrong thing silently. Callers `switch (comptime platform.current())` so dead branches drop out of the binary on the host target.
+
+`src/tts.zig` uses the dispatcher to pick the system TTS argv per platform:
+
+| Platform | Spawn |
+|---|---|
+| macOS | `/usr/bin/say -v <voice> -r <rate> <text>` |
+| Linux | `espeak-ng -v pt-br -s <rate> <text>` (Pt-BR voice mapping is unit-tested) |
+| Windows | `powershell -NoProfile -Command "Add-Type System.Speech; $s.Speak('...')"` (best-effort) |
+
+Pre-warm (the empty `say` utterance that loads Luciana into the Neural Engine) becomes a no-op on Linux/Windows — `espeak-ng` and `System.Speech` have no equivalent warm cache.
+
+`src/systemd.zig` parallels `launchd.zig`. Same surface: `install`, `uninstall`, `status`. Writes `$XDG_CONFIG_HOME/systemd/user/agent-tts.service` (falls back to `~/.config/systemd/user/`), drives `systemctl --user daemon-reload && enable --now`. Atomic write via `createFileAtomic` + `replace` like the plist. `Restart=on-failure` mirrors the launchd `KeepAlive { SuccessfulExit = false }` contract: clean exit stays down, crash recovers. Output goes to journald — `journalctl --user -u agent-tts` is the canonical Linux debug path.
+
+`build.zig configureExe()` switches the audio backend per target:
+
+| Target | miniaudio defines | System libs |
+|---|---|---|
+| macOS | `MA_NO_RUNTIME_LINKING` + everything but CoreAudio off | CoreAudio + CoreFoundation + AudioUnit + AudioToolbox frameworks |
+| Linux | `MA_NO_COREAUDIO` (ALSA + PulseAudio runtime-linked) | `libasound` static + `libpulse` via miniaudio's `dlopen` |
+| Windows | `MA_NO_RUNTIME_LINKING` + everything but WASAPI + winmm off | `winmm` + `ole32` |
+
+`main.zig`'s `daemon install|uninstall|status` is a single comptime switch: macOS → `launchd.*`, Linux → `systemd.*`, Windows → print error and exit 2. Same CLI surface, different machinery underneath.
+
 ## Code layout
 
 ```
 src/
   main.zig         # entry, argv routing, ttfa-bench + piper-test subcommands
+  platform.zig     # comptime OS dispatcher (macos / linux / windows)
   client.zig       # enqueue, queue, skip, clear
   daemon.zig       # accept loop, worker, engine routing
   queue.zig        # SQLite WAL wrapper, schema migration
   ipc.zig          # line protocol, sanitize, Engine enum
-  tts.zig          # spawn `say`
+  tts.zig          # spawn `say` (macOS) / `espeak-ng` (Linux) / powershell (Windows)
   piper.zig        # libpiper FFI (GPL-3.0-or-later)
   audio.zig        # zaudio.Engine wrapper
   preproc.zig      # Pt-BR cadence + abbreviations + cardinals
-  launchd.zig      # LaunchAgent install / uninstall / status
+  launchd.zig      # LaunchAgent install / uninstall / status (macOS)
+  systemd.zig      # systemd user unit install / uninstall / status (Linux)
 ```
 
 Flat. No subdir until it hurts.

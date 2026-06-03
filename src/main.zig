@@ -28,25 +28,28 @@ const std = @import("std");
 const client = @import("client.zig");
 const daemon = @import("daemon.zig");
 const launchd = @import("launchd.zig");
+const systemd = @import("systemd.zig");
+const platform = @import("platform.zig");
 const ipc = @import("ipc.zig");
 const audio = @import("audio.zig");
 const build_options = @import("build_options");
 
-pub const VERSION = "1.0.0";
+pub const VERSION = "1.3.0";
 
 const HELP =
-    \\agent-tts v{s} — Pt-BR TTS via macOS `say` or libpiper
+    \\agent-tts v{s} — Pt-BR TTS via system voice or libpiper
     \\
     \\Usage:
     \\  agent-tts "texto"                send to running daemon
-    \\  agent-tts --engine piper "..."   route to libpiper instead of say
+    \\  agent-tts --engine piper "..."   route to libpiper instead of system voice
     \\  agent-tts queue                  list pending + playing items
     \\  agent-tts skip                   skip current playing item
     \\  agent-tts clear                  drop all pending items
     \\  agent-tts daemon                 run daemon (foreground)
-    \\  agent-tts daemon install         install launchd LaunchAgent (auto-start)
-    \\  agent-tts daemon uninstall       remove launchd LaunchAgent
-    \\  agent-tts daemon status          print launchd load state
+    \\  agent-tts daemon install         install auto-start unit
+    \\                                   (launchd on macOS, systemd on Linux)
+    \\  agent-tts daemon uninstall       remove auto-start unit
+    \\  agent-tts daemon status          print auto-start load state
     \\  agent-tts --voice "Felipe" "texto"
     \\  agent-tts --rate 220 "texto"
     \\
@@ -58,18 +61,24 @@ const HELP =
     \\  agent-tts ttfa-bench --engine say|piper --warm N  measure first-sample latency
     \\
     \\Options:
-    \\  --engine say|piper  TTS backend (default: piper; say = fallback)
-    \\  --voice NAME        voice name (default: Luciana for say, faber for piper)
+    \\  --engine say|piper  TTS backend (default: piper; say = system fallback)
+    \\  --voice NAME        voice name (default: Luciana for say, faber for piper;
+    \\                      on Linux Luciana auto-maps to espeak-ng pt-br)
     \\  --rate WPM          words per minute (default: 330; ignored by piper)
     \\  -h, --help          this help
     \\  -V, --version       print version
     \\
-    \\v0.7 ships zaudio streaming PCM playback + --engine routing. PiperEngine
-    \\stays resident in the daemon, eliminating the ~400ms cold init cost from
-    \\v0.6, and zaudio plays raw s16le without WAV+afplay.
+    \\System voice per platform:
+    \\  macOS    /usr/bin/say                  (Luciana / Felipe Premium)
+    \\  Linux    espeak-ng -v pt-br            (apt install espeak-ng)
+    \\  Windows  powershell System.Speech      (best-effort, runtime untested)
     \\
-    \\launchd plist lives at ~/Library/LaunchAgents/io.github.biliboss.agent-tts.plist
-    \\(override label via AGENT_TTS_LAUNCHD_LABEL env var — used by tests).
+    \\Auto-start per platform:
+    \\  macOS    ~/Library/LaunchAgents/io.github.biliboss.agent-tts.plist
+    \\           (override label via AGENT_TTS_LAUNCHD_LABEL)
+    \\  Linux    ~/.config/systemd/user/agent-tts.service
+    \\           (override unit name via AGENT_TTS_SYSTEMD_UNIT)
+    \\  Windows  not implemented — runs foreground only in v1.3
     \\
 ;
 
@@ -80,6 +89,8 @@ pub fn main(init: std.process.Init) !void {
     const home = init.environ_map.get("HOME") orelse "/tmp";
 
     const label_override = init.environ_map.get(launchd.LABEL_ENV);
+    const systemd_unit_override = init.environ_map.get(systemd.UNIT_ENV);
+    const xdg_config = init.environ_map.get("XDG_CONFIG_HOME");
 
     if (args.len > 1) {
         const cmd = args[1];
@@ -87,13 +98,37 @@ pub fn main(init: std.process.Init) !void {
             if (args.len > 2) {
                 const sub = args[2];
                 if (std.mem.eql(u8, sub, "install")) {
-                    return launchd.install(arena, io, home, label_override, null);
+                    return switch (comptime platform.current()) {
+                        .macos => launchd.install(arena, io, home, label_override, null),
+                        .linux => systemd.install(arena, io, home, xdg_config, systemd_unit_override, null),
+                        .windows => {
+                            std.debug.print(
+                                "error: daemon install not implemented on Windows (v1.3 best-effort) — run `agent-tts daemon` from a Startup folder shortcut or schtasks /create\n",
+                                .{},
+                            );
+                            std.process.exit(2);
+                        },
+                    };
                 }
                 if (std.mem.eql(u8, sub, "uninstall")) {
-                    return launchd.uninstall(arena, io, home, label_override);
+                    return switch (comptime platform.current()) {
+                        .macos => launchd.uninstall(arena, io, home, label_override),
+                        .linux => systemd.uninstall(arena, io, home, xdg_config, systemd_unit_override),
+                        .windows => {
+                            std.debug.print("error: daemon uninstall not implemented on Windows\n", .{});
+                            std.process.exit(2);
+                        },
+                    };
                 }
                 if (std.mem.eql(u8, sub, "status")) {
-                    return launchd.status(arena, io, home, label_override);
+                    return switch (comptime platform.current()) {
+                        .macos => launchd.status(arena, io, home, label_override),
+                        .linux => systemd.status(arena, io, home, xdg_config, systemd_unit_override),
+                        .windows => {
+                            std.debug.print("error: daemon status not implemented on Windows\n", .{});
+                            std.process.exit(2);
+                        },
+                    };
                 }
                 std.debug.print("error: unknown daemon subcommand '{s}'\n", .{sub});
                 std.process.exit(2);
@@ -339,9 +374,9 @@ fn benchPiper(
     std.debug.print(
         "[ttfa-bench] engine=piper warm={d} init={d:.1}ms ttfa avg={d:.1}ms min={d:.1}ms max={d:.1}ms synth_avg={d:.1}ms zaudio={s}\n",
         .{
-            warm,                       init_ms,
-            avg,                        min_ms,
-            max_ms,                     synth_avg,
+            warm,                              init_ms,
+            avg,                               min_ms,
+            max_ms,                            synth_avg,
             if (player.ready) "on" else "off",
         },
     );

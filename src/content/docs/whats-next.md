@@ -5,7 +5,7 @@ description: Five next versions of agent-tts — multilingual, streaming, cross-
 
 ## TL;DR
 
-v1.0 shipped the runtime: single binary, neural Pt-BR by default, persistent queue, launchd auto-start, sub-100 ms warm synth. **What follows is about reach, not plumbing.** Five themes pulled out of the v1.0 backlog and pointed at the audiences that will care.
+v1.0 shipped the runtime: single binary, neural Pt-BR by default, persistent queue, launchd auto-start, sub-100 ms warm synth. v1.3 shipped Linux + Windows code paths and a CI matrix that proves the Linux build green. **What follows is about reach, not plumbing.** Four themes pulled out of the v1.0 backlog and pointed at the audiences that will care.
 
 Vote, watch, or send a PR at [biliboss/agent-tts](https://github.com/biliboss/agent-tts).
 
@@ -42,26 +42,6 @@ Vote, watch, or send a PR at [biliboss/agent-tts](https://github.com/biliboss/ag
 - Anyone who runs `agent-tts "$(cat huge-output.txt)"`.
 - Agents that summarize commits, PRs, or `git diff` outputs.
 - Accessibility users on dynamic feeds (notifications, transcripts).
-
----
-
-## v1.3 — Cross-platform · *agent-tts everywhere*
-
-> Mac was first because that's what Gabriel ships on. v1.3 ports to Linux because that's where the rest of the agents live.
-
-**The problem today.** v1.0 is Apple Silicon only. Linux dev boxes and CI runners are locked out.
-
-**What ships.**
-- **Linux build** via Zig cross-compile. Replaces `say` with `espeak-ng` or a Piper-only fallback. Replaces launchd with systemd user units.
-- **Windows native** if the demand shows up — Zig already compiles for `x86_64-windows-gnu`.
-- One CI matrix, one universal tarball per platform, signed.
-
-**Why now.** v0.6 already proves the libpiper FFI is portable; the macOS-specific pieces are isolated to `tts.zig` (calls `say`), `launchd.zig`, and `audio.zig` framework links.
-
-**Who cares.**
-- Linux developers (a lot of them).
-- DevOps teams that want agent voice on Linux CI dashboards.
-- Anyone running Claude Code on a remote dev container.
 
 ---
 

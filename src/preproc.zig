@@ -106,23 +106,26 @@ fn expandAbbreviations(arena: std.mem.Allocator, input: []const u8) ![]u8 {
 // ──────────────────────────────────────────────────────────────────────
 
 const UNITS = [_][]const u8{
-    "zero",   "um",     "dois",  "três",
-    "quatro", "cinco",  "seis",  "sete",
-    "oito",   "nove",   "dez",   "onze",
-    "doze",   "treze",  "catorze", "quinze",
-    "dezesseis", "dezessete", "dezoito", "dezenove",
+    "zero",      "um",        "dois",
+    "três",
+    "quatro",    "cinco",     "seis",
+    "sete",      "oito",      "nove",
+    "dez",       "onze",      "doze",
+    "treze",     "catorze",   "quinze",
+    "dezesseis", "dezessete", "dezoito",
+    "dezenove",
 };
 
 const TENS = [_][]const u8{
-    "", "", "vinte", "trinta", "quarenta",
+    "",          "",         "vinte",   "trinta",  "quarenta",
     "cinquenta", "sessenta", "setenta", "oitenta", "noventa",
 };
 
 // "cento" is used in compounds (cento e dez); "cem" is the bare 100.
 const HUNDREDS = [_][]const u8{
-    "",           "cento",       "duzentos",  "trezentos",
+    "",             "cento",      "duzentos",   "trezentos",
     "quatrocentos", "quinhentos", "seiscentos", "setecentos",
-    "oitocentos", "novecentos",
+    "oitocentos",   "novecentos",
 };
 
 fn appendUnder100(out: *std.ArrayList(u8), arena: std.mem.Allocator, n: u16) !void {
