@@ -23,6 +23,10 @@ import os
 import sys
 from pathlib import Path
 
+# Match voice_clone.py — XTTS-v2 still re-prompts for the CPML license if
+# the model dir was deleted between runs. Headless opt-in.
+os.environ.setdefault("COQUI_TOS_AGREED", "1")
+
 DEFAULT_RATE = 22050
 
 

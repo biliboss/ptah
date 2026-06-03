@@ -32,6 +32,14 @@ import sys
 import wave
 from pathlib import Path
 
+# XTTS-v2 prompts for CPML license acceptance on first download. We run
+# headless from a Zig parent that pipes stdin as EOF, so the prompt would
+# raise EOFError. Setting `COQUI_TOS_AGREED` is Coqui's documented
+# non-interactive opt-in — equivalent to `brew install` agreeing to upstream
+# licenses on the user's behalf for personal use. Real production users
+# should read https://coqui.ai/cpml before commercial use.
+os.environ.setdefault("COQUI_TOS_AGREED", "1")
+
 SLUG_RE = re.compile(r"^[a-z0-9-]+$")
 MIN_S = 20.0
 MAX_S = 120.0

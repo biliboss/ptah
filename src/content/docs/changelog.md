@@ -9,6 +9,53 @@ Per milestone: what shipped, how we measured, what slipped to the next one. The 
 
 ---
 
+## v1.6 — Voice cloning ship-it · 2026-06-03
+
+**Shipped**:
+
+- `scripts/setup-voice-clone.sh` validated end-to-end on macOS arm64 (Mac Air M4, macOS 26.5). Five real install blockers surfaced + fixed: `coqui-tts` doesn't declare `torch` so we install it explicitly; `transformers>=5` removed `isin_mps_friendly` so we pin `transformers<5`; `torch>=2.9` forces `torchcodec` which links against ffmpeg 4.x and host has ffmpeg 8.x so we pin `torch<2.9` + `torchaudio<2.9`; XTTS-v2 prompts for CPML licence on first download and the stdin=ignore Zig parent EOFs the prompt so we set `COQUI_TOS_AGREED=1` at the top of both Python scripts; and `uv run --with TTS` would create an ephemeral env that re-resolves the same broken pins so `buildArgv` in `src/voice.zig` now prefers `.venv-voice/bin/python` when present
+- `scripts/voice_clone.py` + `scripts/voice_synth.py` exercised end-to-end through `agent-tts voice clone` — XTTS-v2 1.8GB model downloaded once into `~/Library/Application Support/tts/`, speaker latents extracted from a 28s Pt-BR sample, `~/.cache/agent-tts/voices/gabriel/{embedding.npz,metadata.json,clone-info.json}` produced
+- `scripts/voice-clone-bench.sh` (NEW) — measures sample WAV gen, clone wall time, cold synth, 2nd-invocation synth, writes `_qa/v1.6-baseline.md` end-to-end. Idempotent — re-running overwrites the previous baseline
+- `voice list` UX: now shows `duration` + `rate` columns alongside the slug. Cloned voices read both fields from `metadata.json`; faber + Luciana hardcode 22050Hz. New hand-rolled `parseVoiceMetadata` (no std.json round-trip per voice — see `src/voice.zig`)
+- `src/voice.zig::buildArgv` — three-tier interpreter preference (`.venv-voice/bin/python` → `uv run --with TTS` → `python3`). Means a clean `setup-voice-clone.sh` run gives you a deterministic interpreter on every clone/synth without polluting the system Python
+- `src/main.zig` `VERSION = "1.6.0"`, `build.zig.zon` `.version = "1.6.0"`, 64 → 67 tests (3 new `parseVoiceMetadata` cases for canonical / tolerant / missing-key JSON)
+
+**Measurements** (Mac Air M4, ReleaseFast, torch 2.8.0, model already on disk):
+
+| Metric | Value | Notes |
+|---|---|---|
+| Sample WAV generation (`say` 28s Pt-BR) | 0.76s | mono 22050Hz s16le |
+| `agent-tts voice clone` wall time | **23.35s** | cold sidecar, model on disk; extracts speaker latents |
+| Cold synth (fresh Python, 35-char Pt-BR) | **26.39s** → 4.30s of audio | dominated by torch + XTTS load (~22s of the 26s) |
+| 2nd-invocation synth | **24.13s** → 2.17s of audio | each call reloads the model — no resident sidecar in v1.6 |
+| `zig build` | green | host arm64 binary |
+| `zig build test` | green (67/67) | +3 for parseVoiceMetadata |
+| Model on-disk size | 1.8 GB | `~/Library/Application Support/tts/tts_models--multilingual--multi-dataset--xtts_v2` |
+| `embedding.npz` size | ~134 KB | gpt_cond_latent + speaker_embedding numpy arrays |
+
+**Honest scope**:
+
+- **No A/B vs Faber.** Quality assessment requires listener evaluation. Bench captures latency + file layout only. Raw PCM is at `/tmp/voice-clone-bench-{cold,warm}.pcm` for manual `afplay`-pipe.
+- **No Mauricio voice.** Spec asked for Gabriel + Mauricio; only Gabriel was synthesised this session.
+- **No daemon dispatch end-to-end.** v1.4 wired `daemon.zig::synthClonedViaSidecar` but the bench validates the standalone Python path only — wire-compatible (same `embedding.npz`, same stdout PCM contract) but not exercised under the daemon route here.
+- **Each synth call reloads the model.** ~22s of the 26s cold synth is `TTS(model_name=...).to('cpu')`. A long-lived sidecar (resident Python behind a UNIX socket) is the v1.7+ unlock to get to Faber's 91ms warm number. v1.6 ships cloning as the "I want my agent in my voice for this clip" demo, not the steady-state runtime.
+- **macOS only.** Ubuntu 22.04 path documented but not validated.
+- **MPS device not measured.** Apple Silicon MPS works on torch 2.8 but XTTS-v2 has CPU fallbacks for several ops; cpu was used everywhere.
+
+**Lead time** (this session):
+
+```
+- dispatch_ts: 2026-06-03 22:52:11 UTC (parent fan-out)
+- agent_start_ts: 2026-06-03 22:52:51 UTC
+- commit_ts: see _qa/v1.6-leadtime.md
+- gates: build=green tests=67/67
+```
+
+Bench script: `scripts/voice-clone-bench.sh` (rerun: `./scripts/voice-clone-bench.sh`).
+Baseline: [`_qa/v1.6-baseline.md`](https://github.com/biliboss/agent-tts/blob/main/_qa/v1.6-baseline.md).
+
+---
+
 ## v1.5 — MCP server · 2026-06-03
 
 **Shipped**:

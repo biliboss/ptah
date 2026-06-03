@@ -1,34 +1,13 @@
 ---
 title: What's next
-description: Five next versions of agent-tts (v1.6 → v1.10) — voice cloning ship-it, streaming text input, SSML/prosody, web playground, and menubar UI.
+description: Four next versions of agent-tts (v1.7 → v1.10) — streaming text input, SSML/prosody, web playground, and menubar UI.
 ---
 
 ## TL;DR
 
-The whole **v1.1 → v1.5** marketing slate shipped on **2026-06-03**. The next slate (**v1.6 → v1.10**) takes the runtime and points it at five distinct audiences: people who want their cloned voice to actually work, people who want the agent to start speaking before it finishes thinking, people who want their agent to inflect, people who want to try every voice in a browser, and people who want a face on the daemon.
+**v1.6 shipped on 2026-06-03** — voice cloning is real, the install path is validated, baseline is published in [`_qa/v1.6-baseline.md`](https://github.com/biliboss/agent-tts/blob/main/_qa/v1.6-baseline.md). The remaining slate (**v1.7 → v1.10**) takes the runtime and points it at four distinct audiences: people who want the agent to start speaking before it finishes thinking, people who want their agent to inflect, people who want to try every voice in a browser, and people who want a face on the daemon.
 
 Vote, watch, or send a PR at [biliboss/agent-tts](https://github.com/biliboss/agent-tts).
-
----
-
-## v1.6 — Voice cloning ship-it · *Your voice, for real*
-
-> v1.4 shipped the **scaffold** for voice cloning. The Python sidecar is wired, the subcommand validates, the daemon dispatches — but `scripts/setup-voice-clone.sh` has never been run end-to-end and the first cloned voice was never measured. v1.6 closes that gap.
-
-**The problem today.** `agent-tts voice clone --sample me.wav --name gabriel` writes `metadata.json` and walks off whistling. The Python side (XTTS-v2, ~1.8 GB model) was deferred to v1.4.1.
-
-**What ships.**
-- `scripts/setup-voice-clone.sh` validated on a clean macOS install (Apple Silicon + Intel via Rosetta) and a fresh Ubuntu 22.04
-- Real Gabriel-voice + Mauricio-voice published in `_qa/v1.6-baseline.md` with cold sidecar startup, warm first-sample latency, and quality A/B vs Faber
-- `voice list` shows quality + duration + sample-rate alongside the slug
-- Per-voice fallback chain documented (cloned → piper Faber → say Luciana) — actually exercised under failure injection
-
-**Why now.** v1.5 closed the protocol layer (MCP), v1.6 closes the personalisation layer. Personal voice on a permission-prompt-free MCP server is the killer demo for the agent-builder audience.
-
-**Who cares.**
-- Solo devs branding their agent.
-- Studios where the AI narrator matches a human voiceover.
-- Accessibility users on a familiar voice they own.
 
 ---
 

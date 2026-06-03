@@ -195,9 +195,9 @@ pub fn cmdList(arena: std.mem.Allocator, io: std.Io, home: []const u8) !void {
     var stdout = std.Io.File.stdout().writerStreaming(io, &stdout_buf);
     var w = &stdout.interface;
 
-    try w.writeAll("  slug                  engine   notes\n");
-    try w.writeAll("  faber                 piper    bundled neural Pt-BR (~91ms warm)\n");
-    try w.writeAll("  Luciana               say      macOS system voice (default for --engine say)\n");
+    try w.writeAll("  slug                  engine   duration   rate     notes\n");
+    try w.writeAll("  faber                 piper    -          22050Hz  bundled neural Pt-BR (~91ms warm)\n");
+    try w.writeAll("  Luciana               say      -          22050Hz  macOS system voice (default for --engine say)\n");
 
     const voices_dir = try std.fmt.allocPrint(arena, "{s}/.cache/agent-tts/voices", .{home});
     var dir = std.Io.Dir.cwd().openDir(io, voices_dir, .{ .iterate = true }) catch {
@@ -218,19 +218,90 @@ pub fn cmdList(arena: std.mem.Allocator, io: std.Io, home: []const u8) !void {
             "{s}/{s}/metadata.json",
             .{ voices_dir, entry.name },
         );
-        const stat_ok = blk: {
-            var f = std.Io.Dir.cwd().openFile(io, meta_path, .{}) catch break :blk false;
-            f.close(io);
-            break :blk true;
-        };
-        if (!stat_ok) continue;
-        try w.print("  {s:<22}cloned   XTTS-v2 sidecar\n", .{entry.name});
+        const meta = readVoiceMetadata(arena, io, meta_path) catch null;
+        if (meta == null) continue;
+        const m = meta.?;
+        // v1.6: show duration + sample-rate parsed from metadata.json. Falls
+        // back to dashes if the values are missing — older v1.4 voices that
+        // were written before the duration field landed still render cleanly.
+        var dur_buf: [16]u8 = undefined;
+        const dur_str: []const u8 = if (m.duration_seconds > 0)
+            std.fmt.bufPrint(&dur_buf, "{d:.1}s", .{m.duration_seconds}) catch "-"
+        else
+            "-";
+        var rate_buf: [16]u8 = undefined;
+        const rate_str: []const u8 = if (m.sample_rate > 0)
+            std.fmt.bufPrint(&rate_buf, "{d}Hz", .{m.sample_rate}) catch "-"
+        else
+            "-";
+        try w.print("  {s:<22}cloned   {s:<11}{s:<9}XTTS-v2 sidecar\n", .{
+            entry.name,
+            dur_str,
+            rate_str,
+        });
         count += 1;
     }
     if (count == 0) {
         try w.writeAll("  (no cloned voices — run `agent-tts voice clone --sample X.wav --name Y`)\n");
     }
     try w.flush();
+}
+
+/// Parsed subset of a voice's metadata.json — only what `voice list` needs.
+/// Tiny hand-rolled extractor instead of pulling std.json so the format
+/// stays forgiving (extra/unknown fields, trailing whitespace) without
+/// adding allocator round-trips per voice.
+pub const VoiceMetadata = struct {
+    duration_seconds: f64 = 0,
+    sample_rate: u32 = 0,
+};
+
+fn readVoiceMetadata(arena: std.mem.Allocator, io: std.Io, path: []const u8) !VoiceMetadata {
+    var file = try std.Io.Dir.cwd().openFile(io, path, .{});
+    defer file.close(io);
+    var buf: [4096]u8 = undefined;
+    var reader = file.readerStreaming(io, &buf);
+    // metadata.json is ~200 bytes — small enough to slurp whole. 8 KB ceiling
+    // protects against a truncated read returning forever-zero.
+    var content = std.array_list.Aligned(u8, null).empty;
+    defer content.deinit(arena);
+    var tmp: [256]u8 = undefined;
+    var total: usize = 0;
+    while (total < 8192) {
+        const n = reader.interface.readSliceShort(&tmp) catch break;
+        if (n == 0) break;
+        try content.appendSlice(arena, tmp[0..n]);
+        total += n;
+    }
+    return parseVoiceMetadata(content.items);
+}
+
+/// Pulls duration + sample-rate out of metadata.json without a full JSON
+/// parser. Both keys are emitted by writeMetadata above so the format is
+/// stable; we only need to be robust to whitespace + key ordering.
+pub fn parseVoiceMetadata(json: []const u8) VoiceMetadata {
+    var out: VoiceMetadata = .{};
+    if (findNumberAfter(json, "\"duration_seconds\"")) |v| out.duration_seconds = v;
+    if (findNumberAfter(json, "\"sample_rate\"")) |v| out.sample_rate = @intFromFloat(v);
+    return out;
+}
+
+fn findNumberAfter(haystack: []const u8, needle: []const u8) ?f64 {
+    const idx = std.mem.indexOf(u8, haystack, needle) orelse return null;
+    var i = idx + needle.len;
+    // Skip the colon + whitespace between key and value.
+    while (i < haystack.len and (haystack[i] == ' ' or haystack[i] == ':' or haystack[i] == '\t')) {
+        i += 1;
+    }
+    const start = i;
+    while (i < haystack.len) {
+        const ch = haystack[i];
+        const is_num = (ch >= '0' and ch <= '9') or ch == '.' or ch == '-' or ch == '+' or ch == 'e' or ch == 'E';
+        if (!is_num) break;
+        i += 1;
+    }
+    if (i == start) return null;
+    return std.fmt.parseFloat(f64, haystack[start..i]) catch null;
 }
 
 /// Slug rule: `[a-z0-9-]+`, 1-32 chars. Mirrors the Python sidecar's parse —
@@ -402,9 +473,21 @@ fn invokeSidecar(
 }
 
 fn buildArgv(arena: std.mem.Allocator, script_args: []const []const u8) ![][]const u8 {
-    // Prefer `uv run --with TTS` so first-run installs deps without polluting
-    // the system Python. Falls back to plain `python3` if uv is missing —
-    // setup-voice-clone.sh installs uv when available.
+    // Preference order (v1.6):
+    //   1. `.venv-voice/bin/python` — produced by setup-voice-clone.sh. This
+    //      is the "boring" path: deterministic interpreter, all deps already
+    //      resolved (incl. transformers<5 + torchcodec pins that uv-run would
+    //      re-discover the hard way).
+    //   2. `uv run --with TTS` — kept as a convenience for users who skipped
+    //      setup. Slower cold start and may hit version pins coqui-tts didn't
+    //      declare, but works for the happy path.
+    //   3. `python3` — last resort; assumes the user manages their own env.
+    if (venvPythonExists()) |venv_py| {
+        const argv = try arena.alloc([]const u8, script_args.len + 1);
+        argv[0] = venv_py;
+        for (script_args, 0..) |a, i| argv[i + 1] = a;
+        return argv;
+    }
     const uv_exists = lookPath("uv");
     if (uv_exists) {
         const argv = try arena.alloc([]const u8, script_args.len + 4);
@@ -420,6 +503,19 @@ fn buildArgv(arena: std.mem.Allocator, script_args: []const []const u8) ![][]con
     for (script_args, 0..) |a, i| argv[i + 1] = a;
     return argv;
 }
+
+/// Returns the venv python path if `.venv-voice/bin/python` exists in cwd,
+/// `null` otherwise. We do this with `std.c.access` (cheaper than openat +
+/// close and we don't need a handle). The returned slice points at static
+/// storage — safe because we copy via std.mem.copyForwards in the caller.
+fn venvPythonExists() ?[]const u8 {
+    const path = ".venv-voice/bin/python";
+    const z = std.fmt.bufPrintZ(@constCast(&venv_buf), "{s}", .{path}) catch return null;
+    if (std.c.access(z.ptr, std.c.F_OK) == 0) return path;
+    return null;
+}
+
+var venv_buf: [64]u8 = undefined;
 
 fn lookPath(name: []const u8) bool {
     // Tiny PATH walk — enough for "is uv on PATH?". We do not need full
@@ -504,4 +600,34 @@ test "HELP text mentions clone + list" {
     try std.testing.expect(std.mem.indexOf(u8, HELP, "voice list") != null);
     try std.testing.expect(std.mem.indexOf(u8, HELP, "--sample") != null);
     try std.testing.expect(std.mem.indexOf(u8, HELP, "--name") != null);
+}
+
+test "parseVoiceMetadata extracts duration + rate" {
+    const j =
+        \\{
+        \\  "slug": "gabriel",
+        \\  "sample_rate": 22050,
+        \\  "channels": 1,
+        \\  "duration_seconds": 28.30,
+        \\  "engine": "cloned"
+        \\}
+    ;
+    const m = parseVoiceMetadata(j);
+    try std.testing.expectApproxEqAbs(@as(f64, 28.30), m.duration_seconds, 0.01);
+    try std.testing.expectEqual(@as(u32, 22050), m.sample_rate);
+}
+
+test "parseVoiceMetadata is tolerant of key order + whitespace" {
+    const j =
+        \\{"duration_seconds":15.5,"sample_rate":  44100}
+    ;
+    const m = parseVoiceMetadata(j);
+    try std.testing.expectApproxEqAbs(@as(f64, 15.5), m.duration_seconds, 0.01);
+    try std.testing.expectEqual(@as(u32, 44100), m.sample_rate);
+}
+
+test "parseVoiceMetadata returns zeros on missing keys" {
+    const m = parseVoiceMetadata("{\"slug\": \"x\"}");
+    try std.testing.expectEqual(@as(f64, 0), m.duration_seconds);
+    try std.testing.expectEqual(@as(u32, 0), m.sample_rate);
 }
