@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Links libpiper (GPL-3.0); see /LICENSE for the dual-license boundary.
 // PiperEngine — Zig wrapper around libpiper (OHF-Voice/piper1-gpl) via @cImport.
 //
 // v0.6 scope: prove the FFI works. Init loads voice + ONNX runtime + espeak-ng,

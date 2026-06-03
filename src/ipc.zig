@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 // Wire protocol between agent-tts client and daemon.
 //
 // Transport: UNIX stream socket at $HOME/.cache/agent-tts/sock

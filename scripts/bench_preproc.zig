@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 // Benchmark for src/preproc.zig — measures wall time of `process` over
 // realistic Pt-BR sentences. Used to populate _qa/v0.5-baseline.md.
 //

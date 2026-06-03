@@ -1,0 +1,47 @@
+agent-tts licensing
+===================
+
+The agent-tts source code is dual-licensed under your choice of:
+
+  - MIT License (see LICENSE-MIT)
+  - Apache License, Version 2.0 (see LICENSE-APACHE)
+
+SPDX-License-Identifier: MIT OR Apache-2.0
+
+This applies to all source files in `src/` UNLESS a different SPDX header
+appears at the top of the file. The two exceptions are:
+
+  - `src/piper.zig`            — SPDX: GPL-3.0-or-later (links libpiper)
+  - `vendor/piper1-gpl/`       — upstream GPL-3.0-or-later (not redistributed)
+  - `vendor/zaudio/`           — upstream MIT
+  - `vendor/zaudio/libs/miniaudio` — upstream public domain (Unlicense)
+
+GPL contamination
+-----------------
+
+libpiper (https://github.com/OHF-Voice/piper1-gpl) is GPL-3.0-or-later.
+When agent-tts is built with `-Dwith-piper=true` and distributed as a binary,
+the combined work derives from libpiper and is therefore covered by GPL-3.0.
+
+Concretely:
+
+  - Source code distribution: MIT OR Apache-2.0 (always).
+  - Binary distribution without piper (`-Dwith-piper=false`, the default):
+    MIT OR Apache-2.0.
+  - Binary distribution with piper linked: GPL-3.0-or-later.
+
+If you want to use agent-tts in a closed-source / non-GPL product, build
+without piper and only use the `say` engine (`--engine say`).
+
+Voice models
+------------
+
+The Pt-BR Faber voice (`pt_BR-faber-medium.onnx`) is downloaded from
+https://github.com/rhasspy/piper-voices at runtime and carries its own
+license (typically CC-BY-NC). agent-tts does not redistribute the voice model.
+
+Trademarks
+----------
+
+"Piper" and "ONNX Runtime" are properties of their respective owners.
+This project is not affiliated with them.

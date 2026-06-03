@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! By convention, root.zig is the root source file when making a package.
 const std = @import("std");
 const Io = std.Io;

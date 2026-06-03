@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 // launchd integration (macOS auto-start) — v0.4.
 //
 // Manages a per-user LaunchAgent plist so the daemon survives logout/reboot
@@ -5,7 +6,7 @@
 // voice (KPI = TTFA).
 //
 // Plist path: $HOME/Library/LaunchAgents/<label>.plist
-// Label:      cloud.mukutu.agent-tts  (override via env AGENT_TTS_LAUNCHD_LABEL
+// Label:      io.github.biliboss.agent-tts  (override via env AGENT_TTS_LAUNCHD_LABEL
 //             — used by the dry-run test in _qa/v0.4-baseline.md to avoid
 //             clobbering a real install).
 //
@@ -30,7 +31,7 @@
 
 const std = @import("std");
 
-pub const DEFAULT_LABEL = "cloud.mukutu.agent-tts";
+pub const DEFAULT_LABEL = "io.github.biliboss.agent-tts";
 pub const LABEL_ENV = "AGENT_TTS_LAUNCHD_LABEL";
 
 // Resolved set of paths derived from $HOME + label. Computed once, reused.
@@ -384,13 +385,13 @@ test "renderPlist contains required keys and escapes home" {
 
     const xml = try renderPlistForTest(
         arena,
-        "cloud.mukutu.agent-tts.test",
+        "io.github.biliboss.agent-tts.test",
         "/Users/test & co/bin/agent-tts",
         "/Users/test & co",
     );
 
     try std.testing.expect(std.mem.indexOf(u8, xml, "<key>Label</key>") != null);
-    try std.testing.expect(std.mem.indexOf(u8, xml, "cloud.mukutu.agent-tts.test") != null);
+    try std.testing.expect(std.mem.indexOf(u8, xml, "io.github.biliboss.agent-tts.test") != null);
     try std.testing.expect(std.mem.indexOf(u8, xml, "<key>RunAtLoad</key>") != null);
     try std.testing.expect(std.mem.indexOf(u8, xml, "<key>KeepAlive</key>") != null);
     try std.testing.expect(std.mem.indexOf(u8, xml, "<key>SuccessfulExit</key>") != null);

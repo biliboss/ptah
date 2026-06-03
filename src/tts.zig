@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 // Drives macOS `say`. The daemon worker calls `spawnSay` (v0.3) so it can
 // register the child PID with the queue (for SKIP → SIGTERM) before blocking
 // on wait().

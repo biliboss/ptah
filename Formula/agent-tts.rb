@@ -1,8 +1,8 @@
 # Homebrew formula for agent-tts — Pt-BR TTS CLI for macOS.
 #
-# Tap install path (placeholder — gabriel/tap is NOT yet published):
-#   brew tap gabriel/tap https://github.com/gabriel/homebrew-tap
-#   brew install gabriel/tap/agent-tts
+# Tap install path (placeholder — biliboss/tap is NOT yet published):
+#   brew tap biliboss/tap https://github.com/biliboss/homebrew-tap
+#   brew install biliboss/tap/agent-tts
 #
 # When the real tap repo lands, drop this formula into its `Formula/`
 # directory unchanged. Until the v1.0 release tarball is published and
@@ -16,9 +16,9 @@
 #
 class AgentTts < Formula
   desc "Pt-BR TTS CLI for macOS — daemon + queue + libpiper"
-  homepage "https://github.com/gabriel/agent-tts"
+  homepage "https://github.com/biliboss/agent-tts"
   # placeholder until v1.0 release tarball lands — version 1.0.0 is in the URL.
-  url "https://github.com/gabriel/agent-tts/releases/download/v1.0.0/agent-tts-1.0.0-universal.tar.gz"
+  url "https://github.com/biliboss/agent-tts/releases/download/v1.0.0/agent-tts-1.0.0-universal.tar.gz"
   # placeholder — compute with `shasum -a 256 <tarball>` on the real release
   sha256 "0000000000000000000000000000000000000000000000000000000000000000"
   license "MIT"

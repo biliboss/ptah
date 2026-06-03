@@ -4,7 +4,7 @@ Astro Starlight site documentando o projeto **agent-tts** (Zig CLI global pra TT
 
 ## Propósito
 
-Documento vivo de decisões, arquitetura e roadmap. Audiência: Gabriel + agentes (Claude Code) que vão evoluir o projeto.
+Documento vivo de decisões, arquitetura e roadmap. Audiência: maintainers + agentes (Claude Code) que vão evoluir o projeto.
 
 ## KPI único
 
@@ -99,12 +99,12 @@ Resumo travado (detalhe nas páginas):
 - **IPC**: UNIX socket em `~/.cache/agent-tts/sock`
 - **Fila**: SQLite WAL em `~/.cache/agent-tts/queue.db`
 - **Install path**: `/usr/local/bin/agent-tts`
-- **Auto-start**: `launchd` plist `~/Library/LaunchAgents/cloud.mukutu.agent-tts.plist`
+- **Auto-start**: `launchd` plist `~/Library/LaunchAgents/io.github.biliboss.agent-tts.plist`
 
 ## Não fazer (docs)
 
 - Não duplicar conteúdo entre páginas — linka
-- Não publicar externamente sem aprovação do Gabriel
+- Não publicar externamente sem revisão de maintainer
 - Não embedar diagramas em imagem — usa code fence ASCII (busca + diff friendly)
 - Não inflar páginas com prosa decorativa — corta tudo que não move decisão
 

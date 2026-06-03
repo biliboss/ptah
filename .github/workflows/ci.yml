@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-test:
+    name: build + test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, macos-13]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Zig 0.16
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: zig fmt --check
+        run: zig fmt --check src build.zig
+
+      - name: zig build (host, no piper)
+        run: zig build -Doptimize=ReleaseFast
+
+      - name: zig build test
+        run: zig build test --summary all
+
+      - name: smoke daemon + enqueue
+        run: |
+          ./zig-out/bin/agent-tts --version
+          ./zig-out/bin/agent-tts daemon > /tmp/daemon.log 2>&1 &
+          sleep 3
+          ./zig-out/bin/agent-tts --engine say "CI smoke test"
+          sleep 1
+          ./zig-out/bin/agent-tts queue
+          pkill -f "agent-tts daemon" || true
+          cat /tmp/daemon.log
+
+  universal:
+    name: universal binary build
+    runs-on: macos-14
+    needs: build-test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - name: zig build universal
+        run: zig build universal
+      - name: lipo verify
+        run: |
+          file zig-out/bin/agent-tts-universal
+          lipo -info zig-out/bin/agent-tts-universal
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agent-tts-universal
+          path: zig-out/bin/agent-tts-universal

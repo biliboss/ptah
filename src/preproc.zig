@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 // Pt-BR text preprocessor for `say`. v0.5.
 //
 // Applies, in order:

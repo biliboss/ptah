@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 // Client: connect to running daemon, dispatch one of:
 //   enqueue (default)     — `agent-tts "texto"`
 //   queue                 — `agent-tts queue` lists pending+playing items
@@ -26,7 +27,7 @@ const HELP =
     \\  agent-tts daemon                 run daemon (foreground)
     \\
     \\Options (for enqueue):
-    \\  --engine say|piper  TTS backend (default: say)
+    \\  --engine say|piper  TTS backend (default: piper; say = fallback)
     \\  --voice NAME        voice name (default: Luciana for say, faber for piper)
     \\  --rate WPM          words per minute (default: 330; ignored by piper)
     \\  -h, --help          this help
@@ -47,7 +48,7 @@ pub fn run(arena: std.mem.Allocator, io: std.Io, home: []const u8, args: []const
 }
 
 fn cmdEnqueue(arena: std.mem.Allocator, io: std.Io, home: []const u8, args: []const []const u8) !void {
-    var engine: ipc.Engine = .say;
+    var engine: ipc.Engine = .piper;
     var voice_arg: ?[]const u8 = null;
     var rate: u32 = DEFAULT_RATE;
     var text: ?[]const u8 = null;

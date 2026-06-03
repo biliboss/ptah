@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 // agent-tts — Pt-BR TTS via macOS `say` + libpiper (v0.7+).
 //
 // Single binary, modes:
@@ -15,7 +16,7 @@
 //   agent-tts [--engine X] [--voice V] [--rate R] "..." → enqueue on daemon
 //
 // v0.3: SQLite WAL queue at ~/.cache/agent-tts/queue.db.
-// v0.4: launchd LaunchAgent (~/Library/LaunchAgents/cloud.mukutu.agent-tts.plist).
+// v0.4: launchd LaunchAgent (~/Library/LaunchAgents/io.github.biliboss.agent-tts.plist).
 // v0.5: Pt-BR text preprocessor (abbreviations, cardinals 0..9999, [[slnc N]] pauses).
 // v0.6: libpiper FFI baseline (PiperEngine loaded but not routed yet).
 // v0.7: zaudio streaming PCM + --engine routing. Piper resident in daemon.
@@ -57,7 +58,7 @@ const HELP =
     \\  agent-tts ttfa-bench --engine say|piper --warm N  measure first-sample latency
     \\
     \\Options:
-    \\  --engine say|piper  TTS backend (default: say)
+    \\  --engine say|piper  TTS backend (default: piper; say = fallback)
     \\  --voice NAME        voice name (default: Luciana for say, faber for piper)
     \\  --rate WPM          words per minute (default: 330; ignored by piper)
     \\  -h, --help          this help
@@ -67,7 +68,7 @@ const HELP =
     \\stays resident in the daemon, eliminating the ~400ms cold init cost from
     \\v0.6, and zaudio plays raw s16le without WAV+afplay.
     \\
-    \\launchd plist lives at ~/Library/LaunchAgents/cloud.mukutu.agent-tts.plist
+    \\launchd plist lives at ~/Library/LaunchAgents/io.github.biliboss.agent-tts.plist
     \\(override label via AGENT_TTS_LAUNCHD_LABEL env var — used by tests).
     \\
 ;

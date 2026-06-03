@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 // v0.3 queue: SQLite WAL-backed FIFO.
 // v0.7 add: `engine TEXT NOT NULL DEFAULT 'say'` column, idempotent migration,
 // propagated through push/list/pop and PoppedItem.

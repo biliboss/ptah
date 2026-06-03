@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 // AudioPlayer — owns a zaudio.Engine (miniaudio) and plays s16le PCM buffers
 // directly without writing a WAV to disk.
 //
@@ -84,22 +85,21 @@ pub const AudioPlayer = struct {
 
         self.stop_requested.store(false, .release);
 
-        const buffer = zaudio.AudioBuffer.create(
-            zaudio.AudioBuffer.Config.init(
-                .signed16,
-                1, // mono — Piper voices are all mono
-                samples.len,
-                @ptrCast(samples.ptr),
-            ),
-        ) catch {
+        var cfg = zaudio.AudioBuffer.Config.init(
+            .signed16,
+            1, // mono — Piper voices are all mono
+            samples.len,
+            @ptrCast(samples.ptr),
+        );
+        // Piper voices ship at 22050Hz (faber-medium). zaudio defaults to
+        // engine output rate (48000) which would resample the buffer up,
+        // shifting pitch ~2.18× higher. Pin the source rate to caller's value
+        // so the engine resamples DOWN to the device rate correctly.
+        cfg.sample_rate = sample_rate;
+        const buffer = zaudio.AudioBuffer.create(cfg) catch {
             return Error.CreateBufferFailed;
         };
         defer buffer.destroy();
-
-        // The engine internally resamples to its device output rate — we
-        // don't need to match it here. miniaudio reads `sample_rate` from
-        // the AudioBuffer config via its embedded data_source.
-        _ = sample_rate;
 
         const sound = self.engine.createSoundFromDataSource(
             buffer.asDataSourceMut(),

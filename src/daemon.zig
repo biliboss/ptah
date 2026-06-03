@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 // Daemon: accept loop on UNIX socket, worker thread drains SQLite queue and
 // routes playback per item engine (`say` → spawn `/usr/bin/say`; `piper` →
 // libpiper synth → zaudio streaming PCM).
