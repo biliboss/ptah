@@ -46,6 +46,56 @@ Zig 0.16 auto-resolve macOS SDK paths só pro target nativo. Para cross-targets 
 
 ---
 
+## v0.7 — zaudio streaming PCM + engine routing · 2026-06-03
+
+**Entregue**:
+
+- `src/audio.zig` — `AudioPlayer` struct dono de uma `zaudio.Engine` (miniaudio). `streamS16le` toca buffer s16 mono direto via `AudioBuffer` + `createSoundFromDataSource`, sem WAV temporário. `requestStop` aborta o poll-loop via flag atômica + `sound.stop()`
+- `src/piper.zig` — novo `synthToSamples(arena, text) ![]i16` retorna PCM direto (sem WAV); `sampleRate()` expõe taxa do voice config. `synthToWav` agora chama `synthToSamples` + `writeWav`
+- `src/ipc.zig` — campo `engine: Engine = .say` em `Message`, enum `Engine { say, piper }`, encode/parse com layout `ENQUEUE\t<engine>\t<voice>\t<rate>\t<text>`. **Compat retroativo**: `parseRequest` peek-detecta layout v0.6 (4 campos sem engine) e vira engine=.say
+- `src/queue.zig` — migration idempotente do schema via `PRAGMA table_info` + `ALTER TABLE items ADD COLUMN engine TEXT NOT NULL DEFAULT 'say'`. `push/list/tryClaimNext` propagam o campo; `PoppedItem` ganha `engine`
+- `src/daemon.zig` — `AudioPlayer` boot best-effort no daemon (logging tempo, fallback graceful se zaudio falha → `runPiper` cai para WAV+afplay). `PiperEngine` vive em escopo daemon (refactor do `tryBootPiper` leak-and-pray pra um `Resources` struct passado pro worker). `runOne` switch por `item.engine`; SKIP roteia tanto SIGTERM (say) quanto `audio_player.requestStop()` (piper)
+- `src/client.zig` — flag `--engine say|piper`. Default `say`. Voice default vira `Luciana` ou `faber` conforme engine
+- `src/main.zig` — HELP atualizado. Subcomando oculto `ttfa-bench --engine X --warm N` instrumenta latência primeiro-sample (zaudio first-sample callback) e roda N ciclos warm
+- `build.zig` — wire zaudio + miniaudio vendored sources (~100k LoC single-header) com `-DMA_NO_RUNTIME_LINKING` + CoreAudio/AudioUnit frameworks. `vendor/zaudio/COMMIT` pinned em `e5b89fde58be72de359089e9b8f5c4d5126fb159`
+- Patch in-tree em `vendor/zaudio/src/zaudio.zig`: Zig 0.16 removeu `std.Thread.Mutex` — trocado por `std.atomic.Value(bool)` spin lock (contenção negligível em mem callbacks)
+
+**Medições** (Mac Air M4, ReleaseFast, baseline em `_qa/v0.7-baseline.md`):
+
+| Métrica | Valor | Alvo v0.7 |
+|---------|-------|-----------|
+| Piper TTFA warm (5-iter avg) | **91.3ms** (min 84.8, max 96.6) | < 1s ✅ |
+| Piper warm — synth dominante | 91.2ms synth | informativo |
+| Piper init cold (bench, FS quente) | 335.0ms | informativo |
+| Daemon boot total | ~715ms (pré-warm 270 + zaudio 78 + piper 344) | informativo |
+| Say TTFA warm (5-iter avg) | 2229ms* | informativo |
+| Binary size sem piper | 918 072 B (+463 KB vs v0.6) | informativo |
+| Binary size com piper | 975 304 B (+518 KB vs v0.6) | informativo |
+| Daemon RSS resident (piper + zaudio) | 176 MB | informativo |
+| Schema migration v0.6 → v0.7 | idempotente, ALTER backfilla 'say' | informativo |
+
+*Caveat: "say TTFA" no bench mede wall-clock spawn+wait+playback completo de uma frase Pt-BR — NÃO é primeiro-sample. macOS `say` não expõe hook pra primeiro frame sem hijack do device. O número real do daemon path é o ~50ms round-trip da v0.2 (voz pré-aquecida).
+
+**TTFA piper warm = 91.3ms** bate o alvo de 1s com 10× de folga. Engine resident no daemon eliminou os 397ms de cold init da v0.6.
+
+**Decisões honestas**:
+
+- zaudio upstream (`zig-gamedev/zaudio`) ainda usa `linkLibC()` (removido em Zig 0.16); vendorizamos `.zig` + `.c` em `vendor/zaudio/` em vez de forkar. Recipe em `vendor/README.md`. Quando upstream atualizar, swap pra `build.zig.zon` dependency
+- AudioPlayer usa `AudioBuffer` (uma alocação por utterance) em vez de custom `decoderReadProc` streaming. Mais simples; synth domina TTFA, então otimizar playback overhead não move agulha
+- TTFA do `say` permanece não-instrumentado de verdade. Aceito pela v0.7 — daemon path com voz quente já é sub-100ms documentado desde v0.2
+- Daemon RSS pula de ~30 MB pra 176 MB quando piper carrega. Preço de manter ONNX runtime + tensores Faber-medium quentes. Usuário opt-in via `AGENT_TTS_PIPER=1`
+- `runPiper` registra PID do próprio daemon como "playing" (SKIP não consegue cancelar synth piper em flight — só playback). Trade-off aceito; synth dura 90ms então o usuário raramente quer SKIP no meio
+
+**Gotcha durante build**:
+
+- `std.Thread.Mutex` e `std.Thread.sleep` foram removidos no Zig 0.16. zaudio.zig recebeu shim de spin lock; audio.zig usa `std.c.nanosleep` direto (já linkamos libc no exe)
+- `linkLibC()` virou `link_libc = true` na config do módulo. Por isso não usamos o build.zig.zon do upstream
+- Daemon original importava `piper.zig` unconditional; @cImport piper.h falha quando `-Dwith-piper=false`. Fix: `piper_mod` é alias condicional em comptime
+
+**License**: GPL-3.0 herda do libpiper + espeak-ng quando agent-tts for distribuído com a dylib. zaudio é MIT. Net: GPL é só por causa do Piper.
+
+---
+
 ## v0.6 — libpiper FFI baseline · 2026-06-03
 
 **Entregue**:

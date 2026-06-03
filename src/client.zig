@@ -16,7 +16,7 @@ const READ_BUF = 64 * 1024;
 const WRITE_BUF = 16 * 1024;
 
 const HELP =
-    \\agent-tts — Pt-BR TTS via macOS `say`
+    \\agent-tts — Pt-BR TTS via macOS `say` or libpiper (v0.7+)
     \\
     \\Usage:
     \\  agent-tts "texto"                enqueue text on the running daemon
@@ -26,10 +26,11 @@ const HELP =
     \\  agent-tts daemon                 run daemon (foreground)
     \\
     \\Options (for enqueue):
-    \\  --voice NAME   say voice (default: Luciana)
-    \\  --rate WPM     words per minute (default: 330)
-    \\  -h, --help     this help
-    \\  -V, --version  print version
+    \\  --engine say|piper  TTS backend (default: say)
+    \\  --voice NAME        voice name (default: Luciana for say, faber for piper)
+    \\  --rate WPM          words per minute (default: 330; ignored by piper)
+    \\  -h, --help          this help
+    \\  -V, --version       print version
     \\
 ;
 
@@ -46,20 +47,31 @@ pub fn run(arena: std.mem.Allocator, io: std.Io, home: []const u8, args: []const
 }
 
 fn cmdEnqueue(arena: std.mem.Allocator, io: std.Io, home: []const u8, args: []const []const u8) !void {
-    var voice: []const u8 = DEFAULT_VOICE;
+    var engine: ipc.Engine = .say;
+    var voice_arg: ?[]const u8 = null;
     var rate: u32 = DEFAULT_RATE;
     var text: ?[]const u8 = null;
 
     var i: usize = 1;
     while (i < args.len) : (i += 1) {
         const a = args[i];
-        if (std.mem.eql(u8, a, "--voice")) {
+        if (std.mem.eql(u8, a, "--engine")) {
+            i += 1;
+            if (i >= args.len) {
+                std.debug.print("error: --engine needs value (say|piper)\n", .{});
+                std.process.exit(2);
+            }
+            engine = ipc.Engine.fromStr(args[i]) orelse {
+                std.debug.print("error: --engine invalid (got '{s}') — expected say|piper\n", .{args[i]});
+                std.process.exit(2);
+            };
+        } else if (std.mem.eql(u8, a, "--voice")) {
             i += 1;
             if (i >= args.len) {
                 std.debug.print("error: --voice needs value\n", .{});
                 std.process.exit(2);
             }
-            voice = args[i];
+            voice_arg = args[i];
         } else if (std.mem.eql(u8, a, "--rate")) {
             i += 1;
             if (i >= args.len) {
@@ -80,8 +92,16 @@ fn cmdEnqueue(arena: std.mem.Allocator, io: std.Io, home: []const u8, args: []co
         std.process.exit(2);
     }
 
+    // Engine-specific voice defaults. Piper ignores `voice` for now (Faber
+    // is the only one shipped) but we still pass it through for protocol
+    // consistency and future-proofing.
+    const voice: []const u8 = voice_arg orelse switch (engine) {
+        .say => DEFAULT_VOICE,
+        .piper => "faber",
+    };
+
     const clean = try ipc.sanitizeText(arena, text.?);
-    const msg = ipc.Message{ .voice = voice, .rate = rate, .text = clean };
+    const msg = ipc.Message{ .engine = engine, .voice = voice, .rate = rate, .text = clean };
 
     var stream = try openSocket(arena, io, home);
     defer stream.close(io);
@@ -92,7 +112,7 @@ fn cmdEnqueue(arena: std.mem.Allocator, io: std.Io, home: []const u8, args: []co
     var sw = stream.writer(io, &write_buf);
 
     const t_start = std.Io.Clock.now(.awake, io);
-    try sw.interface.print("ENQUEUE\t{s}\t{d}\t{s}\n", .{ msg.voice, msg.rate, msg.text });
+    try sw.interface.print("ENQUEUE\t{s}\t{s}\t{d}\t{s}\n", .{ msg.engine.str(), msg.voice, msg.rate, msg.text });
     try sw.interface.flush();
 
     const line = try sr.interface.takeDelimiterExclusive('\n');
@@ -144,17 +164,27 @@ fn cmdQueue(arena: std.mem.Allocator, io: std.Io, home: []const u8) !void {
         }
         if (std.mem.startsWith(u8, line, "ITEM\t")) {
             const rest = line[5..];
-            // ITEM\t<id>\t<state>\t<voice>\t<rate>\t<text>
+            // v0.7 ITEM\t<id>\t<state>\t<engine>\t<voice>\t<rate>\t<text>
             var it = std.mem.splitScalar(u8, rest, '\t');
             const id = it.next() orelse continue;
             const state = it.next() orelse continue;
-            const voice = it.next() orelse continue;
-            const rate = it.next() orelse continue;
+            const engine_or_voice = it.next() orelse continue;
+            const next_field = it.next() orelse continue;
+            // Disambiguate v0.6 (voice here) vs v0.7 (engine here). Same
+            // trick as ipc.parseRequest.
+            var engine: []const u8 = "say";
+            var voice: []const u8 = engine_or_voice;
+            var rate: []const u8 = next_field;
+            if (std.mem.eql(u8, engine_or_voice, "say") or std.mem.eql(u8, engine_or_voice, "piper")) {
+                engine = engine_or_voice;
+                voice = next_field;
+                rate = it.next() orelse continue;
+            }
             const text = it.rest();
             if (n_items == 0) {
-                try w.writeAll("  id  state    voice                  rate  text\n");
+                try w.writeAll("  id  state    engine  voice                  rate  text\n");
             }
-            try w.print("  {s:>4}  {s:<8} {s:<22} {s:>4}  {s}\n", .{ id, state, voice, rate, text });
+            try w.print("  {s:>4}  {s:<8} {s:<6}  {s:<22} {s:>4}  {s}\n", .{ id, state, engine, voice, rate, text });
             n_items += 1;
         }
     }

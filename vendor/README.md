@@ -133,3 +133,67 @@ package.
 There is no Homebrew formula for libpiper (the C library). The Homebrew
 `piper-tts` formula is the Python CLI. We need the C ABI to do FFI, so we
 build from source.
+
+---
+
+# v0.7+: `vendor/zaudio/` — miniaudio Zig wrapper
+
+Source: [`zig-gamedev/zaudio`](https://github.com/zig-gamedev/zaudio)
+Pinned commit: `e5b89fde58be72de359089e9b8f5c4d5126fb159`
+(`Update miniaudio to v0.11.25`, miniaudio v0.11.25)
+
+The exact SHA lives in `vendor/zaudio/COMMIT`. We vendor `src/zaudio.zig`,
+`src/zaudio.c`, and `libs/miniaudio/{miniaudio.h, miniaudio.c}` directly into
+the build (~100k LoC total — miniaudio is a single-header lib). Wired in
+`build.zig` via `configureExe`.
+
+## Reproduction recipe
+
+```bash
+cd /tmp
+git clone --depth=1 https://github.com/zig-gamedev/zaudio.git zaudio-probe
+cd zaudio-probe
+git fetch --depth=1 origin e5b89fde58be72de359089e9b8f5c4d5126fb159
+git checkout e5b89fde58be72de359089e9b8f5c4d5126fb159
+
+# Copy required sources into vendor/zaudio/
+cd <agent-tts>
+mkdir -p vendor/zaudio/src vendor/zaudio/libs/miniaudio
+cp /tmp/zaudio-probe/src/zaudio.zig vendor/zaudio/src/
+cp /tmp/zaudio-probe/src/zaudio.c vendor/zaudio/src/
+cp /tmp/zaudio-probe/libs/miniaudio/miniaudio.h vendor/zaudio/libs/miniaudio/
+cp /tmp/zaudio-probe/libs/miniaudio/miniaudio.c vendor/zaudio/libs/miniaudio/
+cp /tmp/zaudio-probe/LICENSE vendor/zaudio/LICENSE
+echo "e5b89fde58be72de359089e9b8f5c4d5126fb159" > vendor/zaudio/COMMIT
+```
+
+## In-tree patches
+
+After copying, apply the **Zig 0.16 compat patch** in
+`vendor/zaudio/src/zaudio.zig` (~line 3160):
+
+`std.Thread.Mutex` (used for `mem_mutex` in the malloc/realloc callback path)
+was removed in Zig 0.16 and replaced by `std.Io.Mutex` (which needs an io
+context — we don't carry one in the global allocator callbacks). We swap in a
+hand-rolled `std.atomic.Value(bool)` spin lock. Contention is negligible in
+practice: mem callbacks fire from the device thread plus a few engine-create
+paths, never hot.
+
+See the `AGENT-TTS PATCH (v0.7)` comment block in that file for the exact
+diff. When upstream zaudio catches up to Zig 0.16 / `std.Io.Mutex` (track via
+their `minimum_zig_version` field), drop this vendoring entirely and switch
+to `zig fetch --save` in `build.zig.zon`.
+
+## Why not use `build.zig.zon`?
+
+Tried `zig fetch --save https://github.com/zig-gamedev/zaudio/archive/<commit>.tar.gz`
+first. Upstream's `build.zig` calls `miniaudio_lib.linkLibC()` — an API
+removed in Zig 0.16. Module-level `link_libc = true` is the new spelling.
+Forking just to flip that one call seemed worse than vendoring the leaf
+sources we already understood.
+
+## License
+
+zaudio + miniaudio are MIT. No GPL concern (unlike libpiper). When v1.0
+distributes the binary, the LICENSE file at `vendor/zaudio/LICENSE` must be
+included alongside (already vendored).

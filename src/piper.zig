@@ -39,6 +39,10 @@ pub const PiperEngine = struct {
     voice_path: []const u8,
     espeak_data_path: []const u8,
     allocator: std.mem.Allocator,
+    /// Cached sample rate (Hz). Voice config (`.onnx.json`) drives this; we
+    /// populate it from the first synth chunk and keep it for v0.7's bench /
+    /// zaudio init path. Faber-medium = 22050.
+    cached_sample_rate: u32 = 22050,
 
     /// Load voice model from `voice_path` (path to .onnx file; .onnx.json
     /// must sit next to it). `espeak_data_path` points at the espeak-ng-data
@@ -84,19 +88,36 @@ pub const PiperEngine = struct {
         text: []const u8,
         out_wav_path: []const u8,
     ) !void {
-        const text_z = try self.allocator.dupeZ(u8, text);
-        defer self.allocator.free(text_z);
+        const samples = try self.synthToSamples(self.allocator, text);
+        defer self.allocator.free(samples);
 
-        // Default synth options taken from the loaded voice config.
+        try writeWav(io, out_wav_path, samples, self.cached_sample_rate);
+    }
+
+    /// Synthesize `text` into a heap-owned `[]i16` of PCM samples (mono,
+    /// host-endian). Caller owns the returned slice and must free it via
+    /// the same allocator. Sample rate available via `sampleRate()` after
+    /// the call returns — libpiper publishes the rate on the first chunk
+    /// and we cache it on `self.cached_sample_rate`.
+    ///
+    /// `arena` is the allocator used for the output. For v0.7 the daemon
+    /// passes a per-utterance ArenaAllocator so memory is recycled cleanly.
+    pub fn synthToSamples(
+        self: *PiperEngine,
+        arena: std.mem.Allocator,
+        text: []const u8,
+    ) Error![]i16 {
+        const text_z = arena.dupeZ(u8, text) catch return Error.SynthesizeStartFailed;
+        defer arena.free(text_z);
+
         var opts: c.piper_synthesize_options = c.piper_default_synthesize_options(self.handle);
 
         const rc_start = c.piper_synthesize_start(self.handle, text_z.ptr, &opts);
         if (rc_start != c.PIPER_OK) return Error.SynthesizeStartFailed;
 
         var samples: std.ArrayList(i16) = .empty;
-        defer samples.deinit(self.allocator);
+        defer samples.deinit(arena);
 
-        var sample_rate: i32 = 22050; // overwritten on first chunk
         var chunk: c.piper_audio_chunk = std.mem.zeroes(c.piper_audio_chunk);
 
         while (true) {
@@ -105,10 +126,10 @@ pub const PiperEngine = struct {
                 return Error.SynthesizeNextFailed;
             }
 
-            if (chunk.sample_rate > 0) sample_rate = chunk.sample_rate;
+            if (chunk.sample_rate > 0) self.cached_sample_rate = @intCast(chunk.sample_rate);
 
             if (chunk.num_samples > 0 and chunk.samples != null) {
-                try samples.ensureUnusedCapacity(self.allocator, chunk.num_samples);
+                samples.ensureUnusedCapacity(arena, chunk.num_samples) catch return Error.SynthesizeNextFailed;
                 const src = chunk.samples[0..chunk.num_samples];
                 for (src) |f| {
                     // libpiper emits floats in [-1, 1]. Clamp+scale to s16.
@@ -122,7 +143,13 @@ pub const PiperEngine = struct {
             if (chunk.is_last) break;
         }
 
-        try writeWav(io, out_wav_path, samples.items, @intCast(sample_rate));
+        return samples.toOwnedSlice(arena) catch return Error.SynthesizeNextFailed;
+    }
+
+    /// Cached sample rate from the most recent synth (or the voice default
+    /// 22050 for faber-medium if nothing synthesized yet).
+    pub fn sampleRate(self: *const PiperEngine) u32 {
+        return self.cached_sample_rate;
     }
 };
 

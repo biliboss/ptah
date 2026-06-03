@@ -31,7 +31,7 @@ const ipc = @import("ipc.zig");
 const audio = @import("audio.zig");
 const build_options = @import("build_options");
 
-pub const VERSION = "1.0.0";
+pub const VERSION = "0.7.0";
 
 const HELP =
     \\agent-tts v{s} — Pt-BR TTS via macOS `say` or libpiper

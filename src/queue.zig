@@ -1,4 +1,6 @@
 // v0.3 queue: SQLite WAL-backed FIFO.
+// v0.7 add: `engine TEXT NOT NULL DEFAULT 'say'` column, idempotent migration,
+// propagated through push/list/pop and PoppedItem.
 //
 // Why SQLite instead of in-memory ArrayList:
 //   - Survives daemon crash + reboot (was v0.2 gap)
@@ -70,6 +72,7 @@ pub const State = enum {
 pub const Item = struct {
     id: u64,
     state: State,
+    engine: ipc.Engine,
     voice: []const u8,
     rate: u32,
     text: []const u8,
@@ -77,6 +80,7 @@ pub const Item = struct {
 
 pub const PoppedItem = struct {
     id: u64,
+    engine: ipc.Engine,
     voice: []u8,
     rate: u32,
     text: []u8,
@@ -91,7 +95,8 @@ const SCHEMA =
     \\  state TEXT NOT NULL DEFAULT 'pending',
     \\  enqueued_at INTEGER NOT NULL,
     \\  started_at INTEGER,
-    \\  finished_at INTEGER
+    \\  finished_at INTEGER,
+    \\  engine TEXT NOT NULL DEFAULT 'say'
     \\);
     \\CREATE INDEX IF NOT EXISTS items_pending_idx ON items(state, id) WHERE state IN ('pending','playing');
 ;
@@ -125,6 +130,14 @@ pub const Queue = struct {
         try execSimple(q.db, "PRAGMA foreign_keys=ON;");
         try execSimple(q.db, SCHEMA);
 
+        // v0.7 migration: pre-v0.7 DBs lack the `engine` column. SQLite
+        // doesn't accept `IF NOT EXISTS` inside ADD COLUMN, so probe via
+        // PRAGMA table_info and ADD only when missing — idempotent across
+        // multiple daemon starts.
+        if (!try hasColumn(q.db, "items", "engine")) {
+            try execSimple(q.db, "ALTER TABLE items ADD COLUMN engine TEXT NOT NULL DEFAULT 'say';");
+        }
+
         // Crash recovery: any row left in 'playing' from a prior daemon run
         // belongs to a `say` that was killed by daemon death — re-queue it.
         try execSimple(q.db, "UPDATE items SET state='pending', started_at=NULL WHERE state='playing';");
@@ -142,15 +155,17 @@ pub const Queue = struct {
         try q.mu.lock(io);
         defer q.mu.unlock(io);
 
-        const sql = "INSERT INTO items(text,voice,rate,state,enqueued_at) VALUES (?,?,?,'pending',?);";
+        const sql = "INSERT INTO items(text,voice,rate,state,enqueued_at,engine) VALUES (?,?,?,'pending',?,?);";
         var stmt: ?*c.sqlite3_stmt = null;
         if (c.sqlite3_prepare_v2(q.db, sql, -1, &stmt, null) != c.SQLITE_OK) return error.DbPrepare;
         defer _ = c.sqlite3_finalize(stmt);
 
+        const engine_str = msg.engine.str();
         if (c.sqlite3_bind_text(stmt, 1, msg.text.ptr, @intCast(msg.text.len), sqlite_static) != c.SQLITE_OK) return error.DbBind;
         if (c.sqlite3_bind_text(stmt, 2, msg.voice.ptr, @intCast(msg.voice.len), sqlite_static) != c.SQLITE_OK) return error.DbBind;
         if (c.sqlite3_bind_int(stmt, 3, @intCast(msg.rate)) != c.SQLITE_OK) return error.DbBind;
         if (c.sqlite3_bind_int64(stmt, 4, nowEpoch(io)) != c.SQLITE_OK) return error.DbBind;
+        if (c.sqlite3_bind_text(stmt, 5, engine_str.ptr, @intCast(engine_str.len), sqlite_static) != c.SQLITE_OK) return error.DbBind;
         if (c.sqlite3_step(stmt) != c.SQLITE_DONE) return error.DbStep;
 
         const id: u64 = @intCast(c.sqlite3_last_insert_rowid(q.db));
@@ -174,7 +189,7 @@ pub const Queue = struct {
 
     // Returns next pending row marked 'playing'. Must be called under `mu`.
     fn tryClaimNext(q: *Queue, io: std.Io, gpa: std.mem.Allocator) ?PoppedItem {
-        const sql_sel = "SELECT id, voice, rate, text FROM items WHERE state='pending' ORDER BY id ASC LIMIT 1;";
+        const sql_sel = "SELECT id, voice, rate, text, engine FROM items WHERE state='pending' ORDER BY id ASC LIMIT 1;";
         var stmt: ?*c.sqlite3_stmt = null;
         if (c.sqlite3_prepare_v2(q.db, sql_sel, -1, &stmt, null) != c.SQLITE_OK) return null;
         defer _ = c.sqlite3_finalize(stmt);
@@ -189,6 +204,17 @@ pub const Queue = struct {
             gpa.free(voice);
             return null;
         };
+        // engine column is NOT NULL DEFAULT 'say' — but be defensive about
+        // older rows that may have been inserted before the migration ran
+        // in a corner case (shouldn't happen in practice since the ALTER
+        // backfills with the default).
+        const engine_buf = colText(gpa, stmt, 4) catch {
+            gpa.free(voice);
+            gpa.free(text);
+            return null;
+        };
+        defer gpa.free(engine_buf);
+        const engine = ipc.Engine.fromStr(engine_buf) orelse .say;
 
         const sql_upd = "UPDATE items SET state='playing', started_at=? WHERE id=?;";
         var ustmt: ?*c.sqlite3_stmt = null;
@@ -206,7 +232,7 @@ pub const Queue = struct {
             return null;
         }
 
-        return .{ .id = id, .voice = voice, .rate = rate, .text = text };
+        return .{ .id = id, .engine = engine, .voice = voice, .rate = rate, .text = text };
     }
 
     // Worker calls after `say` finishes. If row is still 'playing', mark done.
@@ -239,7 +265,7 @@ pub const Queue = struct {
         q.mu.lockUncancelable(io);
         defer q.mu.unlock(io);
 
-        const sql = "SELECT id, state, voice, rate, text FROM items WHERE state IN ('pending','playing') ORDER BY id ASC;";
+        const sql = "SELECT id, state, voice, rate, text, engine FROM items WHERE state IN ('pending','playing') ORDER BY id ASC;";
         var stmt: ?*c.sqlite3_stmt = null;
         if (c.sqlite3_prepare_v2(q.db, sql, -1, &stmt, null) != c.SQLITE_OK) return error.DbPrepare;
         defer _ = c.sqlite3_finalize(stmt);
@@ -252,9 +278,11 @@ pub const Queue = struct {
             const voice = try colText(arena, stmt, 2);
             const rate: u32 = @intCast(c.sqlite3_column_int(stmt, 3));
             const text = try colText(arena, stmt, 4);
+            const engine_s = try colText(arena, stmt, 5);
             try out.append(arena, .{
                 .id = id,
                 .state = State.fromStr(state_s) orelse .pending,
+                .engine = ipc.Engine.fromStr(engine_s) orelse .say,
                 .voice = voice,
                 .rate = rate,
                 .text = text,
@@ -342,4 +370,27 @@ fn colText(allocator: std.mem.Allocator, stmt: ?*c.sqlite3_stmt, col: c_int) ![]
 
 fn nowEpoch(io: std.Io) i64 {
     return std.Io.Clock.now(.real, io).toSeconds();
+}
+
+// Idempotent column probe via PRAGMA table_info. Returns true when `column`
+// is present on `table`. PRAGMA outputs rows of (cid, name, type, notnull,
+// dflt_value, pk); we scan the `name` column. Single-threaded call at boot.
+fn hasColumn(db: ?*c.sqlite3, table: []const u8, column: []const u8) !bool {
+    // PRAGMA arguments can't be bound; format the table name in. Safe here
+    // because `table` is a code-defined literal, not user input.
+    var buf: [256]u8 = undefined;
+    const sql = std.fmt.bufPrintZ(&buf, "PRAGMA table_info({s});", .{table}) catch return error.DbPrepare;
+
+    var stmt: ?*c.sqlite3_stmt = null;
+    if (c.sqlite3_prepare_v2(db, sql.ptr, -1, &stmt, null) != c.SQLITE_OK) return error.DbPrepare;
+    defer _ = c.sqlite3_finalize(stmt);
+
+    while (c.sqlite3_step(stmt) == c.SQLITE_ROW) {
+        const name_ptr = c.sqlite3_column_text(stmt, 1);
+        const name_len: usize = @intCast(c.sqlite3_column_bytes(stmt, 1));
+        if (name_ptr == null or name_len == 0) continue;
+        const name = name_ptr[0..name_len];
+        if (std.mem.eql(u8, name, column)) return true;
+    }
+    return false;
 }
