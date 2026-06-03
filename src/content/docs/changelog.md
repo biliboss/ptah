@@ -22,6 +22,48 @@ Limpeza: 3.2GB liberados (XTTS-v2 venv + model + uv cache). Voz `pt_BR-faber-med
 
 ---
 
+## v0.4 — launchd auto-start · 2026-06-03
+
+**Entregue**:
+
+- Subcomandos `agent-tts daemon install | uninstall | status`
+- LaunchAgent plist em `~/Library/LaunchAgents/cloud.mukutu.agent-tts.plist` — daemon sobrevive logout/reboot e wakeup
+- Atomic write do plist via `createFileAtomic` + `replace` (kernel só vê velho ou novo, nunca half-written)
+- `launchctl bootstrap gui/<uid>` no install (substitui o deprecated `launchctl load`); `bootout` no uninstall
+- `KeepAlive` como dict `SuccessfulExit=false` — restart só em crash, exit limpo respeitado
+- `HOME` força via `EnvironmentVariables` — launchd não herda confiavelmente, sem isso o socket vai pro lugar errado
+- Self-locate via `std.process.executablePath` (Darwin: `_NSGetExecutablePath` + realpath) — argv[0] não basta porque launchd recusa relative paths
+- uid lookup via `std.c.getuid()` pra montar `gui/<uid>` domain
+- Override de label via env `AGENT_TTS_LAUNCHD_LABEL` — usado pelo dry-run test pra não clobberar install real
+- Guards defensivos: install recusa se plist já existe, uninstall recusa se não existe (mensagem explícita pro usuário)
+- Binary 481KB arm64 Mach-O ReleaseFast (era 455KB em v0.2, +26KB pelo módulo launchd + uso de `std.process.run`)
+
+**Medições** (Mac Air M4, dry-run com test label, baseline em `_qa/v0.4-baseline.md`):
+
+| Métrica | Valor | Alvo v0.4 |
+|---------|-------|-----------|
+| Install round-trip (mediana, 3 runs) | ~10ms | < 200ms |
+| Uninstall round-trip (mediana, 3 runs) | ~10ms | < 200ms |
+| Plist parse (`plutil -lint`) | OK | OK |
+| `launchctl list` post-install | PID + label visível | visível |
+| `launchctl list` post-uninstall | label ausente | ausente |
+
+Dominado pelo fork+exec do `/bin/launchctl`. Granularidade `/usr/bin/time` em macOS = 10ms; real ≤ 10ms.
+
+**Gaps que viram v0.5**:
+
+- Install não detecta daemon já rodando manualmente (conflita no socket). Workaround: `pkill` antes de install.
+- Sem `daemon restart` — usar `uninstall && install`.
+- Sem `daemon logs` (tail dos .log).
+- Pre-warm continua single-shot na boot do daemon — se launchd ressuscitar várias vezes/dia, paga 340ms cada vez. Monitorar.
+
+**Não fechou nesta versão** (movido):
+
+- SQLite WAL queue + comandos `queue/skip/clear` → ainda v0.3 (paralelo a v0.4)
+- Preprocessor de números + pausas → v0.5
+
+---
+
 ## v0.2 — daemon + socket + fila in-memory · 2026-06-03
 
 **Entregue**:
