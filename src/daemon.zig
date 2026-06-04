@@ -315,34 +315,84 @@ fn fallbackCloned(res: *Resources, io: std.Io, sa: std.mem.Allocator, item: queu
     return runSay(res, io, sa, fallback_item);
 }
 
+// v1.10.5: resolve `voice_synth.py` + `.venv-voice/bin/python` via probe.
+// Daemon's cwd isn't the repo root (launchd starts under HOME), so the v1.4
+// relative-path spawn fails. Probe order:
+//   1. $AGENT_TTS_REPO_ROOT/scripts/voice_synth.py + $AGENT_TTS_REPO_ROOT/.venv-voice/bin/python
+//   2. /opt/homebrew/share/agent-tts/scripts/voice_synth.py + same prefix venv
+//   3. /usr/local/share/agent-tts/...
+//   4. cwd-relative (legacy, v1.4 dev path)
+fn resolveSidecarPaths(sa: std.mem.Allocator) struct { script: []const u8, venv_python: ?[]const u8 } {
+    const c = @cImport({
+        @cInclude("stdlib.h");
+    });
+    const env_root = c.getenv("AGENT_TTS_REPO_ROOT");
+    const candidates: []const []const u8 = if (env_root != null and std.mem.span(env_root).len > 0)
+        &.{
+            std.mem.span(env_root),
+            "/opt/homebrew/share/agent-tts",
+            "/usr/local/share/agent-tts",
+        }
+    else
+        &.{
+            "/opt/homebrew/share/agent-tts",
+            "/usr/local/share/agent-tts",
+        };
+    for (candidates) |root| {
+        const script = std.fmt.allocPrint(sa, "{s}/scripts/voice_synth.py", .{root}) catch continue;
+        const venv = std.fmt.allocPrint(sa, "{s}/.venv-voice/bin/python", .{root}) catch continue;
+        if (fileExists(script)) {
+            const py: ?[]const u8 = if (fileExists(venv)) venv else null;
+            return .{ .script = script, .venv_python = py };
+        }
+    }
+    return .{ .script = "scripts/voice_synth.py", .venv_python = null };
+}
+
+fn fileExists(path: []const u8) bool {
+    const buf = std.heap.smp_allocator.dupeZ(u8, path) catch return false;
+    defer std.heap.smp_allocator.free(buf);
+    const fd = std.c.open(buf.ptr, .{ .ACCMODE = .RDONLY });
+    if (fd < 0) return false;
+    _ = std.c.close(fd);
+    return true;
+}
+
 // Spawn scripts/voice_synth.py, write text on stdin, drain s16le PCM from
-// stdout. Sidecar is expected on cwd-relative path for v1.4 (ship-from-source).
+// stdout. v1.10.5 probes for absolute script + venv python so daemon-spawned
+// (launchd cwd ≠ repo root) calls succeed.
 fn synthClonedViaSidecar(
     sa: std.mem.Allocator,
     io: std.Io,
     embedding_path: []const u8,
     text: []const u8,
 ) ![]i16 {
-    const has_uv = lookPathSimple("uv");
-    const argv: [][]const u8 = if (has_uv) blk: {
-        const a = try sa.alloc([]const u8, 8);
-        a[0] = "uv";
-        a[1] = "run";
-        a[2] = "--with";
-        a[3] = "TTS";
-        a[4] = "scripts/voice_synth.py";
-        a[5] = "--embedding";
-        a[6] = embedding_path;
-        a[7] = "--rate";
-        // uv path stops here; remaining handled below
+    const paths = resolveSidecarPaths(sa);
+    const argv: [][]const u8 = if (paths.venv_python) |py| blk: {
+        const a = try sa.alloc([]const u8, 6);
+        a[0] = py;
+        a[1] = paths.script;
+        a[2] = "--embedding";
+        a[3] = embedding_path;
+        a[4] = "--rate";
+        a[5] = "22050";
+        break :blk a;
+    } else if (lookPathSimple("uv")) blk: {
         var b = try sa.alloc([]const u8, 9);
-        @memcpy(b[0..8], a);
+        b[0] = "uv";
+        b[1] = "run";
+        b[2] = "--with";
+        b[3] = "TTS";
+        b[4] = paths.script;
+        b[5] = "--embedding";
+        b[6] = embedding_path;
+        b[7] = "--rate";
         b[8] = "22050";
         break :blk b;
     } else blk: {
         const a = try sa.alloc([]const u8, 6);
         a[0] = "python3";
-        a[1] = "scripts/voice_synth.py";
+        a[1] = paths.script;
         a[2] = "--embedding";
         a[3] = embedding_path;
         a[4] = "--rate";

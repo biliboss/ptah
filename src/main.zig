@@ -46,7 +46,7 @@ const mcp = @import("mcp.zig");
 const stream_mod = @import("stream.zig");
 const build_options = @import("build_options");
 
-pub const VERSION = "1.10.4";
+pub const VERSION = "1.10.5";
 
 const HELP =
     \\agent-tts v{s} — multilingual TTS via system voice or libpiper
