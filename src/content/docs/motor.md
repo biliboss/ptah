@@ -320,6 +320,55 @@ v1.10.9 also rewrites the tech preproc pipeline. The new order, exposed as `prep
 
 Glossary lookup is still longest-first (HTTPS before HTTP, Mbps before bps) so partial matches never steal prefixes.
 
+### Identifier normalization (v1.10.9+)
+
+`normalizeIdentifiers` (in `src/preproc.zig`) is the FIRST pass inside `techPipeline`. It rewrites engineering spans BEFORE the glossary so URLs/versions/commit hashes don't get partial-matched by glossary entries:
+
+| Rule | Input | Output |
+|---|---|---|
+| **CamelCase split** (via `splitCamelCase` after glossary) | `agentTTSMenubar` | `agent TTS Menubar` |
+| | `SQLite` | `SQ Lite` |
+| | `ChatGPT5` | `Chat GPT 5` |
+| **Version triples** | `1.10.8` | `1 ponto 10 ponto 8` (cardinals spell the integers later) |
+| | `v2.4.1` | `v 2 ponto 4 ponto 1` |
+| **Commit hashes** (≥4 hex chars, ≥1 letter, truncated at 7) | `bdd352e` | `commit bê dê dê três cinco dois é` |
+| | `7c638b0` | `commit sete cê seis três oito bê zero` |
+| **URLs** (`http://` / `https://` only) | `https://github.com/biliboss/agent-tts` | `github ponto com barra biliboss barra agent-tts` |
+| **File paths** | `~/.cache/agent-tts/voices/pt_BR-faber-medium.onnx` | `pasta pt_BR-faber-medium.onnx` (final component + `pasta` prefix) |
+| **Hex literals** | `0xFF` | `zero-x F F` |
+| | `0xCAFEBABE` | `zero-x C A F E B A B E` |
+
+Rules are conservative by design:
+
+- CamelCase never splits across UTF-8 continuation bytes — Pt-BR accents stay intact (`coração` is not `cora ção`).
+- Commit-hash rule requires at least one letter so `12345678` falls through to the cardinal stage (pure-numeric SHAs would be ambiguous anyway).
+- URL rule only catches `http://` / `https://` schemes today. Bare hostnames and other schemes pass through verbatim.
+- Hex literals must start with the literal `0x` prefix (case-sensitive on the `x`).
+
+All rules are unit-tested (`tests "normalizeIdentifiers: …"` cover 39 cases in `src/preproc.zig`).
+
+## Profiles (v1.10.10+)
+
+`--profile <name>` (or `profile` on MCP `say` / `tech_profile_search`) bundles a curated knob set. Four bundles ship as of v1.10.10. **The default `tech` profile changed in v1.10.10** — the legacy v1.10.8 numbers moved to `stock-tech` so existing tooling can still ask for them by name.
+
+| Profile | length_scale | noise_scale | noise_w | sentence_pause_ms | comma_pause_ms | cadence | Use case |
+|---|---|---|---|---|---|---|---|
+| **`tech`** (default) | 1.05 | 0.35 | 0.45 | 500 | — | on | v1.10.9 tight-narrator. Acronym-dense engineering reports |
+| **`stock-tech`** | 0.95 | 0.667 | 0.85 | 500 | — | off | Legacy v1.10.8 — more expressive, smears acronyms a bit |
+| **`broadcast`** | 1.10 | 0.55 | 0.65 | 650 | 200 | off | Slower, tighter dynamics for podcasts/announcements |
+| **`expressive`** | 1.00 | 0.85 | 1.10 | 500 | 160 | off | Maximum variety — narration / pitch decks |
+
+`tech` enables the v1.10.12 cadence pass (list-end pitch drop + bullet lift + breath splice) because the cadence rules are gated on the `tech` flag inside `runPiper`. The other three profiles can still set `--cadence` explicitly to opt in.
+
+Each profile also implies `--postfx tech` is a safe pair (the research-anchored ffmpeg chain); the `--postfx` flag stays independent so an operator can mix-and-match (`--profile expressive --postfx clean` for music-bed VO, for example). See [Audio post-processing](#audio-post-processing-v11010) below for the postfx side.
+
+```bash
+agent-tts --profile tech "API e MCP rodam em CPU."           # default tight-narrator
+agent-tts --profile stock-tech "API e MCP rodam em CPU."     # legacy v1.10.8 sound
+agent-tts --profile broadcast "Boletim das dezesseis horas." # podcast-style
+agent-tts --profile expressive "Vocês não vão acreditar…"    # max prosody variety
+```
+
 ## ONNX runtime + miniaudio quality (v1.10.11+)
 
 v1.10.11 closes the inference-layer half of the same research note that anchored v1.10.9's tech-profile knobs ([`_qa/v1.10.9-research-prompt-output.md`](https://github.com/biliboss/agent-tts/blob/main/_qa/v1.10.9-research-prompt-output.md), "Inference-layer knobs you're missing"). Two wins shipped + one honest gap documented.
@@ -421,6 +470,21 @@ The streaming pipeline absorbs this because synth-per-chunk is itself ~80-150ms.
 The post-fx call sits inside `daemon.zig::playWithPostfx`, between `piper.synth*` (or `cloned`'s sidecar) and `audio_player.streamS16leAppend`. Streaming, single-chunk, and SSML paths all funnel through the same helper. The cloned (XTTS-v2) path also routes through postfx so user-cloned voices benefit from the same chain.
 
 `postfx=off` (the default) returns the PCM slice unchanged with `was_processed=false` — zero allocation, zero subprocess, zero overhead.
+
+### Pipe-deadlock fix + 5 s watchdog (v1.10.13)
+
+v1.10.12 shipped postfx on a serial I/O pump (`writeStreamingAll(stdin) → close → drain stdout → wait()`). When a synth produced more PCM than the kernel pipe buffer (~64 KiB on macOS), ffmpeg's output pipe filled before the daemon drained it; ffmpeg blocked on `write(stdout)`, stopped consuming our input, and `writeStreamingAll` blocked on a full input pipe. The user-visible bug: queue stalled after the first oversize item. Trigger logged as `piper-ssml id=207 synth=52427ms` — ~2.3 MiB of PCM, well past the 64 KiB threshold.
+
+v1.10.13 rewrites `postfx.apply` to spawn three threads around every ffmpeg invocation:
+
+1. **Main thread** writes `samples` into ffmpeg's stdin in chunks, then closes stdin.
+2. **Drainer thread** reads ffmpeg's stdout into the result buffer concurrently. Neither pipe ever fills because both are being drained in parallel.
+3. **Watchdog thread** sleeps in 50 ms slices for up to `AGENT_TTS_POSTFX_TIMEOUT_MS` (default **5000**). On deadline expiry it `SIGTERM`s ffmpeg, waits 1 s, then `SIGKILL`s if still alive. A `done` atomic retires the watchdog cleanly on healthy completion.
+
+All three threads join before `apply()` returns. On watchdog fire the worker logs `[postfx] watchdog killed ffmpeg after Nms — fallthrough`, gets `was_processed=false`, and plays dry PCM. The queue advances either way because the worker now wraps `runOne` with `defer res.queue.finishPlaying(...)` (v1.10.13 belt-and-braces — see `arquitetura.md` "Logging & observability" for the worker resilience rule).
+
+Validated by setting `AGENT_TTS_FFMPEG_PATH=/tmp/fake-ffmpeg.sh` to a script that exec'd `sleep 999` — watchdog killed it after 2000 ms exactly, dry PCM played, queue continued. See `_qa/v1.10.13-leadtime.md` for the diagnosis.
+
 ## Cloned voices (v1.4)
 
 v1.4 adds a **third engine**: `cloned`. Selected automatically when `--voice <slug>` resolves to a directory under `~/.cache/agent-tts/voices/<slug>/` produced by `agent-tts voice clone`.
