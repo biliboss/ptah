@@ -44,9 +44,22 @@ const audio = @import("audio.zig");
 const voice = @import("voice.zig");
 const mcp = @import("mcp.zig");
 const stream_mod = @import("stream.zig");
+const log_mod = @import("log.zig");
 const build_options = @import("build_options");
 
-pub const VERSION = "1.10.12";
+pub const VERSION = "1.10.13";
+
+// v1.10.13 — point std.log at our custom sink so every `std.log.scoped(.X)`
+// call across the daemon writes to BOTH stderr (launchd captures it) AND a
+// rotating file at `~/.cache/agent-tts/daemon.log`. The runtime
+// `AGENT_TTS_LOG_LEVEL` / `_LOG_SCOPES` env knobs let the operator change
+// verbosity without rebuilding. Compile-time `log_level` is set to `.debug`
+// so every scope is reachable; the runtime filter inside `log_mod.logFn`
+// drops messages below the configured level.
+pub const std_options: std.Options = .{
+    .logFn = log_mod.logFn,
+    .log_level = .debug,
+};
 const HELP =
     \\agent-tts v{s} — multilingual TTS via system voice or libpiper
     \\

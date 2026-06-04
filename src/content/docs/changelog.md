@@ -9,6 +9,45 @@ Per milestone: what shipped, how we measured, what slipped to the next one. The 
 
 ---
 
+## v1.10.13 — Structured logging + worker watchdog · 2026-06-04
+
+**Why a patch:** v1.10.12 shipped SSML cadence on a worker that lacked timeouts and structured logging. A user reported the queue stalled after ~10 items piled up; daemon was still alive but no item drained. The diagnostic surface (`std.debug.print` only on stderr captured by launchd, no rotation, no filtering) was insufficient to pinpoint the stall without a reproduction. v1.10.13 ships the diagnostic foundation AND the diagnosed fix.
+
+**Diagnosed root cause of the v1.10.12 stall:** `postfx.apply` did stdin write and stdout drain serially: `writeStreamingAll(stdin); close(stdin); drain stdout; child.wait()`. When the input PCM exceeded the kernel pipe buffer (~64 KiB on macOS), ffmpeg's output pipe filled before the daemon started draining, so ffmpeg's filter blocked on `write(stdout)`, so ffmpeg stopped consuming our input, so `writeStreamingAll(stdin)` blocked on a full input pipe → classic two-pipe deadlock. The trigger in the user log was `[worker] piper-ssml id=207 synth=52427ms` — a 52-second synth produced ~2.3 MiB PCM (52 s × 22050 Hz × 2 B), well over the 64 KiB threshold. The worker thread sat on `writeStreamingAll` forever and the queue head item (`id=210 state=playing`) never flipped to done.
+
+**Shipped:**
+
+- **`src/log.zig`** (NEW) — `std.options.logFn` sink that emits `2026-06-04T13:03:46.972Z [info] [daemon] message` to BOTH stderr (so launchd's `daemon.err.log` keeps capturing) AND `~/.cache/agent-tts/daemon.log` (so operators don't need launchctl access to read the daemon's diagnostic). Rotates by size: when the active file exceeds `AGENT_TTS_LOG_MAX_BYTES` (default 10 MiB) it shifts `.log → .log.1 → .log.2 → .log.3` and drops the oldest. Thread-safe via an atomic-CAS spinlock (Zig 0.16 removed `std.Thread.Mutex`; the new `std.Io.Mutex` requires an `io` value that stdlib-style log call sites don't carry). 4 unit tests cover scope-allowed semantics, ISO 8601 shape, case-insensitive level parsing.
+- **`src/main.zig`** — `pub const std_options: std.Options = .{ .logFn = log_mod.logFn, .log_level = .debug }`. Compile-time level set to `.debug` so every scope is reachable; the runtime env-var filter inside `logFn` actually drops messages below the configured level. Operators flip `AGENT_TTS_LOG_LEVEL=debug` without rebuilding the binary.
+- **Runtime env knobs** (all read at first log call, cached for daemon lifetime):
+  - `AGENT_TTS_LOG_PATH` — file sink path (default `~/.cache/agent-tts/daemon.log`)
+  - `AGENT_TTS_LOG_LEVEL` — `debug` / `info` / `warn` / `err` (default `info`)
+  - `AGENT_TTS_LOG_SCOPES` — comma-separated allow-list of scope names (e.g. `worker,postfx`). Empty/unset = all scopes pass. Up to 16 scopes.
+  - `AGENT_TTS_LOG_MAX_BYTES` — rotation threshold (default 10 MiB)
+- **Scope migration** — `daemon.zig` calls split between `.daemon` (boot/IPC plumbing) and `.worker` (queue drain + per-item play); `audio.zig` → `.audio`; `postfx.zig` → `.postfx`; `mcp.zig` → `.mcp`. CLI subcommand handlers (`client.zig`, `voice.zig`, `stream.zig`, `launchd.zig`, `main.zig` arg parsing) keep `std.debug.print` for user-facing CLI output that goes to the calling shell's stdout/stderr — those processes don't run as the daemon and shouldn't pollute its log file.
+- **`src/postfx.zig`** — **the actual stall fix**: stdin write and stdout drain are now concurrent. The drainer runs on a dedicated `std.Thread` while the main thread writes PCM, so neither pipe ever fills. Both threads join before `apply()` returns, so the per-call arena allocations stay valid.
+- **`src/postfx.zig`** — **defence-in-depth watchdog**: a third thread sleeps in 50ms slices for up to `AGENT_TTS_POSTFX_TIMEOUT_MS` (default 5000); on deadline it `SIGTERM`s the ffmpeg subprocess, waits 1 s, then `SIGKILL`s if still alive. Healthy invocations set a `done` flag that retires the watchdog cleanly. On watchdog fire, `apply()` returns `was_processed=false` and the worker plays the dry PCM. Live-validated by setting `AGENT_TTS_FFMPEG_PATH=/tmp/fake-ffmpeg.sh` to a script that exec's `sleep 999` — watchdog killed it after 2000 ms exactly, dry PCM played, queue continued.
+- **`src/daemon.zig::workerLoop`** — `defer res.queue.finishPlaying(io, item.id)` belt-and-braces guarantee: every `runOne` path is supposed to call `finishPlaying`, but the v1.10.12 audit found error escapes (e.g. OutOfMemory on the SSML cadence prep) that left the row stuck in `playing`. The defer guarantees the row flips to `done` regardless of which sub-call raised. `finishPlaying` is idempotent over `state='playing'` so the well-behaved paths that already called it are unaffected. Adds `worker pop id=…` on iteration entry and `worker drained id=…` on iteration exit.
+- **`src/daemon.zig::heartbeatLoop`** — new detached thread that emits `worker heartbeat queue=N current_playing_id=X` every 10 s at `debug` level. Confirms the daemon process is alive even when the worker is blocked inside `queue.pop` (the cond-wait blocks forever otherwise; no log line emerges from a fully idle daemon). A stalled daemon now keeps emitting heartbeats with `current_playing_id != 0` — operator visibility into "stuck on item X for N seconds".
+- **VERSION 1.10.13** — binary + bundle
+
+**Validated end-to-end:**
+1. `zig build` + `zig build test` exit 0 (postfx, ipc, ssml, preproc, audio, voice, stream, detect, platform, tts, systemd, agent_tts root + main test suites all green)
+2. `tail -f ~/.cache/agent-tts/daemon.log` shows new ISO-8601 prefixed lines on every operation
+3. 5 concurrent enqueues with `--postfx tech` drained sequentially without stall (~6 s each, all `postfx_ms` < 350 ms)
+4. Broken ffmpeg (`AGENT_TTS_FFMPEG_PATH=/usr/bin/false`) → `[postfx] ffmpeg exit code=1 — fallthrough` × 4 chunks, audio still produced via passthrough
+5. Hung ffmpeg (`AGENT_TTS_FFMPEG_PATH=/tmp/fake-ffmpeg.sh` exec'ing `sleep 999`, timeout 2000 ms) → `[postfx] watchdog killed ffmpeg after 2000ms — fallthrough`, dry PCM played, queue continued
+6. `AGENT_TTS_LOG_SCOPES=worker` → only `[worker]` scoped lines appeared (filter test: `pop`, `piper id=…`, `drained` — no `[daemon]` boot lines)
+7. `AGENT_TTS_LOG_LEVEL=debug` → 7 debug-level lines emitted (chain start, postfx_ms per chunk). Default `info` → 0 debug lines.
+
+**Honest scope — what I deliberately didn't take:**
+
+- **No synth watchdog around piper inference.** The spec asked for a 20 s soft-warn + 60 s hard-fail around the piper synth call. Implementing that requires either (a) running synth on a side thread and joining with a timeout (synth leaks on hard fail because libpiper has no `piper_cancel()` C ABI), or (b) deep surgery into `runPiperStreaming` to swap the inline `synthLangTunedSpeaker` call for a thread-based variant. The diagnosed root cause was postfx, not synth — the SSML synth that took 52 s wasn't the problem, the postfx that deadlocked on its output was. The new `defer finishPlaying` in `workerLoop` already guarantees the queue advances once the synth eventually returns. A real synth watchdog lands in v1.10.14 if it ever proves necessary in practice.
+- **Heartbeat is debug-level only.** A 10 s heartbeat at `info` would clutter the log under sustained operation; at `debug` it's only visible when the operator opts in. The trade-off: a fully-idle daemon at default `info` emits nothing for hours. If that becomes a support burden we'll promote heartbeat to `info` at 60 s in a future patch.
+- **Log rotation is size-based only, not time-based.** A daemon that emits ≪ 10 MiB/day stays in one file forever. logrotate-style time rotation lands in v1.11+ when there's user demand.
+
+**Lead-time**: see [`_qa/v1.10.13-leadtime.md`](https://github.com/biliboss/agent-tts/blob/main/_qa/v1.10.13-leadtime.md).
+
 ## v1.10.11 — ONNX session + miniaudio quality knobs · 2026-06-04
 
 **Why a patch:** v1.10.9 closed the linguistic side of the research note at [`_qa/v1.10.9-research-prompt-output.md`](https://github.com/biliboss/agent-tts/blob/main/_qa/v1.10.9-research-prompt-output.md) (`length=1.05`, `noise=0.35`, `noise_w=0.45` + glossary + identifier normalizer). The same note flagged two inference-layer wins still on the table: (1) ONNX Runtime is multi-threaded by default and contends itself on Apple Silicon's small VITS graph; (2) miniaudio's per-sound resampler runs with `lpfOrder=0` (no LPF) which adds aliasing on the 22050 → 48000 upsample edge. v1.10.11 ships both.

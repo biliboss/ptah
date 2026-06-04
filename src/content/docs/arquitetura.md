@@ -43,10 +43,38 @@ Filesystem layout:
   voices/           Piper ONNX models (downloaded once)
   daemon.out.log    launchd stdout
   daemon.err.log    launchd stderr
+  daemon.log        v1.10.13+ structured log sink (rotates at 10 MiB)
+  daemon.log.1..3   rotated backups
 
 ~/Library/LaunchAgents/
   io.github.biliboss.agent-tts.plist
 ```
+
+## Logging & observability (v1.10.13+)
+
+The daemon uses `std.log.scoped(...)` instead of ad-hoc `std.debug.print`. Every call site picks a scope (`daemon`, `worker`, `audio`, `postfx`, `mcp`, …) and a level (`err` / `warn` / `info` / `debug`). The custom `logFn` (in `src/log.zig`) writes each line to BOTH stderr (launchd captures it in `daemon.err.log` — backwards-compatible) AND a rotating file at `~/.cache/agent-tts/daemon.log`.
+
+Line format:
+
+```
+2026-06-04T13:03:46.972Z [info] [worker] piper id=224 streaming chunks=4 first_audio=343.6ms total=6150.7ms samples=104448
+```
+
+- **Timestamp** — ISO 8601 UTC with millisecond resolution (via `libc clock_gettime` + `gmtime_r`).
+- **Level** — `info` / `warning` / `error` / `debug`.
+- **Scope** — module identity. The CLI subcommand handlers (`client`, `voice`, `stream`, `launchd`) keep `std.debug.print` because their output is for the calling shell, not the daemon log.
+
+Operator knobs (read once on first log call, cached for daemon lifetime — restart to apply):
+
+| Env var | Default | Purpose |
+| --- | --- | --- |
+| `AGENT_TTS_LOG_PATH` | `~/.cache/agent-tts/daemon.log` | File sink path |
+| `AGENT_TTS_LOG_LEVEL` | `info` | Drops messages below this level. Use `debug` for verbose chain dumps. |
+| `AGENT_TTS_LOG_SCOPES` | (empty = all) | Comma-separated allow-list, e.g. `worker,postfx`. Up to 16 entries. |
+| `AGENT_TTS_LOG_MAX_BYTES` | `10485760` (10 MiB) | Rotation threshold. When the active file exceeds this, `daemon.log → .1`, `.1 → .2`, `.2 → .3`, oldest dropped. |
+| `AGENT_TTS_POSTFX_TIMEOUT_MS` | `5000` | Postfx ffmpeg watchdog deadline. On expiry the subprocess is `SIGTERM`'d (then `SIGKILL` after a 1 s grace) and the worker falls through to dry PCM. |
+
+The `worker` thread also emits a `debug`-level heartbeat (`worker heartbeat queue=N current_playing_id=X`) every 10 s. Heartbeats are silent at default `info` level; set `AGENT_TTS_LOG_LEVEL=debug` to see them.
 
 ## Components
 

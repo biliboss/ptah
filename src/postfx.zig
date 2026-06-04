@@ -29,6 +29,15 @@
 
 const std = @import("std");
 
+// v1.10.13 — scoped logger so the postfx pipeline can announce when its
+// watchdog fires, when ffmpeg comes back non-zero, etc. without coupling
+// to the daemon's print surface. Level discipline:
+//   .err  → ffmpeg subprocess crashed or failed to spawn
+//   .warn → watchdog kicked, or ffmpeg exit code != 0 (fallthrough path)
+//   .info → first-call chain resolution
+//   .debug → per-invocation chain string + wall-time
+const flog = std.log.scoped(.postfx);
+
 /// Selectable post-fx profiles. `off` is the no-op (return samples
 /// unchanged, no subprocess spawn). Strings on the wire mirror the
 /// tags so the IPC layer can format/parse them with `@tagName`.
@@ -169,6 +178,18 @@ fn pathReadable(path: []const u8) bool {
 /// `home` is forwarded to `resolveRnnoiseModel` for the `tech` profile.
 /// Pass the daemon's resolved `$HOME` so the user-cache fallback works
 /// even when the daemon is launched by launchd (cwd != $HOME).
+///
+/// v1.10.13 — concurrent stdin write + stdout drain (was sequential).
+/// The previous serial path (`writeStreamingAll(stdin); close; drain stdout`)
+/// deadlocked when the input PCM exceeded the pipe buffer (~64 KiB on macOS):
+/// ffmpeg's output filled its own pipe before we drained, so its filter
+/// stopped consuming input, so the kernel blocked our `writeStreamingAll`.
+/// That was the v1.10.12 stall: a ~52 s SSML synth produced ~2.3 MiB of PCM,
+/// hit the pipe-buffer wall, and the worker thread sat on `writeStreamingAll`
+/// forever — the queue advanced no further. We now spawn a stdout drainer
+/// thread + a watchdog thread that SIGTERMs the subprocess after
+/// `AGENT_TTS_POSTFX_TIMEOUT_MS` (default 5000) so a misbehaving filter or
+/// runaway ffmpeg can never stall the worker again.
 pub fn apply(
     arena: std.mem.Allocator,
     io: std.Io,
@@ -221,6 +242,9 @@ pub fn apply(
     }) catch return error.OutOfMemory;
 
     const t0 = std.Io.Clock.now(.awake, io);
+    flog.debug("apply profile={s} sample_rate={d} bytes={d} chain_len={d}", .{
+        profile.str(), sample_rate, samples.len * 2, chain.len,
+    });
 
     var child = std.process.spawn(io, .{
         .argv = argv.items,
@@ -232,8 +256,13 @@ pub fn apply(
         // root causes: ffmpeg missing despite earlier probe (PATH
         // race), bad permissions, or a filter the ffmpeg build doesn't
         // ship. Silent pass-through keeps audio flowing.
+        flog.warn("ffmpeg spawn failed for profile={s} — fallthrough", .{profile.str()});
         return .{ .samples = samples, .was_processed = false };
     };
+
+    // Capture child pid for the watchdog. After `child.wait()` returns,
+    // `child.id` is null — so we snapshot now.
+    const child_pid: ?std.posix.pid_t = child.id;
 
     // PCM bytes view over the i16 buffer.
     const pcm_bytes: []const u8 = blk: {
@@ -241,45 +270,92 @@ pub fn apply(
         break :blk p[0 .. samples.len * @sizeOf(i16)];
     };
 
-    // Write all PCM to stdin and close it so ffmpeg can flush.
+    // -----------------------------------------------------------------
+    // Concurrent drain thread + watchdog thread.
+    //
+    // Without the drainer, large inputs deadlock (see v1.10.12 stall
+    // analysis above). Without the watchdog, a hung ffmpeg invocation
+    // (filter crash, model load timeout) would stall the worker
+    // forever. Both threads are joined before this function returns
+    // so the per-call arena allocations stay valid.
+    // -----------------------------------------------------------------
+
+    var drain_state: DrainState = .{
+        .arena = arena,
+        .io = io,
+        .buf = .empty,
+        .done = std.atomic.Value(bool).init(false),
+        .err = std.atomic.Value(bool).init(false),
+        .stdout = if (child.stdout) |*s| s else null,
+    };
+    const drainer = std.Thread.spawn(.{}, drainThread, .{&drain_state}) catch {
+        flog.err("drain thread spawn failed — fallthrough", .{});
+        _ = child.wait(io) catch {};
+        return .{ .samples = samples, .was_processed = false };
+    };
+
+    var watchdog_state: WatchdogState = .{
+        .timeout_ms = postfxTimeoutMs(),
+        .pid = child_pid,
+        .fired = std.atomic.Value(bool).init(false),
+        .done = std.atomic.Value(bool).init(false),
+    };
+    const watchdog = std.Thread.spawn(.{}, watchdogThread, .{&watchdog_state}) catch {
+        // Without a watchdog we still proceed — the drainer alone
+        // resolves the deadlock for normal-length inputs. Pathological
+        // cases will block but that's strictly no worse than v1.10.12.
+        flog.warn("watchdog spawn failed — proceeding without timeout protection", .{});
+        proceedWithoutWatchdog(&child, io, pcm_bytes, &drain_state, drainer);
+        return finalizePostfx(arena, io, samples, t0, &drain_state, &child, false, profile);
+    };
+
+    // Write PCM on the calling thread. The drainer concurrently reads
+    // stdout so the kernel pipe buffers never fill — no deadlock.
+    var write_failed = false;
     if (child.stdin) |*stdin| {
         stdin.writeStreamingAll(io, pcm_bytes) catch {
-            stdin.close(io);
-            child.stdin = null;
-            _ = child.wait(io) catch {};
-            return .{ .samples = samples, .was_processed = false };
+            write_failed = true;
         };
         stdin.close(io);
         child.stdin = null;
     }
 
-    var buf: std.ArrayList(u8) = .empty;
-    defer buf.deinit(arena);
-    // Separate stream buffer + read scratch — Reader.readSliceShort
-    // panics with "@memcpy arguments alias" when the destination
-    // overlaps the stream's own buffer (Zig 0.16 strict aliasing).
-    var stream_buf: [16 * 1024]u8 = undefined;
-    var scratch: [16 * 1024]u8 = undefined;
-    if (child.stdout) |*stdout| {
-        var sr = stdout.readerStreaming(io, &stream_buf);
-        while (true) {
-            const n = sr.interface.readSliceShort(scratch[0..]) catch {
-                _ = child.wait(io) catch {};
-                return .{ .samples = samples, .was_processed = false };
-            };
-            if (n == 0) break;
-            buf.appendSlice(arena, scratch[0..n]) catch return error.OutOfMemory;
-        }
-    }
+    drainer.join();
 
-    const term = child.wait(io) catch {
+    const term_or_err = child.wait(io);
+
+    // Signal the watchdog we're done so it doesn't kill a healthy process
+    // if it's still ticking.
+    watchdog_state.done.store(true, .release);
+    watchdog.join();
+
+    const watchdog_fired = watchdog_state.fired.load(.acquire);
+    const term = term_or_err catch {
+        if (watchdog_fired) {
+            flog.warn("watchdog killed ffmpeg after {d}ms — fallthrough", .{watchdog_state.timeout_ms});
+        } else {
+            flog.warn("ffmpeg wait failed — fallthrough", .{});
+        }
         return .{ .samples = samples, .was_processed = false };
     };
+
+    if (watchdog_fired) {
+        flog.warn("watchdog killed ffmpeg after {d}ms — fallthrough", .{watchdog_state.timeout_ms});
+        return .{ .samples = samples, .was_processed = false };
+    }
     switch (term) {
         .exited => |code| if (code != 0) {
+            flog.warn("ffmpeg exit code={d} — fallthrough", .{code});
             return .{ .samples = samples, .was_processed = false };
         },
-        else => return .{ .samples = samples, .was_processed = false },
+        else => {
+            flog.warn("ffmpeg abnormal termination — fallthrough", .{});
+            return .{ .samples = samples, .was_processed = false };
+        },
+    }
+    if (write_failed or drain_state.err.load(.acquire)) {
+        flog.warn("ffmpeg pipe I/O failed — fallthrough", .{});
+        return .{ .samples = samples, .was_processed = false };
     }
 
     const t1 = std.Io.Clock.now(.awake, io);
@@ -287,14 +363,160 @@ pub fn apply(
 
     // Reinterpret the byte buffer as s16le. Drop a trailing odd byte
     // defensively — ffmpeg emits aligned frames in practice.
-    const byte_len = buf.items.len & ~@as(usize, 1);
+    const byte_len = drain_state.buf.items.len & ~@as(usize, 1);
     if (byte_len == 0) {
         // Filter produced nothing (unlikely for a non-empty input but
         // possible with broken chains). Fall back to pass-through.
+        flog.warn("ffmpeg produced 0 bytes — fallthrough", .{});
         return .{ .samples = samples, .was_processed = false };
     }
-    const out_samples = arena.alloc(i16, byte_len / 2) catch return error.OutOfMemory;
-    @memcpy(std.mem.sliceAsBytes(out_samples), buf.items[0..byte_len]);
+    const out_samples = arena.alloc(i16, byte_len / 2) catch {
+        drain_state.buf.deinit(arena);
+        return error.OutOfMemory;
+    };
+    @memcpy(std.mem.sliceAsBytes(out_samples), drain_state.buf.items[0..byte_len]);
+    drain_state.buf.deinit(arena);
+    flog.info("apply profile={s} in_bytes={d} out_bytes={d} wall={d:.1}ms", .{
+        profile.str(), samples.len * 2, byte_len, postfx_ms,
+    });
+    return .{ .samples = out_samples, .was_processed = true, .postfx_ms = postfx_ms };
+}
+
+// -----------------------------------------------------------------------
+// Watchdog + drainer plumbing.
+// -----------------------------------------------------------------------
+
+const DrainState = struct {
+    arena: std.mem.Allocator,
+    io: std.Io,
+    buf: std.ArrayList(u8),
+    done: std.atomic.Value(bool),
+    err: std.atomic.Value(bool),
+    stdout: ?*std.Io.File,
+};
+
+fn drainThread(s: *DrainState) void {
+    defer s.done.store(true, .release);
+    if (s.stdout == null) return;
+    var stream_buf: [16 * 1024]u8 = undefined;
+    var scratch: [16 * 1024]u8 = undefined;
+    var sr = s.stdout.?.readerStreaming(s.io, &stream_buf);
+    while (true) {
+        const n = sr.interface.readSliceShort(scratch[0..]) catch {
+            s.err.store(true, .release);
+            return;
+        };
+        if (n == 0) return;
+        s.buf.appendSlice(s.arena, scratch[0..n]) catch {
+            s.err.store(true, .release);
+            return;
+        };
+    }
+}
+
+const WatchdogState = struct {
+    timeout_ms: u32,
+    pid: ?std.posix.pid_t,
+    fired: std.atomic.Value(bool),
+    done: std.atomic.Value(bool),
+};
+
+fn watchdogThread(s: *WatchdogState) void {
+    // Sleep in short slices so an early-finish call site doesn't wait
+    // the full timeout when joining. Slice = 50ms.
+    const slice_ns: i64 = 50 * std.time.ns_per_ms;
+    const ts: std.c.timespec = .{ .sec = 0, .nsec = slice_ns };
+    var elapsed_ms: u32 = 0;
+    while (elapsed_ms < s.timeout_ms) : (elapsed_ms += 50) {
+        if (s.done.load(.acquire)) return;
+        _ = std.c.nanosleep(&ts, null);
+    }
+    // Deadline reached — SIGTERM the child. The waiter (apply()) will
+    // observe the abnormal exit and return a fallthrough result.
+    if (s.pid) |p| {
+        std.posix.kill(p, .TERM) catch {};
+        s.fired.store(true, .release);
+        // Brief grace period, then SIGKILL if it's still around.
+        const grace: std.c.timespec = .{ .sec = 1, .nsec = 0 };
+        _ = std.c.nanosleep(&grace, null);
+        if (!s.done.load(.acquire)) {
+            std.posix.kill(p, .KILL) catch {};
+        }
+    }
+}
+
+fn postfxTimeoutMs() u32 {
+    const c = @cImport({
+        @cInclude("stdlib.h");
+    });
+    const ptr = c.getenv("AGENT_TTS_POSTFX_TIMEOUT_MS");
+    if (ptr == null) return 5000;
+    const s = std.mem.span(ptr);
+    if (s.len == 0) return 5000;
+    return std.fmt.parseInt(u32, s, 10) catch 5000;
+}
+
+fn proceedWithoutWatchdog(
+    child: *std.process.Child,
+    io: std.Io,
+    pcm_bytes: []const u8,
+    drain_state: *DrainState,
+    drainer: std.Thread,
+) void {
+    if (child.stdin) |*stdin| {
+        stdin.writeStreamingAll(io, pcm_bytes) catch {};
+        stdin.close(io);
+        child.stdin = null;
+    }
+    drainer.join();
+    _ = drain_state;
+}
+
+fn finalizePostfx(
+    arena: std.mem.Allocator,
+    io: std.Io,
+    samples: []const i16,
+    t0: std.Io.Timestamp,
+    drain_state: *DrainState,
+    child: *std.process.Child,
+    write_failed: bool,
+    profile: Postfx,
+) PostfxError!ApplyResult {
+    const term_or_err = child.wait(io);
+    const term = term_or_err catch {
+        drain_state.buf.deinit(arena);
+        return .{ .samples = samples, .was_processed = false };
+    };
+    switch (term) {
+        .exited => |code| if (code != 0) {
+            drain_state.buf.deinit(arena);
+            return .{ .samples = samples, .was_processed = false };
+        },
+        else => {
+            drain_state.buf.deinit(arena);
+            return .{ .samples = samples, .was_processed = false };
+        },
+    }
+    if (write_failed or drain_state.err.load(.acquire)) {
+        drain_state.buf.deinit(arena);
+        return .{ .samples = samples, .was_processed = false };
+    }
+    const byte_len = drain_state.buf.items.len & ~@as(usize, 1);
+    if (byte_len == 0) {
+        drain_state.buf.deinit(arena);
+        return .{ .samples = samples, .was_processed = false };
+    }
+    const out_samples = arena.alloc(i16, byte_len / 2) catch {
+        drain_state.buf.deinit(arena);
+        return error.OutOfMemory;
+    };
+    @memcpy(std.mem.sliceAsBytes(out_samples), drain_state.buf.items[0..byte_len]);
+    drain_state.buf.deinit(arena);
+    const t1 = std.Io.Clock.now(.awake, io);
+    const postfx_ms = @as(f64, @floatFromInt(t1.nanoseconds - t0.nanoseconds)) / 1_000_000.0;
+    flog.info("apply (no-watchdog) profile={s} in_bytes={d} out_bytes={d} wall={d:.1}ms", .{
+        profile.str(), samples.len * 2, byte_len, postfx_ms,
+    });
     return .{ .samples = out_samples, .was_processed = true, .postfx_ms = postfx_ms };
 }
 

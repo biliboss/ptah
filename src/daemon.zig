@@ -24,6 +24,12 @@ const preproc = @import("preproc.zig");
 const postfx_mod = @import("postfx.zig");
 const build_options = @import("build_options");
 
+// v1.10.13 — scoped loggers per concern. `.daemon` for boot/IPC plumbing,
+// `.worker` for queue drain + per-item play results. Other modules import
+// their own scopes (.audio / .postfx / .piper / .voice / .mcp / .stream).
+const dlog = std.log.scoped(.daemon);
+const wlog = std.log.scoped(.worker);
+
 // Piper is only @imported when the build enables it — otherwise piper.h
 // isn't on the include path and `@cImport` blows up at translate time.
 // `usingnamespace` or a comptime-typed pointer would let us hold the
@@ -132,8 +138,8 @@ pub fn run(arena: std.mem.Allocator, io: std.Io, home: []const u8) !void {
     var server = try addr.listen(io, .{});
     defer server.deinit(io);
 
-    std.debug.print("[daemon] listening on {s}\n", .{sock_path});
-    std.debug.print("[daemon] queue db {s}\n", .{db_path});
+    dlog.info("listening on {s}", .{sock_path});
+    dlog.info("queue db {s}", .{db_path});
 
     var queue: Queue = .{ .arena = arena };
     try queue.init(db_path);
@@ -142,17 +148,17 @@ pub fn run(arena: std.mem.Allocator, io: std.Io, home: []const u8) !void {
     // Crash recovery already ran in queue.init (any 'playing' → 'pending').
     const pend_on_boot = queue.pending(io);
     if (pend_on_boot > 0) {
-        std.debug.print("[daemon] recovered {d} pending items from previous run\n", .{pend_on_boot});
+        dlog.info("recovered {d} pending items from previous run", .{pend_on_boot});
     }
 
     // Pre-warm the voice. Best-effort.
     const t_warm0 = std.Io.Clock.now(.awake, io);
     tts.preWarm(arena, io, DEFAULT_VOICE) catch |e| {
-        std.debug.print("[daemon] pre-warm failed: {s}\n", .{@errorName(e)});
+        dlog.warn("pre-warm failed: {s}", .{@errorName(e)});
     };
     const t_warm1 = std.Io.Clock.now(.awake, io);
     const warm_ms = @as(f64, @floatFromInt(t_warm1.nanoseconds - t_warm0.nanoseconds)) / 1_000_000.0;
-    std.debug.print("[daemon] pre-warm done in {d:.1}ms\n", .{warm_ms});
+    dlog.info("pre-warm done in {d:.1}ms", .{warm_ms});
 
     // v0.7: AudioPlayer (zaudio.Engine). Best-effort. Init takes ~10ms on
     // a working macOS audio session; failure leaves ready=false and the
@@ -162,9 +168,9 @@ pub fn run(arena: std.mem.Allocator, io: std.Io, home: []const u8) !void {
     const t_audio1 = std.Io.Clock.now(.awake, io);
     const audio_ms = @as(f64, @floatFromInt(t_audio1.nanoseconds - t_audio0.nanoseconds)) / 1_000_000.0;
     if (audio_player.ready) {
-        std.debug.print("[daemon] zaudio engine init in {d:.1}ms\n", .{audio_ms});
+        dlog.info("zaudio engine init in {d:.1}ms", .{audio_ms});
     } else {
-        std.debug.print("[daemon] zaudio engine init failed ({d:.1}ms) — piper path will fall back to afplay\n", .{audio_ms});
+        dlog.warn("zaudio engine init failed ({d:.1}ms) — piper path will fall back to afplay", .{audio_ms});
     }
     defer audio_player.deinit();
 
@@ -190,8 +196,8 @@ pub fn run(arena: std.mem.Allocator, io: std.Io, home: []const u8) !void {
         _ = cenv.setenv("OMP_NUM_THREADS", "1", 0);
         _ = cenv.setenv("ORT_NUM_THREADS", "1", 0);
         _ = cenv.setenv("OMP_THREAD_LIMIT", "1", 0);
-        std.debug.print(
-            "[daemon] v1.10.11 onnx env: OMP_NUM_THREADS=1 ORT_NUM_THREADS=1 OMP_THREAD_LIMIT=1 (libpiper exposes no OrtSessionOptions builder)\n",
+        dlog.info(
+            "v1.10.11 onnx env: OMP_NUM_THREADS=1 ORT_NUM_THREADS=1 OMP_THREAD_LIMIT=1 (libpiper exposes no OrtSessionOptions builder)",
             .{},
         );
     }
@@ -229,15 +235,41 @@ pub fn run(arena: std.mem.Allocator, io: std.Io, home: []const u8) !void {
     const worker = try std.Thread.spawn(.{}, workerLoop, .{&resources});
     worker.detach();
 
+    // v1.10.13 — heartbeat thread. Every 10s, log `worker heartbeat
+    // queue=N current_playing_id=X` at debug level. Confirms the worker
+    // process is alive even when the queue is empty (the worker pop is
+    // blocking on a cond — no log line emerges from a fully idle daemon
+    // without this). Detached; lives as long as the process does.
+    const heartbeat = try std.Thread.spawn(.{}, heartbeatLoop, .{&resources});
+    heartbeat.detach();
+
     while (true) {
         var stream = server.accept(io) catch |e| {
-            std.debug.print("[daemon] accept failed: {s}\n", .{@errorName(e)});
+            dlog.err("accept failed: {s}", .{@errorName(e)});
             continue;
         };
         handleClient(arena, io, &stream, &resources) catch |e| {
-            std.debug.print("[daemon] handle failed: {s}\n", .{@errorName(e)});
+            dlog.warn("handle failed: {s}", .{@errorName(e)});
         };
         stream.close(io);
+    }
+}
+
+/// v1.10.13 — heartbeat loop. Sleeps 10 s and emits one debug-level
+/// `worker heartbeat queue=<pending> current_playing_id=<id>` line. The
+/// worker thread itself blocks inside `queue.pop` waiting on its cond
+/// variable, so without this thread an idle daemon emits no log lines
+/// at all. A stalled daemon (postfx watchdog tripped + recovery bug)
+/// keeps emitting heartbeats with `current_playing_id != 0` — the
+/// operator can spot it in the log file.
+fn heartbeatLoop(res: *Resources) void {
+    const sleep_ns: i64 = 10 * std.time.ns_per_s;
+    const ts: std.c.timespec = .{ .sec = @intCast(@divTrunc(sleep_ns, std.time.ns_per_s)), .nsec = 0 };
+    while (true) {
+        _ = std.c.nanosleep(&ts, null);
+        const playing_id = res.current_playing_id.load(.acquire);
+        const pending = res.queue.pending(res.io);
+        wlog.debug("worker heartbeat queue={d} current_playing_id={d}", .{ pending, playing_id });
     }
 }
 
@@ -258,11 +290,22 @@ fn workerLoop(res: *Resources) void {
         // id visible to the next IPC client.
         res.current_playing_id.store(item.id, .release);
         defer res.current_playing_id.store(0, .release);
+        // v1.10.13 — belt-and-braces: every runOne path is supposed to call
+        // finishPlaying on success and error, but a v1.10.12 audit found
+        // paths (e.g. an OutOfMemory escape from the SSML/cadence prep)
+        // that left the row stuck in `playing`. The next pop then re-saw
+        // the head item as already-playing and stalled. A defer here
+        // guarantees the row flips to `done` regardless of which sub-call
+        // raised. `finishPlaying` is idempotent over `state='playing'` so
+        // the well-behaved paths that already called it are unaffected.
+        wlog.info("pop id={d} engine={s} state=playing", .{ item.id, item.engine.str() });
+        defer res.queue.finishPlaying(io, item.id);
         runOne(res, io, gpa, item) catch |e| {
-            std.debug.print("[worker] play id={d} engine={s} failed: {s}\n", .{
+            wlog.err("play id={d} engine={s} failed: {s}", .{
                 item.id, item.engine.str(), @errorName(e),
             });
         };
+        wlog.info("drained id={d}", .{item.id});
     }
 }
 
@@ -291,7 +334,7 @@ fn runOne(res: *Resources, io: std.Io, gpa: std.mem.Allocator, item: queue_mod.P
         .say => return runSay(res, io, sa, item),
         .piper => {
             if (!build_options.enabled or res.piper == null) {
-                std.debug.print("[worker] id={d} requested piper but engine not available — falling back to say\n", .{item.id});
+                wlog.warn("id={d} requested piper but engine not available — falling back to say", .{item.id});
                 return runSay(res, io, sa, item);
             }
             return runPiper(res, io, sa, item);
@@ -323,8 +366,8 @@ fn runCloned(res: *Resources, io: std.Io, sa: std.mem.Allocator, item: queue_mod
     const embedding_path = try std.fmt.allocPrint(sa, "{s}/embedding.npz", .{voice_dir});
 
     var probe = std.Io.Dir.cwd().openFile(io, embedding_path, .{}) catch {
-        std.debug.print(
-            "[worker] id={d} cloned voice '{s}' has no embedding at {s} — falling back\n",
+        wlog.warn(
+            "id={d} cloned voice '{s}' has no embedding at {s} — falling back",
             .{ item.id, item.voice, embedding_path },
         );
         return fallbackCloned(res, io, sa, item);
@@ -335,7 +378,7 @@ fn runCloned(res: *Resources, io: std.Io, sa: std.mem.Allocator, item: queue_mod
 
     const t_synth0 = std.Io.Clock.now(.awake, io);
     const samples = synthClonedViaSidecar(sa, io, embedding_path, item.text) catch |e| {
-        std.debug.print("[worker] id={d} cloned sidecar failed: {s} — falling back\n", .{ item.id, @errorName(e) });
+        wlog.warn("id={d} cloned sidecar failed: {s} — falling back", .{ item.id, @errorName(e) });
         return fallbackCloned(res, io, sa, item);
     };
     const t_synth1 = std.Io.Clock.now(.awake, io);
@@ -351,7 +394,7 @@ fn runCloned(res: *Resources, io: std.Io, sa: std.mem.Allocator, item: queue_mod
 
     const synth_ms = @as(f64, @floatFromInt(t_synth1.nanoseconds - t_synth0.nanoseconds)) / 1_000_000.0;
     const play_ms = @as(f64, @floatFromInt(t_play1.nanoseconds - t_play0.nanoseconds)) / 1_000_000.0;
-    std.debug.print("[worker] cloned id={d} slug={s} synth={d:.1}ms play={d:.1}ms samples={d}\n", .{
+    wlog.info("cloned id={d} slug={s} synth={d:.1}ms play={d:.1}ms samples={d}", .{
         item.id, item.voice, synth_ms, play_ms, samples.len,
     });
 
@@ -676,7 +719,7 @@ fn runPiperSsml(
     const parse_us = @as(f64, @floatFromInt(t_parse1.nanoseconds - t_parse0.nanoseconds)) / 1_000.0;
     const synth_ms = @as(f64, @floatFromInt(t_synth1.nanoseconds - t_synth0.nanoseconds)) / 1_000_000.0;
     const play_ms = @as(f64, @floatFromInt(t_play1.nanoseconds - t_play0.nanoseconds)) / 1_000_000.0;
-    std.debug.print("[worker] piper-ssml id={d} tokens={d} parse={d:.1}µs synth={d:.1}ms play={d:.1}ms samples={d}\n", .{
+    wlog.info("piper-ssml id={d} tokens={d} parse={d:.1}µs synth={d:.1}ms play={d:.1}ms samples={d}", .{
         item.id, tokens.len, parse_us, synth_ms, play_ms, samples.len,
     });
 }
@@ -709,8 +752,8 @@ fn runPiperSingle(
     const has_extras = item.tech or item.speaker_id >= 0 or
         item.sentence_pause_ms != 0 or item.comma_pause_ms != 0 or item.newline_pause_ms != 0;
     if (has_knobs or has_extras) {
-        std.debug.print(
-            "[worker] piper id={d} tech={any} length_scale={d:.3} noise_scale={d:.3} noise_w={d:.3} speaker_id={d} sentence_pause_ms={d}\n",
+        wlog.debug(
+            "piper id={d} tech={any} length_scale={d:.3} noise_scale={d:.3} noise_w={d:.3} speaker_id={d} sentence_pause_ms={d}",
             .{ item.id, item.tech, item.length_scale, item.noise_scale, item.noise_w, item.speaker_id, item.sentence_pause_ms },
         );
     }
@@ -740,7 +783,7 @@ fn runPiperSingle(
 
     const synth_ms = @as(f64, @floatFromInt(t_synth1.nanoseconds - t_synth0.nanoseconds)) / 1_000_000.0;
     const play_ms = @as(f64, @floatFromInt(t_play1.nanoseconds - t_play0.nanoseconds)) / 1_000_000.0;
-    std.debug.print("[worker] piper id={d} lang={s} synth={d:.1}ms play={d:.1}ms samples={d}\n", .{
+    wlog.info("piper id={d} lang={s} synth={d:.1}ms play={d:.1}ms samples={d}", .{
         item.id, chunk.lang.str(), synth_ms, play_ms, samples.len,
     });
 }
@@ -906,8 +949,8 @@ fn runPiperStreaming(
     const has_extras = item.tech or item.speaker_id >= 0 or
         item.sentence_pause_ms != 0 or item.comma_pause_ms != 0 or item.newline_pause_ms != 0;
     if (has_knobs or has_extras) {
-        std.debug.print(
-            "[worker] piper id={d} tech={any} length_scale={d:.3} noise_scale={d:.3} noise_w={d:.3} speaker_id={d} sentence_pause_ms={d}\n",
+        wlog.debug(
+            "piper id={d} tech={any} length_scale={d:.3} noise_scale={d:.3} noise_w={d:.3} speaker_id={d} sentence_pause_ms={d}",
             .{ item.id, item.tech, item.length_scale, item.noise_scale, item.noise_w, item.speaker_id, item.sentence_pause_ms },
         );
     }
@@ -934,7 +977,7 @@ fn runPiperStreaming(
         var slot = slot_const;
         if (slot.synth_err) {
             if (slot.arena) |*a| @constCast(a).deinit();
-            std.debug.print("[worker] piper id={d} streaming synth error on chunk {d}\n", .{ item.id, played_chunks });
+            wlog.err("piper id={d} streaming synth error on chunk {d}", .{ item.id, played_chunks });
             continue;
         }
 
@@ -956,7 +999,7 @@ fn runPiperStreaming(
                 if (apply_res.was_processed) {
                     play_samples = apply_res.samples;
                     const warn = if (apply_res.postfx_ms > 100.0) " (>100ms — eating into TTFA)" else "";
-                    std.debug.print("[worker] id={d} chunk={d} postfx={s} postfx_ms={d:.1}{s}\n", .{ item.id, played_chunks, item.postfx.str(), apply_res.postfx_ms, warn });
+                    wlog.debug("id={d} chunk={d} postfx={s} postfx_ms={d:.1}{s}", .{ item.id, played_chunks, item.postfx.str(), apply_res.postfx_ms, warn });
                 }
             }
         }
@@ -988,7 +1031,7 @@ fn runPiperStreaming(
         }
 
         play_res catch |e| {
-            std.debug.print("[worker] piper id={d} streaming play error on chunk {d}: {s}\n", .{ item.id, played_chunks, @errorName(e) });
+            wlog.err("piper id={d} streaming play error on chunk {d}: {s}", .{ item.id, played_chunks, @errorName(e) });
             // Signal synth to bail; drain remaining slots' arenas.
             chan.skip.store(true, .release);
             while (chan.pop()) |drain_const| {
@@ -1006,11 +1049,11 @@ fn runPiperStreaming(
     if (first_play_started) {
         const first_audio_ms = @as(f64, @floatFromInt(t_first_audio_ns - t_pipeline0.nanoseconds)) / 1_000_000.0;
         const total_ms = @as(f64, @floatFromInt(t_pipeline1.nanoseconds - t_pipeline0.nanoseconds)) / 1_000_000.0;
-        std.debug.print("[worker] piper id={d} streaming chunks={d} first_audio={d:.1}ms total={d:.1}ms samples={d}\n", .{
+        wlog.info("piper id={d} streaming chunks={d} first_audio={d:.1}ms total={d:.1}ms samples={d}", .{
             item.id, played_chunks, first_audio_ms, total_ms, total_samples,
         });
     } else {
-        std.debug.print("[worker] piper id={d} streaming produced no audio\n", .{item.id});
+        wlog.warn("piper id={d} streaming produced no audio", .{item.id});
     }
 }
 
@@ -1048,15 +1091,15 @@ fn playWithPostfx(
     var processed = samples;
     if (profile != .off) {
         const apply_res = postfx_mod.apply(sa, io, samples, sample_rate, profile, res.home) catch |e| blk: {
-            std.debug.print("[worker] id={d} postfx={s} apply error: {s} — falling back to dry PCM\n", .{ item_id, profile.str(), @errorName(e) });
+            wlog.warn("id={d} postfx={s} apply error: {s} — falling back to dry PCM", .{ item_id, profile.str(), @errorName(e) });
             break :blk postfx_mod.ApplyResult{ .samples = samples, .was_processed = false };
         };
         if (apply_res.was_processed) {
             processed = apply_res.samples;
             const warn = if (apply_res.postfx_ms > 100.0) " (>100ms — eating into TTFA)" else "";
-            std.debug.print("[worker] id={d} postfx={s} postfx_ms={d:.1}{s}\n", .{ item_id, profile.str(), apply_res.postfx_ms, warn });
+            wlog.info("id={d} postfx={s} postfx_ms={d:.1}{s}", .{ item_id, profile.str(), apply_res.postfx_ms, warn });
         } else {
-            std.debug.print("[worker] id={d} postfx={s} passthrough (ffmpeg/model unavailable)\n", .{ item_id, profile.str() });
+            wlog.warn("id={d} postfx={s} passthrough (ffmpeg/model unavailable)", .{ item_id, profile.str() });
         }
     }
 
@@ -1066,7 +1109,7 @@ fn playWithPostfx(
         else
             res.audio_player.streamS16le(processed, sample_rate);
         play_res catch |e| {
-            std.debug.print("[worker] zaudio play failed: {s} — falling back to afplay\n", .{@errorName(e)});
+            wlog.warn("zaudio play failed: {s} — falling back to afplay", .{@errorName(e)});
             try playViaAfplay(io, sa, processed, sample_rate);
         };
     } else {
@@ -1268,15 +1311,15 @@ fn bootPiper(arena: std.mem.Allocator, io: std.Io, home: []const u8) ?piper_mod.
 
     const t0 = std.Io.Clock.now(.awake, io);
     const engine = piper_mod.PiperEngine.init(arena, voice_path, espeak_data) catch |e| {
-        std.debug.print("[daemon] piper engine load failed: {s}\n", .{@errorName(e)});
-        std.debug.print("  voice: {s}\n", .{voice_path});
-        std.debug.print("  espeak: {s}\n", .{espeak_data});
+        dlog.err("piper engine load failed: {s}", .{@errorName(e)});
+        dlog.err("  voice: {s}", .{voice_path});
+        dlog.err("  espeak: {s}", .{espeak_data});
         return null;
     };
     const t1 = std.Io.Clock.now(.awake, io);
     const load_ns: f64 = @floatFromInt(t1.nanoseconds - t0.nanoseconds);
     const load_ms = load_ns / 1_000_000.0;
-    std.debug.print("[daemon] piper engine loaded in {d:.1}ms\n", .{load_ms});
+    dlog.info("piper engine loaded in {d:.1}ms", .{load_ms});
 
     return engine;
 }
@@ -1307,8 +1350,8 @@ fn bootMultiPiper(arena: std.mem.Allocator, io: std.Io, home: []const u8) ?piper
     // installed" hint on boot.
     const en_path_opt: ?[]const u8 = blk: {
         var f = std.Io.Dir.cwd().openFile(io, en_voice_path, .{}) catch {
-            std.debug.print("[daemon] en voice not installed at {s} — code-switch will fall back to pt\n", .{en_voice_path});
-            std.debug.print("  install: ./scripts/fetch-voice-en.sh\n", .{});
+            dlog.warn("en voice not installed at {s} — code-switch will fall back to pt", .{en_voice_path});
+            dlog.warn("  install: ./scripts/fetch-voice-en.sh", .{});
             break :blk null;
         };
         f.close(io);
@@ -1317,15 +1360,15 @@ fn bootMultiPiper(arena: std.mem.Allocator, io: std.Io, home: []const u8) ?piper
 
     const t0 = std.Io.Clock.now(.awake, io);
     const engine = piper_mod.MultiPiperEngine.initMulti(arena, pt_voice_path, en_path_opt, espeak_data) catch |e| {
-        std.debug.print("[daemon] multi piper engine load failed: {s}\n", .{@errorName(e)});
-        std.debug.print("  pt voice: {s}\n", .{pt_voice_path});
-        std.debug.print("  espeak: {s}\n", .{espeak_data});
+        dlog.err("multi piper engine load failed: {s}", .{@errorName(e)});
+        dlog.err("  pt voice: {s}", .{pt_voice_path});
+        dlog.err("  espeak: {s}", .{espeak_data});
         return null;
     };
     const t1 = std.Io.Clock.now(.awake, io);
     const load_ms = @as(f64, @floatFromInt(t1.nanoseconds - t0.nanoseconds)) / 1_000_000.0;
-    std.debug.print(
-        "[daemon] multi piper engine loaded in {d:.1}ms (pt={s} en={s})\n",
+    dlog.info(
+        "multi piper engine loaded in {d:.1}ms (pt={s} en={s})",
         .{ load_ms, "faber", if (engine.hasEn()) "amy" else "off" },
     );
 

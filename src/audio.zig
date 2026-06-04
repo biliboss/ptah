@@ -17,6 +17,9 @@
 const std = @import("std");
 const zaudio = @import("zaudio");
 
+// v1.10.13 — scoped logger for the device pump / engine boot.
+const alog = std.log.scoped(.audio);
+
 /// Per-process error tag. Init failure is non-fatal at the call site.
 pub const Error = error{
     InitFailed,
@@ -108,7 +111,7 @@ pub const AudioPlayer = struct {
         engine_cfg.resource_manager_resampling.linear.lpf_order = lpf_order;
 
         const engine = zaudio.Engine.create(engine_cfg) catch |e| {
-            std.debug.print("[audio] zaudio engine init failed: {s}\n", .{@errorName(e)});
+            alog.err("zaudio engine init failed: {s}", .{@errorName(e)});
             zaudio.deinit();
             return .{
                 .engine = undefined,
@@ -119,11 +122,11 @@ pub const AudioPlayer = struct {
         // Apply headroom. setGainDb(-N) reduces engine output by N dB
         // before the device-format converter sees the f32 mix.
         engine.setGainDb(-headroom_db) catch |e| {
-            std.debug.print("[audio] setGainDb(-{d:.1}) failed: {s} (ignored)\n", .{ headroom_db, @errorName(e) });
+            alog.warn("setGainDb(-{d:.1}) failed: {s} (ignored)", .{ headroom_db, @errorName(e) });
         };
 
-        std.debug.print(
-            "[audio] v1.10.11 quality knobs: lpf_order={d} headroom_db=-{d:.1} dither={s} (engine cfg)\n",
+        alog.info(
+            "v1.10.11 quality knobs: lpf_order={d} headroom_db=-{d:.1} dither={s} (engine cfg)",
             .{ lpf_order, headroom_db, dither_str },
         );
 

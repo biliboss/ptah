@@ -34,6 +34,9 @@ const ipc = @import("ipc.zig");
 const client = @import("client.zig");
 const preproc = @import("preproc.zig");
 
+// v1.10.13 — scoped logger so MCP transport errors are filterable.
+const mlog = std.log.scoped(.mcp);
+
 pub const VERSION = "1.10.10";
 pub const PROTOCOL_VERSION = "2024-11-05";
 
@@ -83,7 +86,7 @@ pub fn run(arena: std.mem.Allocator, io: std.Io, home: []const u8) !void {
         const raw = r.takeDelimiterInclusive('\n') catch |e| switch (e) {
             error.EndOfStream => return,
             error.StreamTooLong => {
-                std.debug.print("[mcp] line exceeds {d}B — closing\n", .{READ_BUF});
+                mlog.warn("line exceeds {d}B — closing", .{READ_BUF});
                 return;
             },
             else => return e,
@@ -98,7 +101,7 @@ pub fn run(arena: std.mem.Allocator, io: std.Io, home: []const u8) !void {
         defer req_arena.deinit();
 
         const response = handleLine(req_arena.allocator(), io, home, line) catch |e| blk: {
-            std.debug.print("[mcp] handle error: {s}\n", .{@errorName(e)});
+            mlog.err("handle error: {s}", .{@errorName(e)});
             break :blk null;
         };
         if (response) |resp| {
