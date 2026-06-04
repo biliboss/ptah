@@ -206,6 +206,34 @@ pub fn processWithPauses(
     return after_pauses;
 }
 
+/// v1.10.9 — full tech preproc, exposed for the daemon so the streaming
+/// synth path can run the same order as `processTechWithPauses`. Order:
+///   normalizeIdentifiers → glossary-1 → camelCase-split → glossary-2 →
+///   abbreviations → cardinals → pauses
+///
+/// `normalizeIdentifiers` runs FIRST so URL / version / commit-hash /
+/// path / hex spans get rewritten before the glossary can catch
+/// substrings inside them (e.g. `HTTPS` inside `https://…` is not
+/// glossary-matched once the URL detector has already stripped the
+/// protocol). The trade-off: the glossary's second pass still fires on
+/// the rewritten output, so a URL tail like `agent-tts` will see `tts`
+/// spelled letter-by-letter — accepted scope because the alternative
+/// (Piper saying "ts" as a Pt-BR diphthong) is worse.
+pub fn techPipeline(
+    arena: std.mem.Allocator,
+    raw: []const u8,
+    tech: TechOptions,
+) ![]u8 {
+    if (raw.len == 0) return arena.alloc(u8, 0);
+    const after_norm = try normalizeIdentifiers(arena, raw);
+    const after_glossary1 = try expandTechGlossary(arena, after_norm, tech);
+    const after_camel = try splitCamelCase(arena, after_glossary1);
+    const after_glossary2 = try expandTechGlossary(arena, after_camel, tech);
+    const after_abbrev = try expandAbbreviations(arena, after_glossary2);
+    const after_numbers = try expandNumbers(arena, after_abbrev);
+    return after_numbers;
+}
+
 /// v1.10.8 — tech-report mode. Runs the v0.5 pipeline + a curated tech
 /// glossary substitution (acronyms spelled, units expanded) before the
 /// pause stage. Designed for engineering-report cadence — the resulting
@@ -222,11 +250,15 @@ pub fn processTech(
     return processTechWithPauses(arena, raw, tech, .{});
 }
 
-/// v1.10.8 — tech preproc with explicit pause overrides. The glossary
-/// substitution happens FIRST so multi-letter acronyms (e.g. "API")
-/// already look like spaced single letters before `expandNumbers` sees
-/// them, which keeps cardinal expansion from misfiring on glossary
-/// residue.
+/// v1.10.8 — tech preproc with explicit pause overrides. v1.10.9 — pipeline
+/// upgraded to two-pass glossary with CamelCase splitter and identifier
+/// normalizer between the passes. The first glossary pass catches multi-word
+/// brand names verbatim (e.g. "SurrealDB" → "surreal D B") so the splitter
+/// doesn't fragment them; the splitter then opens up runs like
+/// "MultiPiperEngine" → "Multi Piper Engine"; the second glossary pass
+/// re-applies (so "TTS" inside "agent TTS Menubar" still spells out); the
+/// identifier normalizer rewrites versions / commit hashes / URLs / paths
+/// / hex literals; then v0.5 abbreviation + cardinal + pause stages run.
 pub fn processTechWithPauses(
     arena: std.mem.Allocator,
     raw: []const u8,
@@ -235,10 +267,8 @@ pub fn processTechWithPauses(
 ) ![]u8 {
     if (raw.len == 0) return arena.alloc(u8, 0);
 
-    const after_glossary = try expandTechGlossary(arena, raw, tech);
-    const after_abbrev = try expandAbbreviations(arena, after_glossary);
-    const after_numbers = try expandNumbers(arena, after_abbrev);
-    const after_pauses = try insertPausesTuned(arena, after_numbers, pauses.resolved());
+    const after_pipeline = try techPipeline(arena, raw, tech);
+    const after_pauses = try insertPausesTuned(arena, after_pipeline, pauses.resolved());
     return after_pauses;
 }
 
@@ -623,38 +653,68 @@ const TechEntry = struct {
 };
 
 // Sorted longest-first to keep the linear scan's first-match logic from
-// stealing prefixes (e.g. "kHz" before "Hz", "milissegundos" before "ms").
+// stealing prefixes (e.g. "kHz" before "Hz", "milissegundos" before "ms",
+// "HTTPS" before "HTTP"). v1.10.9 expansion adds the missing acronyms,
+// units, and brand names called out in the research-prompt distillation
+// (`_qa/v1.10.9-research-prompt-output.md`).
 const TECH_GLOSSARY = [_]TechEntry{
-    // Multi-letter brands / acronyms that read poorly when spelled
+    // ── Multi-word phrases (longest first to win over single-word components)
     .{ .src = "Claude Code", .dst = "Claude Code" },
-    .{ .src = "ChatGPT", .dst = "chate gê pê tê" },
-    .{ .src = "SwiftUI", .dst = "swift U I" },
+    .{ .src = "XTTS v2", .dst = "X T T S vê dois" },
+
+    // ── Brand names (mixed-case exact match, ordered longest-first)
+    .{ .src = "PostgreSQL", .dst = "pós-ti-grês-quiu-el" },
+    .{ .src = "SurrealDB", .dst = "surreal D B" },
+    .{ .src = "Homebrew", .dst = "home-briu" },
+    .{ .src = "Pydantic", .dst = "paidântic" },
+    .{ .src = "FastAPI", .dst = "fast A P I" },
     .{ .src = "libpiper", .dst = "lib paiper" },
+    .{ .src = "ChatGPT", .dst = "chate gê pê tê" },
+    .{ .src = "SQLite", .dst = "es-quiu-lai-ti" },
+    .{ .src = "SwiftUI", .dst = "swift U I" },
     .{ .src = "GitHub", .dst = "guite hub" },
+    .{ .src = "Docker", .dst = "dóquer" },
+    .{ .src = "Nginx", .dst = "enginx" },
     .{ .src = "Anthropic", .dst = "Anthropic" },
     .{ .src = "Cursor", .dst = "Cursor" },
     .{ .src = "Cline", .dst = "Cline" },
     .{ .src = "Piper", .dst = "Piper" },
     .{ .src = "Faber", .dst = "Faber" },
-    // 4+ letter acronyms that get a phonetic spelling
-    .{ .src = "XTTS v2", .dst = "X T T S vê dois" },
-    .{ .src = "XTTS", .dst = "X T T S" },
-    .{ .src = "ONNX", .dst = "ônix" },
+    .{ .src = "NATS", .dst = "nats" },
+    .{ .src = "Zsh", .dst = "zi shell" },
+
+    // ── 4+ letter acronyms (phonetic / spelled). v1.10.9: HTTPS/HTTP/UUID/EOF
+    .{ .src = "HTTPS", .dst = "agá tê tê pê esse", .case_insensitive = true },
+    .{ .src = "HTTP", .dst = "agá tê tê pê", .case_insensitive = true },
+    .{ .src = "YAML", .dst = "iêimel", .case_insensitive = true },
+    .{ .src = "yaml", .dst = "iêimel", .case_insensitive = true },
     .{ .src = "JSON", .dst = "jeisson", .case_insensitive = true },
     .{ .src = "HTML", .dst = "agá tê eme éle", .case_insensitive = true },
-    .{ .src = "yaml", .dst = "iâmel", .case_insensitive = true },
-    .{ .src = "YAML", .dst = "iâmel" },
-    // Unit symbols (longest-first within their family)
+    .{ .src = "XTTS", .dst = "X T T S" },
+    .{ .src = "ONNX", .dst = "ônix" },
+    .{ .src = "UUID", .dst = "U U I D", .case_insensitive = true },
+    .{ .src = "CI-CD", .dst = "C I C D", .case_insensitive = true },
+    .{ .src = "CI/CD", .dst = "C I C D", .case_insensitive = true },
+
+    // ── Unit symbols (longest-first within their family). v1.10.9: Mbps/Gbps/fps/bps/TB/dB/px
+    .{ .src = "Mbps", .dst = "megabits por segundo" },
+    .{ .src = "Gbps", .dst = "gigabits por segundo" },
     .{ .src = "kHz", .dst = "kilohertz" },
+    .{ .src = "fps", .dst = "quadros por segundo" },
+    .{ .src = "bps", .dst = "bits por segundo" },
     .{ .src = "µs", .dst = "microssegundos" },
     .{ .src = "ms", .dst = "milissegundos" },
     .{ .src = "ns", .dst = "nanossegundos" },
+    .{ .src = "px", .dst = "pixels" },
+    .{ .src = "dB", .dst = "decibéis" },
     .{ .src = "Hz", .dst = "hertz" },
+    .{ .src = "TB", .dst = "terabytes" },
     .{ .src = "MB", .dst = "megabytes" },
     .{ .src = "KB", .dst = "kilobytes" },
     .{ .src = "GB", .dst = "gigabytes" },
-    .{ .src = "TB", .dst = "terabytes" },
-    // 3-letter acronyms spelled out (Pt-BR letter names)
+
+    // ── 3-letter acronyms (Pt-BR letter names). v1.10.9: TCP/UDP/CSV/XML/PDF/IDE/ORM/EOF/SSH
+    .{ .src = "EOF", .dst = "E O F", .case_insensitive = true },
     .{ .src = "API", .dst = "A P I", .case_insensitive = true },
     .{ .src = "MCP", .dst = "M C P", .case_insensitive = true },
     .{ .src = "CPU", .dst = "C P U", .case_insensitive = true },
@@ -665,13 +725,18 @@ const TECH_GLOSSARY = [_]TechEntry{
     .{ .src = "URL", .dst = "U R L", .case_insensitive = true },
     .{ .src = "DNS", .dst = "D N S", .case_insensitive = true },
     .{ .src = "SSH", .dst = "S S H", .case_insensitive = true },
-    .{ .src = "IDE", .dst = "I D E", .case_insensitive = true },
+    .{ .src = "TCP", .dst = "T C P", .case_insensitive = true },
+    .{ .src = "UDP", .dst = "U D P", .case_insensitive = true },
+    .{ .src = "CSV", .dst = "C S V", .case_insensitive = true },
+    .{ .src = "PDF", .dst = "P D F", .case_insensitive = true },
+    .{ .src = "IDE", .dst = "I D É", .case_insensitive = true },
+    .{ .src = "ORM", .dst = "O R M", .case_insensitive = true },
     .{ .src = "LLM", .dst = "L L M", .case_insensitive = true },
     .{ .src = "CSS", .dst = "C S S", .case_insensitive = true },
     .{ .src = "XML", .dst = "X M L", .case_insensitive = true },
     .{ .src = "SDK", .dst = "S D K", .case_insensitive = true },
     .{ .src = "CLI", .dst = "C L I", .case_insensitive = true },
-    // 2-letter
+    // ── 2-letter
     .{ .src = "OS", .dst = "O S" },
 };
 
@@ -728,6 +793,395 @@ fn expandTechGlossary(
         }
     }
     return out.toOwnedSlice(arena);
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// v1.10.9 — CamelCase splitter
+// ──────────────────────────────────────────────────────────────────────
+//
+// Inserts a space at camel boundaries so identifiers like `MultiPiperEngine`
+// reach espeak-ng (Piper's phonemizer) as separate tokens. Three rules,
+// applied in one pass:
+//
+//   1. Insert space before an uppercase letter that is preceded by a
+//      lowercase ASCII letter or an ASCII digit.
+//         `getConditioning` → `get Conditioning`
+//         `MultiPiperEngine` → `Multi Piper Engine`
+//         `ChatGPT5`        → matches t→G here (`Chat G…`).
+//   2. End of all-caps run: insert space before an uppercase letter when
+//      the previous byte is uppercase AND the next byte is lowercase.
+//         `SQLite` → `SQ Lite`. Preserves all-caps acronyms like `SQL`,
+//         `HTTPS`, `TTS` whose entire run is followed by a non-letter.
+//   3. Insert space before an ASCII digit that is preceded by an uppercase
+//      ASCII letter.
+//         `ChatGPT5` → `Chat GPT 5`.
+//
+// All other transitions pass through verbatim. UTF-8 continuation bytes
+// (>= 0x80) are treated as opaque — a continuation byte never triggers a
+// camel split and never satisfies the "previous lowercase" or "next
+// lowercase" predicates. Acentos in Pt-BR therefore can't break a run.
+pub fn splitCamelCase(arena: std.mem.Allocator, input: []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    try out.ensureTotalCapacity(arena, input.len);
+
+    var i: usize = 0;
+    while (i < input.len) : (i += 1) {
+        const c = input[i];
+
+        if (i > 0) {
+            const prev = input[i - 1];
+            const next: ?u8 = if (i + 1 < input.len) input[i + 1] else null;
+
+            // Rule 1: lower/digit → Upper
+            if (isAsciiUpper(c) and (isAsciiLower(prev) or std.ascii.isDigit(prev))) {
+                try out.append(arena, ' ');
+            }
+            // Rule 2: Upper-run end (Upper → Upper followed by lower)
+            else if (isAsciiUpper(c) and isAsciiUpper(prev)) {
+                if (next) |n| {
+                    if (isAsciiLower(n)) try out.append(arena, ' ');
+                }
+            }
+            // Rule 3: Upper → digit
+            else if (std.ascii.isDigit(c) and isAsciiUpper(prev)) {
+                try out.append(arena, ' ');
+            }
+        }
+
+        try out.append(arena, c);
+    }
+
+    return out.toOwnedSlice(arena);
+}
+
+fn isAsciiUpper(c: u8) bool {
+    return c >= 'A' and c <= 'Z';
+}
+
+fn isAsciiLower(c: u8) bool {
+    return c >= 'a' and c <= 'z';
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// v1.10.9 — identifier normalization
+// ──────────────────────────────────────────────────────────────────────
+//
+// Rewrites version strings, commit hashes, URLs, file paths, and hex
+// literals into Pt-BR-pronounceable forms before the cardinal + pause
+// stages run. The transformations are conservative — each rule only fires
+// at a word boundary so plain prose text is never disturbed.
+//
+//   * Versions  `1.10.8`                       → `1 ponto 10 ponto 8`
+//   * Commit    `bdd352e`                      → `commit bê dê dê três cinco dois é`
+//   * URLs      `https://github.com/foo/bar`   → `github ponto com barra foo barra bar`
+//   * Paths     `~/.cache/agent-tts/voices/`   → `pasta voices`
+//   * Hex       `0xFF`                          → `zero-x F F`
+//
+// Each rule is independent. Detection priority (highest first): URL → hex
+// literal → file path → commit hash → version. The scanner picks the first
+// match at the current cursor and emits the rewritten span; otherwise it
+// passes the byte through. All emissions are surrounded by a space when
+// the previous output byte is alphanumeric, so prose like "v1.10.8" gets
+// the version's word boundary even though the leading "v" is part of the
+// preceding token.
+pub fn normalizeIdentifiers(arena: std.mem.Allocator, input: []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    try out.ensureTotalCapacity(arena, input.len);
+
+    var i: usize = 0;
+    while (i < input.len) {
+        // Each branch returns the new cursor position (== old i when not matched).
+        if (tryEmitUrl(arena, &out, input, i)) |next| {
+            i = next;
+            continue;
+        }
+        if (tryEmitHexLiteral(arena, &out, input, i)) |next| {
+            i = next;
+            continue;
+        }
+        if (tryEmitPath(arena, &out, input, i)) |next| {
+            i = next;
+            continue;
+        }
+        if (try tryEmitCommitHash(arena, &out, input, i)) |next| {
+            i = next;
+            continue;
+        }
+        if (try tryEmitVersion(arena, &out, input, i)) |next| {
+            i = next;
+            continue;
+        }
+        try out.append(arena, input[i]);
+        i += 1;
+    }
+    return out.toOwnedSlice(arena);
+}
+
+/// Ensure the output stream has a space-equivalent separator before the
+/// next emission so a normalized token doesn't glue onto a preceding
+/// alphanumeric (`v1.10.8` after rewrite becomes `v 1 ponto 10 ponto 8`).
+fn ensureLeadingSpace(arena: std.mem.Allocator, out: *std.ArrayList(u8)) !void {
+    if (out.items.len == 0) return;
+    const last = out.items[out.items.len - 1];
+    if (last == ' ' or last == '\t' or last == '\n') return;
+    try out.append(arena, ' ');
+}
+
+fn startsWithCi(haystack: []const u8, idx: usize, needle: []const u8) bool {
+    if (idx + needle.len > haystack.len) return false;
+    for (needle, 0..) |n, k| {
+        const h = haystack[idx + k];
+        const nl = if (n >= 'A' and n <= 'Z') n + 32 else n;
+        const hl = if (h >= 'A' and h <= 'Z') h + 32 else h;
+        if (hl != nl) return false;
+    }
+    return true;
+}
+
+fn isUrlByte(c: u8) bool {
+    // Conservative URL terminator: anything that can't appear in a path
+    // /query /fragment past the scheme. Whitespace and quotes break the run.
+    return c > 0x20 and c != '"' and c != '\'' and c != '<' and c != '>' and
+        c != ')' and c != ']' and c != '}' and c != ',';
+}
+
+fn tryEmitUrl(
+    arena: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    input: []const u8,
+    start: usize,
+) ?usize {
+    const at_word_start = (start == 0) or !isWordByte(input[start - 1]);
+    if (!at_word_start) return null;
+    var skip: usize = 0;
+    if (startsWithCi(input, start, "https://")) {
+        skip = "https://".len;
+    } else if (startsWithCi(input, start, "http://")) {
+        skip = "http://".len;
+    } else return null;
+
+    // Walk until the first non-URL byte.
+    var j = start + skip;
+    while (j < input.len and isUrlByte(input[j])) : (j += 1) {}
+    if (j == start + skip) return null; // protocol with empty body — leave raw
+
+    ensureLeadingSpace(arena, out) catch return null;
+    var idx = start + skip;
+    while (idx < j) : (idx += 1) {
+        const c = input[idx];
+        switch (c) {
+            '.' => out.appendSlice(arena, " ponto ") catch return null,
+            '/' => out.appendSlice(arena, " barra ") catch return null,
+            else => out.append(arena, c) catch return null,
+        }
+    }
+    return j;
+}
+
+fn tryEmitPath(
+    arena: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    input: []const u8,
+    start: usize,
+) ?usize {
+    const at_word_start = (start == 0) or !isWordByte(input[start - 1]);
+    if (!at_word_start) return null;
+    // `/foo/...` or `~/foo/...`. Must contain at least one '/'.
+    var has_prefix: bool = false;
+    var probe_idx: usize = start;
+    if (input[start] == '/') {
+        has_prefix = true;
+        probe_idx = start;
+    } else if (input[start] == '~' and start + 1 < input.len and input[start + 1] == '/') {
+        has_prefix = true;
+        probe_idx = start;
+    }
+    if (!has_prefix) return null;
+
+    // Walk to end-of-token. Reuse URL-byte rule (paths can contain dots,
+    // dashes, alphanumerics, slashes — same forbidden set).
+    var j = probe_idx;
+    while (j < input.len and isUrlByte(input[j])) : (j += 1) {}
+    if (j == probe_idx) return null;
+
+    // Must contain at least one '/' beyond the prefix to qualify.
+    var slash_count: usize = 0;
+    var k: usize = probe_idx;
+    while (k < j) : (k += 1) {
+        if (input[k] == '/') slash_count += 1;
+    }
+    if (slash_count < 1) return null;
+
+    // Final non-empty component. Walk backwards skipping trailing '/'.
+    var tail_end: usize = j;
+    while (tail_end > probe_idx and input[tail_end - 1] == '/') tail_end -= 1;
+    if (tail_end == probe_idx) return null;
+    var tail_start: usize = tail_end;
+    while (tail_start > probe_idx and input[tail_start - 1] != '/') tail_start -= 1;
+    const component = input[tail_start..tail_end];
+    if (component.len == 0) return null;
+
+    ensureLeadingSpace(arena, out) catch return null;
+    out.appendSlice(arena, "pasta ") catch return null;
+    out.appendSlice(arena, component) catch return null;
+    return j;
+}
+
+fn isHexDigit(c: u8) bool {
+    return (c >= '0' and c <= '9') or (c >= 'a' and c <= 'f') or (c >= 'A' and c <= 'F');
+}
+
+fn tryEmitHexLiteral(
+    arena: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    input: []const u8,
+    start: usize,
+) ?usize {
+    const at_word_start = (start == 0) or !isWordByte(input[start - 1]);
+    if (!at_word_start) return null;
+    if (start + 2 >= input.len) return null;
+    if (input[start] != '0') return null;
+    if (input[start + 1] != 'x' and input[start + 1] != 'X') return null;
+    var j = start + 2;
+    var has_uppercase_hex: bool = false;
+    while (j < input.len and isHexDigit(input[j])) : (j += 1) {
+        if (input[j] >= 'A' and input[j] <= 'F') has_uppercase_hex = true;
+    }
+    if (j == start + 2) return null;
+    // Word-boundary tail: next byte must not be a word byte.
+    if (j < input.len and isWordByte(input[j])) return null;
+    // Only fire when there is at least one hex letter A-F (uppercase) — the
+    // common literal form. `0x9` alone could be confused with a decimal
+    // prefix used in flag handling, so leave purely numeric `0x…` to the
+    // version/number stage when no A-F letters appear.
+    if (!has_uppercase_hex) return null;
+
+    ensureLeadingSpace(arena, out) catch return null;
+    out.appendSlice(arena, "zero-x") catch return null;
+    var k: usize = start + 2;
+    while (k < j) : (k += 1) {
+        out.append(arena, ' ') catch return null;
+        out.append(arena, input[k]) catch return null;
+    }
+    return j;
+}
+
+/// Lowercase Pt-BR letter name for the 'a'..'f' hex digits used in commit
+/// hashes. The other rules emit ASCII letters verbatim; commit hashes
+/// pre-spell the entire 7-char prefix so an espeak-ng misfire on a
+/// short string like "bdd" can't slip through.
+fn ptBrLowerHexLetterName(c: u8) []const u8 {
+    return switch (c) {
+        'a' => "á",
+        'b' => "bê",
+        'c' => "cê",
+        'd' => "dê",
+        'e' => "é",
+        'f' => "éfe",
+        else => "",
+    };
+}
+
+fn ptBrDigitName(c: u8) []const u8 {
+    return switch (c) {
+        '0' => "zero",
+        '1' => "um",
+        '2' => "dois",
+        '3' => "três",
+        '4' => "quatro",
+        '5' => "cinco",
+        '6' => "seis",
+        '7' => "sete",
+        '8' => "oito",
+        '9' => "nove",
+        else => "",
+    };
+}
+
+fn isCommitHashByte(c: u8) bool {
+    return (c >= '0' and c <= '9') or (c >= 'a' and c <= 'f');
+}
+
+fn tryEmitCommitHash(
+    arena: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    input: []const u8,
+    start: usize,
+) !?usize {
+    const at_word_start = (start == 0) or !isWordByte(input[start - 1]);
+    if (!at_word_start) return null;
+    var j: usize = start;
+    var has_letter: bool = false;
+    while (j < input.len and isCommitHashByte(input[j])) : (j += 1) {
+        if (input[j] >= 'a' and input[j] <= 'f') has_letter = true;
+    }
+    const span = j - start;
+    if (span < 7 or span > 40) return null;
+    // Word-boundary tail.
+    if (j < input.len and isWordByte(input[j])) return null;
+    // Must have at least one lowercase a-f letter — pure-digit runs are
+    // versions / IDs, not commit hashes.
+    if (!has_letter) return null;
+
+    try ensureLeadingSpace(arena, out);
+    try out.appendSlice(arena, "commit");
+    // Truncate to first 7 characters, spell letter-by-letter (Pt-BR
+    // letter name) and digit-by-digit (Pt-BR cardinal). The cardinal
+    // expansion below stays in-arena because we emit the literal Pt-BR
+    // words and never the raw digit char — `expandNumbers` therefore
+    // doesn't re-touch this span.
+    var k: usize = 0;
+    while (k < 7) : (k += 1) {
+        const c = input[start + k];
+        try out.append(arena, ' ');
+        if (c >= 'a' and c <= 'f') {
+            try out.appendSlice(arena, ptBrLowerHexLetterName(c));
+        } else if (c >= '0' and c <= '9') {
+            try out.appendSlice(arena, ptBrDigitName(c));
+        }
+    }
+    return j;
+}
+
+fn tryEmitVersion(
+    arena: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    input: []const u8,
+    start: usize,
+) !?usize {
+    // Versions don't strictly require a word boundary on the left (the
+    // smoke test uses "v1.10.8" — leading "v" is a word byte). We allow
+    // the match when the *digit* token starts here. The normalizer scans
+    // any digit-dot-digit pattern; the abbreviation guard for "Sr.", etc.
+    // doesn't apply because those entries end in alpha+dot.
+    if (!std.ascii.isDigit(input[start])) return null;
+    var j: usize = start;
+    while (j < input.len and std.ascii.isDigit(input[j])) : (j += 1) {}
+    // Require at least one `.<digit>` group after the first int.
+    if (j >= input.len or input[j] != '.') return null;
+    if (j + 1 >= input.len or !std.ascii.isDigit(input[j + 1])) return null;
+    var dot_groups: usize = 0;
+    while (j < input.len and input[j] == '.' and j + 1 < input.len and std.ascii.isDigit(input[j + 1])) {
+        dot_groups += 1;
+        j += 1;
+        while (j < input.len and std.ascii.isDigit(input[j])) : (j += 1) {}
+    }
+    if (dot_groups == 0) return null;
+    // Tail must not be a word byte (otherwise `1.10.8a` would consume the
+    // dot-groups but leave a dangling letter).
+    if (j < input.len and isWordByte(input[j])) return null;
+
+    try ensureLeadingSpace(arena, out);
+    var k: usize = start;
+    while (k < j) : (k += 1) {
+        const c = input[k];
+        if (c == '.') {
+            try out.appendSlice(arena, " ponto ");
+        } else {
+            try out.append(arena, c);
+        }
+    }
+    return j;
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -1079,6 +1533,190 @@ test "tech + pauses: profile-tech-like shape" {
     const arena = arena_state.allocator();
     const got = try processTechWithPauses(arena, "API ok.", .{}, .{ .sentence_ms = 500 });
     try testing.expectEqualStrings("A P I ok. [[slnc 500]] ", got);
+}
+
+// ─── v1.10.9 glossary additions ────────────────────────────────────────
+
+test "tech v1.10.9: HTTPS beats HTTP (longest-first)" {
+    try runTech("via HTTPS então", "via agá tê tê pê esse então");
+}
+
+test "tech v1.10.9: HTTP spelled" {
+    try runTech("via HTTP simples", "via agá tê tê pê simples");
+}
+
+test "tech v1.10.9: TCP UDP YAML CSV PDF" {
+    try runTech(
+        "TCP UDP YAML CSV PDF",
+        "T C P U D P iêimel C S V P D F",
+    );
+}
+
+test "tech v1.10.9: Docker Nginx Homebrew Zsh" {
+    try runTech(
+        "Docker Nginx Homebrew Zsh",
+        "dóquer enginx home-briu zi shell",
+    );
+}
+
+test "tech v1.10.9: PostgreSQL phonetic" {
+    try runTech("usei PostgreSQL", "usei pós-ti-grês-quiu-el");
+}
+
+test "tech v1.10.9: SQLite branded entry beats CamelCase split" {
+    try runTech("rodando SQLite", "rodando es-quiu-lai-ti");
+}
+
+test "tech v1.10.9: SurrealDB hits the brand entry" {
+    try runTech("usei SurrealDB hoje", "usei surreal D B hoje");
+}
+
+test "tech v1.10.9: Mbps beats bps" {
+    try runTech(
+        "link de 100 Mbps",
+        "link de cem megabits por segundo",
+    );
+}
+
+test "tech v1.10.9: fps + dB + px + TB" {
+    try runTech(
+        "60 fps 80 dB 1024 px 2 TB",
+        "sessenta quadros por segundo oitenta decibéis mil e vinte e quatro pixels dois terabytes",
+    );
+}
+
+test "tech v1.10.9: NATS brand" {
+    try runTech("via NATS", "via nats");
+}
+
+// ─── v1.10.9 CamelCase splitter ────────────────────────────────────────
+
+fn runCamel(input: []const u8, expected: []const u8) !void {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const got = try splitCamelCase(arena, input);
+    testing.expectEqualStrings(expected, got) catch |e| {
+        std.debug.print("\ninput:    {s}\nexpected: {s}\ngot:      {s}\n", .{ input, expected, got });
+        return e;
+    };
+}
+
+test "camel: SwiftUI preserves UI run" {
+    // SwiftUI → "Swift UI". UI stays together so the SwiftUI glossary entry
+    // (or downstream consumers) can still recognise "UI".
+    try runCamel("SwiftUI", "Swift UI");
+}
+
+test "camel: MultiPiperEngine splits all three" {
+    try runCamel("MultiPiperEngine", "Multi Piper Engine");
+}
+
+test "camel: getConditioningLatents lower→Upper transitions" {
+    try runCamel("getConditioningLatents", "get Conditioning Latents");
+}
+
+test "camel: agentTTSMenubar — TTS run preserved" {
+    try runCamel("agentTTSMenubar", "agent TTS Menubar");
+}
+
+test "camel: ChatGPT5 splits digit boundary" {
+    try runCamel("ChatGPT5", "Chat GPT 5");
+}
+
+test "camel: SQLite ends the all-caps run before lowercase" {
+    try runCamel("SQLite", "SQ Lite");
+}
+
+test "camel: all-caps run untouched" {
+    try runCamel("SQL HTTPS TTS", "SQL HTTPS TTS");
+}
+
+test "camel: empty input" {
+    try runCamel("", "");
+}
+
+test "camel: prose with no camel boundaries" {
+    try runCamel("ola mundo", "ola mundo");
+}
+
+// ─── v1.10.9 identifier normalization ──────────────────────────────────
+
+fn runNorm(input: []const u8, expected: []const u8) !void {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const got = try normalizeIdentifiers(arena, input);
+    testing.expectEqualStrings(expected, got) catch |e| {
+        std.debug.print("\ninput:    {s}\nexpected: {s}\ngot:      {s}\n", .{ input, expected, got });
+        return e;
+    };
+}
+
+test "normalize: version 1.10.8 spelled" {
+    try runNorm("versão 1.10.8 ok", "versão 1 ponto 10 ponto 8 ok");
+}
+
+test "normalize: leading-letter prefix v1.10.8 still rewritten" {
+    // "v" is a word byte, so the version rule fires when the digit starts.
+    // The normalizer inserts a separator so the cardinal stage still sees
+    // the digits at word boundaries downstream.
+    try runNorm("v1.10.8", "v 1 ponto 10 ponto 8");
+}
+
+test "normalize: commit hash bdd352e spelled" {
+    try runNorm(
+        "ver bdd352e agora",
+        "ver commit bê dê dê três cinco dois é agora",
+    );
+}
+
+test "normalize: URL strip protocol + replace . and /" {
+    try runNorm(
+        "https://github.com/biliboss/agent-tts",
+        "github ponto com barra biliboss barra agent-tts",
+    );
+}
+
+test "normalize: file path final component only" {
+    try runNorm(
+        "veja ~/.cache/agent-tts/voices/ aqui",
+        "veja pasta voices aqui",
+    );
+}
+
+test "normalize: hex literal 0xFF" {
+    try runNorm("flag 0xFF set", "flag zero-x F F set");
+}
+
+test "normalize: untouched prose passes through" {
+    try runNorm("nada para normalizar aqui", "nada para normalizar aqui");
+}
+
+test "normalize: plain integer is NOT a version" {
+    // `2026` has no dot-group so the version rule must not fire.
+    try runNorm("ano 2026", "ano 2026");
+}
+
+// ─── v1.10.9 full pipeline integration ─────────────────────────────────
+
+test "techPipeline: version + hash + URL together" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const got = try techPipeline(
+        arena,
+        "v1.10.8 em CPU. Commit bdd352e. Veja https://github.com/biliboss/agent-tts",
+        .{},
+    );
+    // normalizeIdentifiers runs FIRST so the URL/version/commit-hash spans
+    // are protected from glossary-1 catching `HTTPS` substring. Glossary-2
+    // still fires on the URL tail (`agent-tts` → `agent-T T S`), which is
+    // ear-acceptable.
+    try testing.expectEqualStrings(
+        "v um ponto dez ponto oito em C P U. Commit commit bê dê dê três cinco dois é. Veja github ponto com barra biliboss barra agent-T T S",
+        got,
+    );
 }
 
 // ─── v1.1 splitByLang tests ──────────────────────────────────────────────

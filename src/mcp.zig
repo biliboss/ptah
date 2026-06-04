@@ -34,7 +34,7 @@ const ipc = @import("ipc.zig");
 const client = @import("client.zig");
 const preproc = @import("preproc.zig");
 
-pub const VERSION = "1.10.8";
+pub const VERSION = "1.10.9";
 pub const PROTOCOL_VERSION = "2024-11-05";
 
 const READ_BUF = 256 * 1024; // long agent monologues hit ~8 KB after escaping
@@ -223,6 +223,8 @@ fn buildToolsListResponse(a: std.mem.Allocator, id: json.Value) ![]const u8 {
         try toolDescriptor(a, "synth_voice_test", "Enqueue a one-shot piper synth with explicit length_scale / noise_scale / noise_w (v1.10.8: + tech / pause overrides / speaker_id). Returns the enqueue id plus the resolved knobs so an agent can A/B Faber profiles without daemon restart.", try synthVoiceTestSchema(a)),
         // v1.10.8 — automate the discovery loop: one call, N variants enqueued.
         try toolDescriptor(a, "voice_knob_search", "Enqueue the same text once per `variants` entry, each with its own knob bundle (length_scale / noise_scale / noise_w / tech / *_pause_ms / speaker_id). Returns the list of `{id, knobs}` so the caller can compare A/B/.../N profiles in a single MCP round-trip. max_variants capped at 16.", try voiceKnobSearchSchema(a)),
+        // v1.10.9 — curated 4-variant preset matrix for tech-narration discovery.
+        try toolDescriptor(a, "tech_profile_search", "v1.10.9: enqueue a curated 4-variant tech-narration matrix (tight-narrator, stock-tech, broadcast, expressive). Each variant runs through Faber piper with tech=true. Subset of the Resolution IV 2⁴⁻¹ in `_qa/v1.10.9-research-prompt-output.md`. Returns 4 `{id, name, knobs}` so the caller can ask the user to pick.", try techProfileSearchSchema(a)),
     });
     const result = try obj(a, &.{
         .{ "tools", tools },
@@ -422,6 +424,25 @@ fn voiceKnobSearchSchema(a: std.mem.Allocator) !json.Value {
     });
 }
 
+/// v1.10.9 — `tech_profile_search` schema. Only `text` is exposed; the
+/// four knob bundles are fixed in the implementation so the caller has a
+/// curated, reproducible matrix to A/B.
+fn techProfileSearchSchema(a: std.mem.Allocator) !json.Value {
+    const text_prop = try obj(a, &.{
+        .{ "type", str("string") },
+        .{ "description", str("Sentence to compare across the four curated tech-narration profiles. Pick something acronym-dense + cadence-sensitive (e.g. a release-note paragraph).") },
+    });
+    const props = try obj(a, &.{
+        .{ "text", text_prop },
+    });
+    const required = try arr(a, &.{str("text")});
+    return try obj(a, &.{
+        .{ "type", str("object") },
+        .{ "properties", props },
+        .{ "required", required },
+    });
+}
+
 fn sayStreamSchema(a: std.mem.Allocator) !json.Value {
     const engine_enum = try arr(a, &.{ str("say"), str("piper") });
 
@@ -552,6 +573,8 @@ fn buildToolsCallResponse(
     if (std.mem.eql(u8, tool, "synth_voice_test")) return callSynthVoiceTest(a, io, home, id, args_val);
     // v1.10.8 — bulk N-way knob search.
     if (std.mem.eql(u8, tool, "voice_knob_search")) return callVoiceKnobSearch(a, io, home, id, args_val);
+    // v1.10.9 — curated 4-variant matrix specifically for tech narration.
+    if (std.mem.eql(u8, tool, "tech_profile_search")) return callTechProfileSearch(a, io, home, id, args_val);
 
     return try toolErrorResponse(a, id, "unknown tool");
 }
@@ -1057,6 +1080,117 @@ fn callVoiceKnobSearch(
     const payload = try obj(a, &.{
         .{ "items", json.Value{ .array = items } },
         .{ "truncated", boolean(variants.items.len > limit) },
+    });
+    const text_block = try formatJsonAsText(a, payload);
+    return try toolTextResponse(a, id, text_block);
+}
+
+// v1.10.9 — tech_profile_search: hardcoded 4-variant matrix derived from
+// `_qa/v1.10.9-research-prompt-output.md`. The curated subset of the
+// Resolution IV 2⁴⁻¹ generator (factors length / noise / noise_w / EQ)
+// gives the caller a fast comparator without exposing every dial. Each
+// variant forces `tech=true` so the glossary + identifier normalizer +
+// CamelCase splitter all fire.
+const TechProfile = struct {
+    name: []const u8,
+    length_scale: f32,
+    noise_scale: f32,
+    noise_w: f32,
+    sentence_pause_ms: u32,
+    comma_pause_ms: u32 = 0,
+};
+
+const TECH_PROFILES = [_]TechProfile{
+    .{
+        .name = "tight-narrator",
+        .length_scale = 1.05,
+        .noise_scale = 0.35,
+        .noise_w = 0.45,
+        .sentence_pause_ms = 500,
+    },
+    .{
+        .name = "stock-tech",
+        .length_scale = 0.95,
+        .noise_scale = 0.667,
+        .noise_w = 0.85,
+        .sentence_pause_ms = 500,
+    },
+    .{
+        .name = "broadcast",
+        .length_scale = 1.10,
+        .noise_scale = 0.55,
+        .noise_w = 0.65,
+        .sentence_pause_ms = 650,
+        .comma_pause_ms = 200,
+    },
+    .{
+        .name = "expressive",
+        .length_scale = 1.00,
+        .noise_scale = 0.85,
+        .noise_w = 1.10,
+        .sentence_pause_ms = 500,
+        .comma_pause_ms = 160,
+    },
+};
+
+fn callTechProfileSearch(
+    a: std.mem.Allocator,
+    io: std.Io,
+    home: []const u8,
+    id: json.Value,
+    args: json.Value,
+) ![]const u8 {
+    if (args != .object) return try toolErrorResponse(a, id, "arguments must be an object");
+    const ao = args.object;
+    const text_val = ao.get("text") orelse return try toolErrorResponse(a, id, "text is required");
+    if (text_val != .string) return try toolErrorResponse(a, id, "text must be a string");
+    const text = text_val.string;
+
+    var items: json.Array = .init(a);
+    for (TECH_PROFILES) |p| {
+        const id_str = client.enqueueLineFull(
+            a,
+            io,
+            home,
+            .piper,
+            "faber",
+            client.DEFAULT_RATE,
+            text,
+            false, // ssml
+            p.length_scale,
+            p.noise_scale,
+            p.noise_w,
+            true, // tech
+            p.comma_pause_ms,
+            p.sentence_pause_ms,
+            0, // newline_pause_ms (default)
+            -1, // speaker_id
+        ) catch |e| switch (e) {
+            error.DaemonUnreachable => return try toolErrorResponse(a, id, "daemon not running"),
+            error.DaemonError => return try toolErrorResponse(a, id, "daemon returned an error mid-search"),
+            error.UnexpectedResponse => return try toolErrorResponse(a, id, "daemon returned an unexpected response mid-search"),
+            else => return e,
+        };
+
+        const knobs = try obj(a, &.{
+            .{ "length_scale", json.Value{ .float = @floatCast(p.length_scale) } },
+            .{ "noise_scale", json.Value{ .float = @floatCast(p.noise_scale) } },
+            .{ "noise_w", json.Value{ .float = @floatCast(p.noise_w) } },
+            .{ "tech", boolean(true) },
+            .{ "comma_pause_ms", int(@intCast(p.comma_pause_ms)) },
+            .{ "sentence_pause_ms", int(@intCast(p.sentence_pause_ms)) },
+        });
+        const entry = try obj(a, &.{
+            .{ "id", str(id_str) },
+            .{ "name", str(p.name) },
+            .{ "knobs", knobs },
+        });
+        try items.append(entry);
+    }
+
+    const payload = try obj(a, &.{
+        .{ "items", json.Value{ .array = items } },
+        .{ "count", int(@intCast(TECH_PROFILES.len)) },
     });
     const text_block = try formatJsonAsText(a, payload);
     return try toolTextResponse(a, id, text_block);

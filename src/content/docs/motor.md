@@ -238,6 +238,39 @@ The `voice_knob_search` tool replaces the 16-step "tools/call → wait → tools
 
 `--speaker-id N` (or the `speaker_id` MCP param) maps to `piper_synthesize_options.speaker_id`. Faber + Amy are single-speaker (no effect). Multi-speaker VCTK exports vary the timbre by integer index — use this with custom Piper models, not with the bundled voices.
 
+## Faber tech-narration profile (v1.10.9)
+
+v1.10.9 replaces the v1.10.8 tech knobs with research-anchored defaults sourced from [`_qa/v1.10.9-research-prompt-output.md`](https://github.com/biliboss/agent-tts/blob/main/_qa/v1.10.9-research-prompt-output.md) — an external LLM distillation of Faber-medium / MCV / VITS-15M evidence:
+
+| Knob | v1.10.8 tech | v1.10.9 tech | Why |
+|---|---|---|---|
+| `length_scale` | 0.95 | **1.05** | MCV fast read-speech; +5% recovers intelligibility on symbol strings |
+| `noise_scale` | 0.667 | **0.35** | 0.30–0.40 range avoids mid-sentence pitch drift |
+| `noise_w` | 0.85 | **0.45** | Consistent phoneme durations on acronym/identifier-dense input |
+| `sentence_pause_ms` | 500 | 500 | Unchanged |
+
+**Counter-argument** (flagged by the research note): the v1.10.8 numbers (`noise=0.667`, `noise_w=0.85`) sound less robotic on prose-heavy narration even if they smear acronyms. If you prefer expressiveness over crispness, A/B via the new `tech_profile_search` MCP tool (`stock-tech` variant replays the v1.10.8 knobs) or pass explicit `--length-scale` / `--noise-scale` / `--noise-w` to override.
+
+v1.10.9 also rewrites the tech preproc pipeline. The new order, exposed as `preproc.techPipeline(arena, raw, opts)`:
+
+1. **`normalizeIdentifiers`** — rewrites versions (`1.10.8` → `1 ponto 10 ponto 8`), commit hashes (`bdd352e` → `commit bê dê dê três cinco dois é`), URLs (`https://github.com/biliboss/agent-tts` → `github ponto com barra biliboss barra agent-tts`), file paths (`~/.cache/agent-tts/voices/` → `pasta voices`), and hex literals (`0xFF` → `zero-x F F`).
+2. **`expandTechGlossary` (pass 1)** — applies the expanded glossary on the normalized output.
+3. **`splitCamelCase`** — inserts spaces at camel boundaries with three rules: lower/digit → Upper, Upper → Upper-followed-by-lower (`SQLite` → `SQ Lite`), Upper → digit (`ChatGPT5` → `Chat GPT 5`). UTF-8 continuation bytes never trigger a split so accented Pt-BR words stay intact.
+4. **`expandTechGlossary` (pass 2)** — runs again so glossary entries inside the split output (`agentTTSMenubar` → `agent TTS Menubar` → glossary catches `TTS`) still resolve.
+5. **`expandAbbreviations`** — v0.5 abbreviation expansion (Sr./Dr./etc.).
+6. **`expandNumbers`** — v0.5 Pt-BR cardinal expansion (the version normalizer leaves bare digits behind precisely so this stage spells them).
+7. Pauses stage runs OUTSIDE `techPipeline` so `processTech` and `processTechWithPauses` can compose differently.
+
+**Glossary expansion** (v1.10.9 additions):
+
+| Group | New entries |
+|---|---|
+| Acronyms | HTTPS, HTTP, SSH, TCP, UDP, YAML (Pt-BR `iêimel`), CSV, XML, PDF, IDE, CI-CD, ORM, EOF, UUID, NATS |
+| Units | fps (`quadros por segundo`), dB (`decibéis`), px (`pixels`), TB (`terabytes`), bps, Mbps, Gbps |
+| Brands | Docker (`dóquer`), Nginx (`enginx`), PostgreSQL (`pós-ti-grês-quiu-el`), SQLite (`es-quiu-lai-ti`), SurrealDB (`surreal D B`), FastAPI (`fast A P I`), Pydantic (`paidântic`), Zsh (`zi shell`), Homebrew (`home-briu`) |
+
+Glossary lookup is still longest-first (HTTPS before HTTP, Mbps before bps) so partial matches never steal prefixes.
+
 ## Cloned voices (v1.4)
 
 v1.4 adds a **third engine**: `cloned`. Selected automatically when `--voice <slug>` resolves to a directory under `~/.cache/agent-tts/voices/<slug>/` produced by `agent-tts voice clone`.

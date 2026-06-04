@@ -41,6 +41,7 @@ Every milestone has a published baseline in [`_qa/`](https://github.com/biliboss
 | **v1.10.6** | XTTS quality knobs (temp/top_k/top_p/repetition_penalty) + longer reference window | re-clone bogdo → live playback validated; `AGENT_TTS_*` env overrides for A/B | 2026-06-04 |
 | **v1.10.7** | Per-call Piper knobs (`--length-scale` / `--noise-scale` / `--noise-w`) + MCP | 8-field ENQUEUE with tune triplet; 3 new SQLite REAL columns; 11 MCP tools (added `synth_voice_test`) | 2026-06-04 |
 | **v1.10.8** | Tech-report mode + max knob exposure (`--tech` / `--*-pause` / `--speaker-id` / `--profile tech`) + `voice_knob_search` MCP tool | 9-field ENQUEUE with extra quintuple; 5 new SQLite columns; 12 MCP tools; ~50-entry acronym/unit glossary | 2026-06-04 |
+| **v1.10.9** | Research-informed tech profile (`--profile tech` = length 1.05 / noise 0.35 / noise_w 0.45) + glossary +30 entries + CamelCase splitter + version/hash/URL/path/hex normalizer + `tech_profile_search` MCP tool | 13 MCP tools; ~80-entry glossary; 307/307 tests; daemon log `length_scale=1.050 noise_scale=0.350 noise_w=0.450 tech=true` | 2026-06-04 |
 
 ## KPI delivered
 

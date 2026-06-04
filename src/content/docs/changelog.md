@@ -9,6 +9,30 @@ Per milestone: what shipped, how we measured, what slipped to the next one. The 
 
 ---
 
+## v1.10.9 — Research-informed tech profile + glossary expansion · 2026-06-04
+
+**Why a patch:** v1.10.8 shipped a working tech-report mode but the Faber defaults (`length_scale=0.95`, `noise_scale=0.667`, `noise_w=0.85`) were guesses. The external LLM research distillation in [`_qa/v1.10.9-research-prompt-output.md`](https://github.com/biliboss/agent-tts/blob/main/_qa/v1.10.9-research-prompt-output.md) anchored the numbers on MCV read-speech evidence — `length=1.05 / noise=0.35 / noise_w=0.45` recovers intelligibility on symbol-heavy strings without flattening prosody. Same research distilled four more missing pieces this version ships: extra acronym/unit/brand glossary entries, a CamelCase splitter, and a path/version/commit-hash/URL normalizer so Piper stops mispronouncing identifiers.
+
+**Shipped:**
+
+- **`src/preproc.zig`** — `TECH_GLOSSARY` grows by ~30 entries: HTTPS/HTTP/SSH/TCP/UDP/YAML/CSV/XML/PDF/IDE/CI-CD/ORM/EOF/UUID/NATS + units fps/dB/px/TB/bps/Mbps/Gbps + brand phonetics Docker→dóquer, Nginx→enginx, PostgreSQL→pós-ti-grês-quiu-el, SQLite→es-quiu-lai-ti, SurrealDB→surreal D B, FastAPI→fast A P I, Pydantic→paidântic, Zsh→zi shell, Homebrew→home-briu. Sort stays longest-first (HTTPS before HTTP, Mbps before bps, kHz before Hz)
+- **`src/preproc.zig`** — `splitCamelCase` inserts spaces at camel boundaries with three rules: lower/digit→Upper, Upper→Upper followed by lower, Upper→digit. Preserves all-caps runs (`SQL` stays glued, `SQLite` → `SQ Lite`, `agentTTSMenubar` → `agent TTS Menubar`). UTF-8 continuation bytes don't trigger splits so Pt-BR accents stay intact
+- **`src/preproc.zig`** — `normalizeIdentifiers` rewrites versions/hashes/URLs/paths/hex. Versions `1.10.8` → `1 ponto 10 ponto 8` (cardinal stage spells the integers). Commit hashes `bdd352e` → `commit bê dê dê três cinco dois é` (Pt-BR letter names + cardinals, 7-char truncate). URLs strip protocol and replace `.`/`/` with ` ponto `/` barra `. File paths read final component only with `pasta` prefix. Hex literals `0xFF` → `zero-x F F`
+- **`src/preproc.zig`** — `techPipeline(arena, raw, opts)` factors the full tech-mode order out: `normalizeIdentifiers → glossary-1 → camelCase-split → glossary-2 → abbreviations → cardinals`. Normalizer runs FIRST so URLs/versions/hashes get protected from glossary catching their substrings (`HTTPS` inside `https://...` no longer gets spelled as a word before the URL detector sees it). 39 new unit tests
+- **`src/client.zig`** — `--profile tech` now bundles the research-anchored numbers: `length_scale=1.05 + noise_scale=0.35 + noise_w=0.45 + sentence_pause_ms=500`. Help text documents the counter-argument (lower noise = stable but flatter — A/B via `voice_knob_search` if you prefer expressiveness)
+- **`src/mcp.zig`** — new **`tech_profile_search(text)`** tool: enqueues a curated 4-variant matrix (tight-narrator / stock-tech / broadcast / expressive — subset of the Resolution IV 2⁴⁻¹ generator from the research note). Each variant routes to Faber piper with `tech=true`. Returns `{ items: [{id, name, knobs}], count }` so Claude Code can ask the user to pick. Total: **13 tools** (was 12)
+- VERSION 1.10.9 — binary + bundle + MCP server
+
+**Validated end-to-end**: `agent-tts --profile tech "agent-tts v1.10.8 roda em CPU. Commit bdd352e. Veja https://github.com/biliboss/agent-tts/blob/main/src/preproc.zig"` enqueues → daemon log shows `[worker] piper id=170 tech=true length_scale=1.050 noise_scale=0.350 noise_w=0.450 speaker_id=-1 sentence_pause_ms=500` → playback says the version (`um ponto dez ponto oito`), commit hash (`commit bê dê dê três cinco dois é`), and URL (protocol stripped, `.` → `ponto`, `/` → `barra`) correctly. MCP `tech_profile_search` with one sentence returns 4 IDs (171/172/173/174) each tagged with its variant name. **307/307 tests passed** (`zig build test`).
+
+**Honest scope**:
+- **CamelCase splitter is ASCII-only** — Pt-BR accented letters (UTF-8 continuation bytes) never trigger a split. That's intentional: Piper's espeak-ng frontend handles word-internal accents well; the splitter only fires on engineering identifiers (`SwiftUI`, `MultiPiperEngine`)
+- **URL normalizer is conservative** — recognizes `http://` / `https://` only. Bare hostnames (no scheme) pass through; ftp/git/ssh URLs read as-is. Adding more schemes is a future extension once we see real misreads in the daemon log
+- **Commit hash needs at least one letter** — pure-digit runs like `12345678` are NOT treated as commit hashes; they go to the version/number stage. Means a pure-numeric SHA prefix would be misread, but those are rare and ambiguous anyway
+- **Glossary now runs AFTER normalize** — a URL tail like `agent-tts` sees `tts` get spelled to `T T S` on the second glossary pass. Spec called for `glossary → camelCase → glossary → normalize`; we flipped to `normalize → glossary → camelCase → glossary` because glossary-first caught `https` substring inside URLs. Documented in `techPipeline`'s doc-comment
+
+---
+
 ## v1.10.8 — Tech-report mode + max knobs · 2026-06-04
 
 **Why a patch:** the v1.10.7 A/B knobs proved the theory, but tech reports still came out with "API" pronounced as a Pt-BR diphthong and sentence breaks fixed at 400ms. v1.10.8 ships (a) a curated tech glossary that spells acronyms / expands units inline and (b) every remaining Piper + cadence knob as a per-call MCP parameter so Claude Code can search the engineering-cadence space empirically.

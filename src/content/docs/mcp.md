@@ -5,7 +5,7 @@ description: Native Claude Code / Cursor / Cline voice — agent-tts speaks via 
 
 ## TL;DR
 
-`agent-tts mcp` runs a stdio JSON-RPC 2.0 server that exposes the daemon to any [Model Context Protocol](https://modelcontextprotocol.io) client. Claude Code, Cursor, Cline, Continue — same wire, same **12 tools** (v1.10.8). No shell-out, no permission prompt per call, no stdout parsing.
+`agent-tts mcp` runs a stdio JSON-RPC 2.0 server that exposes the daemon to any [Model Context Protocol](https://modelcontextprotocol.io) client. Claude Code, Cursor, Cline, Continue — same wire, same **13 tools** (v1.10.9). No shell-out, no permission prompt per call, no stdout parsing.
 
 Bundled in the same Zig binary as the CLI and the daemon. `+115 KB` over v1.0. Tools only — `prompts/`, `resources/`, `sampling/` are deferred.
 
@@ -38,9 +38,9 @@ Then restart Claude Code (or your client) so it picks up the new server. Verify:
 echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | agent-tts mcp
 ```
 
-You should get back a single JSON line listing the 12 tools.
+You should get back a single JSON line listing the 13 tools.
 
-## The 12 tools
+## The 13 tools
 
 | Tool | Args | Returns |
 |------|------|---------|
@@ -56,6 +56,7 @@ You should get back a single JSON line listing the 12 tools.
 | `history` (v1.10.2+) | `{ limit? }` (1..100, default 20) | `{ items: [{id,state,engine,voice,rate,finished_at,text}, ...] }` |
 | `synth_voice_test` (v1.10.7+) | `{ text, length_scale?, noise_scale?, noise_w?, tech?, *_pause_ms?, speaker_id? }` | `{ id, …resolved knobs… }` |
 | `voice_knob_search` (v1.10.8+) | `{ text, variants: [{...knobs, comment?}], max_variants? }` | `{ items: [{id, comment, knobs}], truncated }` |
+| `tech_profile_search` (v1.10.9+) | `{ text }` | `{ items: [{id, name, knobs}], count: 4 }` — fixed 4-variant matrix (tight-narrator / stock-tech / broadcast / expressive). Curated subset of the Resolution IV 2⁴⁻¹ from the research note |
 
 ### v1.10.7 — Per-call Piper knobs on `say`
 

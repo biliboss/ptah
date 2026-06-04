@@ -58,8 +58,12 @@ const HELP =
     \\  --sentence-pause MS v1.10.8+: override `[[slnc N]]` after .!? (default 400).
     \\  --newline-pause MS  v1.10.8+: override `[[slnc N]]` after `\n` (default 600).
     \\  --speaker-id N      v1.10.8+: Piper multi-speaker index (-1 = voice default).
-    \\  --profile tech      v1.10.8+: bundle --tech + length_scale=0.95 + noise_scale=0.667
-    \\                                + noise_w=0.85 + sentence_pause_ms=500.
+    \\  --profile tech      v1.10.9: research-anchored Faber tech-narration —
+    \\                                --tech + length_scale=1.05 + noise_scale=0.35
+    \\                                + noise_w=0.45 + sentence_pause_ms=500.
+    \\                                Lower noise = stable but flatter; A/B
+    \\                                via voice_knob_search if you prefer
+    \\                                expressiveness.
     \\  -h, --help          this help
     \\  -V, --version       print version
     \\
@@ -238,13 +242,16 @@ fn cmdEnqueue(arena: std.mem.Allocator, io: std.Io, home: []const u8, args: []co
             }
             const profile = args[i];
             if (std.mem.eql(u8, profile, "tech")) {
-                // v1.10.8 — empirically-derived Faber sweet spot for
-                // engineering reports: slightly faster pace, slightly
-                // warmer prosody, stretched sentence break.
+                // v1.10.9 — research-anchored Faber tech-narration defaults
+                // sourced from `_qa/v1.10.9-research-prompt-output.md`:
+                // intelligibility-first on MCV-trained read-speech. Lower
+                // noise = stable but flatter prosody; the counter-argument
+                // is documented next to the help text. For more expressive
+                // output use `voice_knob_search` or `tech_profile_search`.
                 tech_flag = true;
-                if (length_scale == 0.0) length_scale = 0.95;
-                if (noise_scale < 0) noise_scale = 0.667;
-                if (noise_w < 0) noise_w = 0.85;
+                if (length_scale == 0.0) length_scale = 1.05;
+                if (noise_scale < 0) noise_scale = 0.35;
+                if (noise_w < 0) noise_w = 0.45;
                 if (sentence_pause_ms == 0) sentence_pause_ms = 500;
             } else {
                 std.debug.print("error: --profile unknown (got '{s}'; expected: tech)\n", .{profile});

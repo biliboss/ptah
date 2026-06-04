@@ -46,7 +46,7 @@ const mcp = @import("mcp.zig");
 const stream_mod = @import("stream.zig");
 const build_options = @import("build_options");
 
-pub const VERSION = "1.10.8";
+pub const VERSION = "1.10.9";
 
 const HELP =
     \\agent-tts v{s} — multilingual TTS via system voice or libpiper
@@ -102,7 +102,9 @@ const HELP =
     \\  --sentence-pause MS v1.10.8+: pause ms after .!? (default 400)
     \\  --newline-pause MS  v1.10.8+: pause ms after newline (default 600)
     \\  --speaker-id N      v1.10.8+: Piper multi-speaker id (-1 = voice default)
-    \\  --profile tech      v1.10.8+: bundle --tech + warm Faber knobs + 500ms sentence
+    \\  --profile tech      v1.10.9: research-anchored Faber tech-narration
+    \\                                (--tech + length=1.05 + noise=0.35 + noise_w=0.45
+    \\                                + sentence_pause=500ms; A/B via voice_knob_search)
     \\  -h, --help          this help
     \\  -V, --version       print version
     \\
