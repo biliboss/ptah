@@ -166,6 +166,78 @@ Validated 2026-06-04 against a 35 s reference utterance:
 
 When `--ssml` is set, `<prosody rate>` inside the markup overrides `--length-scale` per scope (the SSML walker computes `length_scale = 1/rate` per chunk). `--noise-scale` and `--noise-w` still apply globally because the walker doesn't touch those knobs.
 
+## Tuning Piper for tech reports (v1.10.8+)
+
+Engineering reports stress Piper's espeak-ng frontend in ways the conversational defaults handle poorly:
+
+- **Short acronyms** (API, MCP, CPU) get phonemized as Pt-BR words ("api" rhyming with "tapi") rather than spelled letters
+- **Unit symbols** (MB, ms, Hz, kHz) sound like the abbreviated letters instead of the spelled-out words
+- **Mixed-language brands** (ONNX, JSON, GitHub) hit espeak-ng's English fallback inconsistently
+
+`--profile tech` (or `--tech`) bundles the empirical sweet spot:
+
+```bash
+agent-tts --profile tech "API e MCP rodam em CPU. 250 ms warm synth, 64 MB ONNX."
+```
+
+Equivalent to:
+
+```bash
+agent-tts \
+  --tech \
+  --length-scale 0.95 \
+  --noise-scale 0.667 \
+  --noise-w 0.85 \
+  --sentence-pause 500 \
+  "API e MCP rodam em CPU. 250 ms warm synth, 64 MB ONNX."
+```
+
+### Glossary excerpt
+
+`processTech` runs before the rest of the v0.5 preproc so cardinal expansion sees already-spelled acronyms:
+
+| Source | Replacement | Notes |
+|---|---|---|
+| `API` | `A P I` | Case-insensitive |
+| `MCP` | `M C P` | Case-insensitive |
+| `CPU` `GPU` `TTS` `SQL` `URL` `DNS` `SSH` `IDE` `LLM` `CSS` `XML` `SDK` `CLI` | spelled | 3-letter common tech |
+| `MB` `KB` `GB` `TB` | `megabytes` etc | Word-boundary aware (MBPS not matched) |
+| `ms` `µs` `ns` `Hz` `kHz` | `milissegundos`, `microssegundos`, `nanossegundos`, `hertz`, `kilohertz` | Longest-first sorting beats partial matches |
+| `ONNX` | `ônix` | 4+ letter brand → phonetic |
+| `JSON` `YAML` `HTML` | phonetic | Case-insensitive |
+| `XTTS v2` | `X T T S vê dois` | Multi-word source |
+| `GitHub` `ChatGPT` `SwiftUI` `libpiper` | branded phonetic | Mixed-case exact match |
+| `Anthropic` `Cursor` `Cline` `Piper` `Faber` | verbatim | Already pronounceable Pt-BR |
+
+Word-boundary check matches `expandAbbreviations` — a glossary src never matches mid-word (so "Bitmap" stays untouched even though "MAP" isn't in the table).
+
+### Pause math
+
+Defaults (v0.5 path):
+
+| Punctuation | `[[slnc N]]` ms |
+|---|---|
+| `,` | 150 |
+| `.` `!` `?` | 400 |
+| `\n` | 600 |
+
+Tech profile bumps the sentence break to 500 ms (`--sentence-pause 500`). Use `--comma-pause` / `--sentence-pause` / `--newline-pause` to override any of them per call without recompiling. `0` = use the v0.5 default.
+
+For piper, the cadence comes from `length_scale` (slower model = longer phonemes between sentences) — the `--sentence-pause` flag affects the `say` engine and the `[[slnc]]` directives the preproc emits; piper's continuous PCM gets the engineering rhythm from `length_scale=0.95` plus the natural break the streaming pipeline already inserts between chunks.
+
+### A/B helpers
+
+| Tool | What it does |
+|---|---|
+| `synth_voice_test(text, length_scale, noise_scale, noise_w, tech?, *_pause_ms?, speaker_id?)` | Single shot. Echoes the resolved knobs in the response |
+| `voice_knob_search(text, variants[], max_variants?)` | N variants in one MCP round-trip. Returns `{id, comment, knobs}` per variant. Cap 16 |
+
+The `voice_knob_search` tool replaces the 16-step "tools/call → wait → tools/call" loop with one call so Claude Code can scan a knob hyperplane in seconds.
+
+### Multi-speaker selector
+
+`--speaker-id N` (or the `speaker_id` MCP param) maps to `piper_synthesize_options.speaker_id`. Faber + Amy are single-speaker (no effect). Multi-speaker VCTK exports vary the timbre by integer index — use this with custom Piper models, not with the bundled voices.
+
 ## Cloned voices (v1.4)
 
 v1.4 adds a **third engine**: `cloned`. Selected automatically when `--voice <slug>` resolves to a directory under `~/.cache/agent-tts/voices/<slug>/` produced by `agent-tts voice clone`.

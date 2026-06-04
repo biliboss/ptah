@@ -166,6 +166,22 @@ pub const PiperEngine = struct {
         noise_scale: f32,
         noise_w: f32,
     ) Error![]i16 {
+        return self.synthToSamplesTunedSpeaker(arena, text, length_scale, noise_scale, noise_w, -1);
+    }
+
+    /// v1.10.8 — synth with all four piper knobs explicit, including the
+    /// multi-speaker selector. `speaker_id < 0` keeps the voice config
+    /// default (single-speaker voices like Faber always use 0). Multi-
+    /// speaker ONNX models (some VCTK exports) honour the integer index.
+    pub fn synthToSamplesTunedSpeaker(
+        self: *PiperEngine,
+        arena: std.mem.Allocator,
+        text: []const u8,
+        length_scale: f32,
+        noise_scale: f32,
+        noise_w: f32,
+        speaker_id: i32,
+    ) Error![]i16 {
         const text_z = arena.dupeZ(u8, text) catch return Error.SynthesizeStartFailed;
         defer arena.free(text_z);
 
@@ -195,6 +211,11 @@ pub const PiperEngine = struct {
         // call it `noise_w`. We expose `noise_w` everywhere user-facing and
         // map to the C struct here.
         if (nw >= 0) opts.noise_w_scale = nw;
+
+        // v1.10.8 — speaker_id override. The C struct field exists on every
+        // piper build; setting it to a negative value would crash espeak-
+        // ng's lookup, so we only assign when the caller passes ≥ 0.
+        if (speaker_id >= 0) opts.speaker_id = @intCast(speaker_id);
 
         const rc_start = c.piper_synthesize_start(self.handle, text_z.ptr, &opts);
         if (rc_start != c.PIPER_OK) return Error.SynthesizeStartFailed;
@@ -324,12 +345,29 @@ pub const MultiPiperEngine = struct {
         noise_scale: f32,
         noise_w: f32,
     ) Error![]i16 {
+        return self.synthLangTunedSpeaker(arena, text, lang, length_scale, noise_scale, noise_w, -1);
+    }
+
+    /// v1.10.8 — synth with explicit per-call Piper inference knobs AND
+    /// a multi-speaker selector. `speaker_id < 0` keeps the voice config
+    /// default. Faber/Amy are single-speaker so the field is a no-op for
+    /// them; multi-speaker VCTK exports vary the timbre by integer index.
+    pub fn synthLangTunedSpeaker(
+        self: *MultiPiperEngine,
+        arena: std.mem.Allocator,
+        text: []const u8,
+        lang: Route,
+        length_scale: f32,
+        noise_scale: f32,
+        noise_w: f32,
+        speaker_id: i32,
+    ) Error![]i16 {
         return switch (lang) {
-            .pt => self.pt.synthToSamplesTuned(arena, text, length_scale, noise_scale, noise_w),
+            .pt => self.pt.synthToSamplesTunedSpeaker(arena, text, length_scale, noise_scale, noise_w, speaker_id),
             .en => if (self.en) |*en|
-                en.synthToSamplesTuned(arena, text, length_scale, noise_scale, noise_w)
+                en.synthToSamplesTunedSpeaker(arena, text, length_scale, noise_scale, noise_w, speaker_id)
             else
-                self.pt.synthToSamplesTuned(arena, text, length_scale, noise_scale, noise_w),
+                self.pt.synthToSamplesTunedSpeaker(arena, text, length_scale, noise_scale, noise_w, speaker_id),
         };
     }
 

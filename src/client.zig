@@ -53,6 +53,13 @@ const HELP =
     \\                      Higher = more prosody variation.
     \\  --noise-w F         Piper noise_w (v1.10.7+; 0..2; <0=unset).
     \\                      Higher = more pronunciation variation.
+    \\  --tech              v1.10.8+: tech-report mode (acronym + unit glossary).
+    \\  --comma-pause MS    v1.10.8+: override `[[slnc N]]` after `,` (default 150).
+    \\  --sentence-pause MS v1.10.8+: override `[[slnc N]]` after .!? (default 400).
+    \\  --newline-pause MS  v1.10.8+: override `[[slnc N]]` after `\n` (default 600).
+    \\  --speaker-id N      v1.10.8+: Piper multi-speaker index (-1 = voice default).
+    \\  --profile tech      v1.10.8+: bundle --tech + length_scale=0.95 + noise_scale=0.667
+    \\                                + noise_w=0.85 + sentence_pause_ms=500.
     \\  -h, --help          this help
     \\  -V, --version       print version
     \\
@@ -86,6 +93,12 @@ fn cmdEnqueue(arena: std.mem.Allocator, io: std.Io, home: []const u8, args: []co
     var length_scale: f32 = 0.0;
     var noise_scale: f32 = -1.0;
     var noise_w: f32 = -1.0;
+    // v1.10.8 — tech mode + pause overrides + speaker selector.
+    var tech_flag: bool = false;
+    var comma_pause_ms: u32 = 0;
+    var sentence_pause_ms: u32 = 0;
+    var newline_pause_ms: u32 = 0;
+    var speaker_id: i32 = -1;
     var text: ?[]const u8 = null;
 
     var i: usize = 1;
@@ -175,6 +188,68 @@ fn cmdEnqueue(arena: std.mem.Allocator, io: std.Io, home: []const u8, args: []co
                 std.debug.print("error: --noise-w out of range (0..2)\n", .{});
                 std.process.exit(2);
             }
+        } else if (std.mem.eql(u8, a, "--tech")) {
+            tech_flag = true;
+        } else if (std.mem.eql(u8, a, "--comma-pause")) {
+            i += 1;
+            if (i >= args.len) {
+                std.debug.print("error: --comma-pause needs value (ms)\n", .{});
+                std.process.exit(2);
+            }
+            comma_pause_ms = std.fmt.parseInt(u32, args[i], 10) catch {
+                std.debug.print("error: --comma-pause invalid (got '{s}')\n", .{args[i]});
+                std.process.exit(2);
+            };
+        } else if (std.mem.eql(u8, a, "--sentence-pause")) {
+            i += 1;
+            if (i >= args.len) {
+                std.debug.print("error: --sentence-pause needs value (ms)\n", .{});
+                std.process.exit(2);
+            }
+            sentence_pause_ms = std.fmt.parseInt(u32, args[i], 10) catch {
+                std.debug.print("error: --sentence-pause invalid (got '{s}')\n", .{args[i]});
+                std.process.exit(2);
+            };
+        } else if (std.mem.eql(u8, a, "--newline-pause")) {
+            i += 1;
+            if (i >= args.len) {
+                std.debug.print("error: --newline-pause needs value (ms)\n", .{});
+                std.process.exit(2);
+            }
+            newline_pause_ms = std.fmt.parseInt(u32, args[i], 10) catch {
+                std.debug.print("error: --newline-pause invalid (got '{s}')\n", .{args[i]});
+                std.process.exit(2);
+            };
+        } else if (std.mem.eql(u8, a, "--speaker-id")) {
+            i += 1;
+            if (i >= args.len) {
+                std.debug.print("error: --speaker-id needs value\n", .{});
+                std.process.exit(2);
+            }
+            speaker_id = std.fmt.parseInt(i32, args[i], 10) catch {
+                std.debug.print("error: --speaker-id invalid (got '{s}')\n", .{args[i]});
+                std.process.exit(2);
+            };
+        } else if (std.mem.eql(u8, a, "--profile")) {
+            i += 1;
+            if (i >= args.len) {
+                std.debug.print("error: --profile needs value (tech)\n", .{});
+                std.process.exit(2);
+            }
+            const profile = args[i];
+            if (std.mem.eql(u8, profile, "tech")) {
+                // v1.10.8 — empirically-derived Faber sweet spot for
+                // engineering reports: slightly faster pace, slightly
+                // warmer prosody, stretched sentence break.
+                tech_flag = true;
+                if (length_scale == 0.0) length_scale = 0.95;
+                if (noise_scale < 0) noise_scale = 0.667;
+                if (noise_w < 0) noise_w = 0.85;
+                if (sentence_pause_ms == 0) sentence_pause_ms = 500;
+            } else {
+                std.debug.print("error: --profile unknown (got '{s}'; expected: tech)\n", .{profile});
+                std.process.exit(2);
+            }
         } else {
             text = a;
         }
@@ -219,6 +294,11 @@ fn cmdEnqueue(arena: std.mem.Allocator, io: std.Io, home: []const u8, args: []co
         .length_scale = length_scale,
         .noise_scale = noise_scale,
         .noise_w = noise_w,
+        .tech = tech_flag,
+        .comma_pause_ms = comma_pause_ms,
+        .sentence_pause_ms = sentence_pause_ms,
+        .newline_pause_ms = newline_pause_ms,
+        .speaker_id = speaker_id,
         .text = clean,
     };
 
@@ -591,6 +671,31 @@ pub fn enqueueLineTuned(
     noise_scale: f32,
     noise_w: f32,
 ) ![]u8 {
+    return enqueueLineFull(arena, io, home, engine, voice, rate, text, ssml_flag, length_scale, noise_scale, noise_w, false, 0, 0, 0, -1);
+}
+
+/// v1.10.8 — enqueue with every per-call knob exposed: SSML flag, all
+/// three Piper inference knobs, tech-report mode, per-call pause
+/// overrides, AND multi-speaker selector. All sentinels work — pass
+/// `false` / `0` / `-1` to keep the daemon's defaults.
+pub fn enqueueLineFull(
+    arena: std.mem.Allocator,
+    io: std.Io,
+    home: []const u8,
+    engine: ipc.Engine,
+    voice: []const u8,
+    rate: u32,
+    text: []const u8,
+    ssml_flag: bool,
+    length_scale: f32,
+    noise_scale: f32,
+    noise_w: f32,
+    tech: bool,
+    comma_pause_ms: u32,
+    sentence_pause_ms: u32,
+    newline_pause_ms: u32,
+    speaker_id: i32,
+) ![]u8 {
     const clean = try ipc.sanitizeText(arena, text);
     const msg = ipc.Message{
         .engine = engine,
@@ -600,6 +705,11 @@ pub fn enqueueLineTuned(
         .length_scale = length_scale,
         .noise_scale = noise_scale,
         .noise_w = noise_w,
+        .tech = tech,
+        .comma_pause_ms = comma_pause_ms,
+        .sentence_pause_ms = sentence_pause_ms,
+        .newline_pause_ms = newline_pause_ms,
+        .speaker_id = speaker_id,
         .text = clean,
     };
 

@@ -40,6 +40,74 @@ pub fn spawnSay(arena: std.mem.Allocator, io: std.Io, voice: []const u8, rate: u
     return spawnSayMaybeSsml(arena, io, voice, rate, text, false);
 }
 
+/// v1.10.8 — `spawnSayMaybeSsml` with tech mode + per-call pause overrides.
+/// Same path as the SSML / plain variant but routes through
+/// `preproc.processTechWithPauses` (or the SSML-stripped tech variant when
+/// `is_ssml = true`) so an agent can request engineering-cadence reads
+/// from `say` without recompiling.
+pub fn spawnSayTuned(
+    arena: std.mem.Allocator,
+    io: std.Io,
+    voice: []const u8,
+    rate: u32,
+    text: []const u8,
+    is_ssml: bool,
+    tech: bool,
+    pauses: preproc.Pauses,
+) !Spawned {
+    if (!tech and pauses.comma_ms == 0 and pauses.sentence_ms == 0 and pauses.newline_ms == 0) {
+        return spawnSayMaybeSsml(arena, io, voice, rate, text, is_ssml);
+    }
+    const rate_str = try std.fmt.allocPrint(arena, "{d}", .{rate});
+    const spoken: []const u8 = blk: {
+        if (is_ssml) {
+            // SSML + tech: strip SSML first then run tech glossary +
+            // tuned pauses. macOS `say` can't honour BOTH our
+            // `[[…]]` SSML transpile AND the tech glossary in one go
+            // (the transpile already inserts pauses); the agent-tts
+            // contract is "tech wins" — we strip and re-transpile.
+            break :blk preproc.processSsmlStrippedTech(arena, text, .{}, pauses) catch |e| {
+                std.debug.print("[tts] ssml+tech preproc failed ({s}); falling back to raw text\n", .{@errorName(e)});
+                break :blk text;
+            };
+        }
+        if (tech) {
+            break :blk preproc.processTechWithPauses(arena, text, .{}, pauses) catch |e| {
+                std.debug.print("[tts] tech preproc failed ({s}); falling back to raw text\n", .{@errorName(e)});
+                break :blk text;
+            };
+        }
+        // Only pause overrides — keep the v0.5 expansion path but with
+        // stretched `[[slnc]]` directives.
+        break :blk preproc.processWithPauses(arena, text, pauses) catch |e| {
+            std.debug.print("[tts] tuned preproc failed ({s}); falling back to raw text\n", .{@errorName(e)});
+            break :blk text;
+        };
+    };
+
+    const argv: []const []const u8 = switch (comptime platform.current()) {
+        .macos => &[_][]const u8{ SAY_PATH, "-v", voice, "-r", rate_str, spoken },
+        .linux => &[_][]const u8{ ESPEAK_NAME, "-v", mapLinuxVoice(voice), "-s", rate_str, spoken },
+        .windows => blk: {
+            const ps_cmd = try std.fmt.allocPrint(
+                arena,
+                "Add-Type -AssemblyName System.Speech; " ++
+                    "$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; " ++
+                    "$s.Speak('{s}')",
+                .{spoken},
+            );
+            break :blk &[_][]const u8{ "powershell", "-NoProfile", "-Command", ps_cmd };
+        },
+    };
+    const child = try std.process.spawn(io, .{
+        .argv = argv,
+        .stdin = .ignore,
+        .stdout = .inherit,
+        .stderr = .inherit,
+    });
+    return .{ .child = child, .rate_str = rate_str };
+}
+
 /// v1.8 — same as `spawnSay` but routes through the SSML preprocessor
 /// when `is_ssml` is true. macOS-only path emits `[[…]]` directives so
 /// `say` honours emphasis / breaks / prosody. Other platforms strip

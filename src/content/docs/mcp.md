@@ -5,7 +5,7 @@ description: Native Claude Code / Cursor / Cline voice — agent-tts speaks via 
 
 ## TL;DR
 
-`agent-tts mcp` runs a stdio JSON-RPC 2.0 server that exposes the daemon to any [Model Context Protocol](https://modelcontextprotocol.io) client. Claude Code, Cursor, Cline, Continue — same wire, same **11 tools** (v1.10.7). No shell-out, no permission prompt per call, no stdout parsing.
+`agent-tts mcp` runs a stdio JSON-RPC 2.0 server that exposes the daemon to any [Model Context Protocol](https://modelcontextprotocol.io) client. Claude Code, Cursor, Cline, Continue — same wire, same **12 tools** (v1.10.8). No shell-out, no permission prompt per call, no stdout parsing.
 
 Bundled in the same Zig binary as the CLI and the daemon. `+115 KB` over v1.0. Tools only — `prompts/`, `resources/`, `sampling/` are deferred.
 
@@ -38,13 +38,13 @@ Then restart Claude Code (or your client) so it picks up the new server. Verify:
 echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | agent-tts mcp
 ```
 
-You should get back a single JSON line listing the 11 tools.
+You should get back a single JSON line listing the 12 tools.
 
-## The 11 tools
+## The 12 tools
 
 | Tool | Args | Returns |
 |------|------|---------|
-| `say` | `{ text, engine?, voice?, rate?, ssml?, length_scale?, noise_scale?, noise_w? }` | `{ id }` |
+| `say` | `{ text, engine?, voice?, rate?, ssml?, length_scale?, noise_scale?, noise_w?, tech?, comma_pause_ms?, sentence_pause_ms?, newline_pause_ms?, speaker_id? }` | `{ id }` |
 | `queue` | `{}` | `{ items: [...] }` |
 | `skip` | `{ id? }` (ignored in v1.5) | `{ skipped_id }` |
 | `clear` | `{}` | `{ cleared_count }` |
@@ -54,7 +54,8 @@ You should get back a single JSON line listing the 11 tools.
 | `resume` (v1.10.2+) | `{}` | `{ resumed_id }` (0 = not paused) |
 | `replay` (v1.10.2+) | `{ id }` | `{ new_id }` (0 = item not found) |
 | `history` (v1.10.2+) | `{ limit? }` (1..100, default 20) | `{ items: [{id,state,engine,voice,rate,finished_at,text}, ...] }` |
-| `synth_voice_test` (v1.10.7+) | `{ text, length_scale?, noise_scale?, noise_w? }` | `{ id, length_scale, noise_scale, noise_w }` |
+| `synth_voice_test` (v1.10.7+) | `{ text, length_scale?, noise_scale?, noise_w?, tech?, *_pause_ms?, speaker_id? }` | `{ id, …resolved knobs… }` |
+| `voice_knob_search` (v1.10.8+) | `{ text, variants: [{...knobs, comment?}], max_variants? }` | `{ items: [{id, comment, knobs}], truncated }` |
 
 ### v1.10.7 — Per-call Piper knobs on `say`
 
@@ -67,6 +68,37 @@ The `say` tool gains three optional numeric parameters that override Piper infer
 | `noise_w` | 0 – 2 | Higher = more pronunciation variation. Faber sweet spot ≈0.8. |
 
 Use `synth_voice_test` as an A/B helper — it always routes to Faber and echoes the resolved knobs in the response so an agent can record the experiment.
+
+### v1.10.8 — Tech mode + max knobs
+
+Five more optional params land on `say` + `synth_voice_test`:
+
+| Parameter | Range | Effect |
+|---|---|---|
+| `tech` | boolean | Run the tech-report glossary (acronyms spelled, units expanded). |
+| `comma_pause_ms` | 0 – 5000 | Override `[[slnc N]]` after `,` (default 150). 0 = use default. |
+| `sentence_pause_ms` | 0 – 5000 | Override `[[slnc N]]` after .!? (default 400). Tech profile uses 500. |
+| `newline_pause_ms` | 0 – 5000 | Override `[[slnc N]]` after newline (default 600). |
+| `speaker_id` | -1 – 1000 | Piper multi-speaker integer. -1 = voice default. Faber is single-speaker. |
+
+The new **`voice_knob_search`** tool lets an agent scan an N-variant knob hyperplane in **one MCP round-trip** instead of N sequential `tools/call`s. Each variant carries any subset of the per-call knobs plus a free-form `comment`. Cap: 16 variants.
+
+Sample:
+
+```json
+→ {"jsonrpc":"2.0","id":7,"method":"tools/call","params":{
+    "name":"voice_knob_search",
+    "arguments":{
+      "text":"API rodou em 250 ms.",
+      "variants":[
+        {"length_scale":0.95,"noise_scale":0.667,"noise_w":0.85,"tech":true,"comment":"warm-tech"},
+        {"length_scale":1.05,"noise_scale":0.8,"noise_w":1.0,"comment":"slow-baseline"},
+        {"length_scale":0.85,"noise_scale":0.5,"noise_w":0.7,"tech":true,"sentence_pause_ms":600,"comment":"fast-paused"}
+      ]
+    }
+  }}
+← {"jsonrpc":"2.0","id":7,"result":{"content":[{"type":"text","text":"{\"items\":[{\"id\":\"145\",\"comment\":\"warm-tech\",\"knobs\":{...}}, ...],\"truncated\":false}"}],"isError":false}}
+```
 
 Each tool is a thin shim over the same UNIX socket the CLI uses. No new daemon code beyond the v1.10.2 ops the four new tools wrap. Tool errors (daemon down, malformed args) come back as `isError: true` MCP responses with a human-readable text block — the JSON-RPC envelope only errors on parse failures (`-32700`) or unknown methods (`-32601`).
 

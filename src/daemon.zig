@@ -66,6 +66,19 @@ const piper_mod = if (build_options.enabled) @import("piper.zig") else struct {
         ) Error![]i16 {
             return Error.CreateFailed;
         }
+        /// v1.10.8 — stub mirror of the per-call + speaker synth path.
+        pub fn synthLangTunedSpeaker(
+            _: *@This(),
+            _: std.mem.Allocator,
+            _: []const u8,
+            _: Route,
+            _: f32,
+            _: f32,
+            _: f32,
+            _: i32,
+        ) Error![]i16 {
+            return Error.CreateFailed;
+        }
         pub fn initMulti(
             _: std.mem.Allocator,
             _: []const u8,
@@ -477,7 +490,16 @@ fn lookPathSimple(name: []const u8) bool {
 }
 
 fn runSay(res: *Resources, io: std.Io, sa: std.mem.Allocator, item: queue_mod.PoppedItem) !void {
-    var spawned = try tts.spawnSayMaybeSsml(sa, io, item.voice, item.rate, item.text, item.ssml);
+    // v1.10.8 — fan out to spawnSayTuned when tech mode or any pause
+    // override is set. The tuned path falls back to the legacy spawn
+    // internally when every knob is at its default, so the cold path stays
+    // a single syscall.
+    const pauses: preproc.Pauses = .{
+        .comma_ms = item.comma_pause_ms,
+        .sentence_ms = item.sentence_pause_ms,
+        .newline_ms = item.newline_pause_ms,
+    };
+    var spawned = try tts.spawnSayTuned(sa, io, item.voice, item.rate, item.text, item.ssml, item.tech, pauses);
 
     const pid = spawned.child.id orelse return error.SpawnNoPid;
     res.queue.setPlaying(io, item.id, pid);
@@ -602,6 +624,10 @@ fn runPiperSsml(
 // MultiPiperEngine.synthLang so single-chunk en-only items still route
 // through Amy when available. v1.10.7: route through synthLangTuned so
 // per-call knobs (length_scale / noise_scale / noise_w) ride along.
+// v1.10.8: tech glossary substitution before synth, speaker_id passes
+// through, pause overrides flow via the same path the streaming pipeline
+// uses (no Piper-side pause directive — Piper's PCM concatenation is
+// continuous, so pause overrides only affect `say`).
 fn runPiperSingle(
     res: *Resources,
     io: std.Io,
@@ -615,22 +641,34 @@ fn runPiperSingle(
         .en => .en,
         else => .pt,
     };
-    // v1.10.7 — log knobs when ANY override is set so A/B experiments
-    // surface in the daemon log. Quiet when all sentinels mean "default".
-    if (item.length_scale > 0 or item.noise_scale >= 0 or item.noise_w >= 0) {
+    // v1.10.7+v1.10.8 — log knobs when ANY override is set so A/B
+    // experiments surface in the daemon log. Quiet when everything is at
+    // default sentinels.
+    const has_knobs = item.length_scale > 0 or item.noise_scale >= 0 or item.noise_w >= 0;
+    const has_extras = item.tech or item.speaker_id >= 0 or
+        item.sentence_pause_ms != 0 or item.comma_pause_ms != 0 or item.newline_pause_ms != 0;
+    if (has_knobs or has_extras) {
         std.debug.print(
-            "[worker] piper id={d} length_scale={d:.3} noise_scale={d:.3} noise_w={d:.3}\n",
-            .{ item.id, item.length_scale, item.noise_scale, item.noise_w },
+            "[worker] piper id={d} tech={any} length_scale={d:.3} noise_scale={d:.3} noise_w={d:.3} speaker_id={d} sentence_pause_ms={d}\n",
+            .{ item.id, item.tech, item.length_scale, item.noise_scale, item.noise_w, item.speaker_id, item.sentence_pause_ms },
         );
     }
+    // v1.10.8 — tech glossary substitution per chunk. Piper's espeak-ng
+    // frontend ingests the text directly, so a glossary that swaps "API"
+    // → "A P I" already gives the model spelled-out letters to phonemize.
+    const synth_text: []const u8 = if (item.tech) blk: {
+        const after = preproc.processTech(sa, chunk.text, .{}) catch chunk.text;
+        break :blk after;
+    } else chunk.text;
     const t_synth0 = std.Io.Clock.now(.awake, io);
-    const samples = try engine.synthLangTuned(
+    const samples = try engine.synthLangTunedSpeaker(
         sa,
-        chunk.text,
+        synth_text,
         route,
         item.length_scale,
         item.noise_scale,
         item.noise_w,
+        item.speaker_id,
     );
     const t_synth1 = std.Io.Clock.now(.awake, io);
 
@@ -730,6 +768,11 @@ const SynthArgs = struct {
     length_scale: f32 = 0.0,
     noise_scale: f32 = -1.0,
     noise_w: f32 = -1.0,
+    /// v1.10.8 — tech glossary substitution + multi-speaker selector.
+    /// `tech=true` runs `preproc.processTech` per chunk before synth;
+    /// `speaker_id ≥ 0` overrides the voice config default.
+    tech: bool = false,
+    speaker_id: i32 = -1,
 };
 
 fn synthWorker(args: SynthArgs) void {
@@ -748,13 +791,21 @@ fn synthWorker(args: SynthArgs) void {
             .en => .en,
             else => .pt,
         };
-        const samples = args.engine.synthLangTuned(
+        // v1.10.8 — tech glossary per chunk. Falls through to chunk.text
+        // on allocator failure so streaming never stalls on a preproc
+        // error mid-pipeline.
+        const synth_text: []const u8 = if (args.tech)
+            preproc.processTech(arena_box.allocator(), chunk.text, .{}) catch chunk.text
+        else
+            chunk.text;
+        const samples = args.engine.synthLangTunedSpeaker(
             arena_box.allocator(),
-            chunk.text,
+            synth_text,
             route,
             args.length_scale,
             args.noise_scale,
             args.noise_w,
+            args.speaker_id,
         ) catch {
             arena_box.deinit();
             args.gpa.destroy(arena_box);
@@ -794,12 +845,16 @@ fn runPiperStreaming(
     // synth thread and the worker thread don't contend on a debug GPA.
     const gpa = std.heap.smp_allocator;
 
-    // v1.10.7 — log knobs once before the streaming pipeline so the same
-    // diagnostic shows up regardless of single-chunk vs streaming path.
-    if (item.length_scale > 0 or item.noise_scale >= 0 or item.noise_w >= 0) {
+    // v1.10.7+v1.10.8 — log knobs once before the streaming pipeline so
+    // the same diagnostic shows up regardless of single-chunk vs streaming
+    // path.
+    const has_knobs = item.length_scale > 0 or item.noise_scale >= 0 or item.noise_w >= 0;
+    const has_extras = item.tech or item.speaker_id >= 0 or
+        item.sentence_pause_ms != 0 or item.comma_pause_ms != 0 or item.newline_pause_ms != 0;
+    if (has_knobs or has_extras) {
         std.debug.print(
-            "[worker] piper id={d} length_scale={d:.3} noise_scale={d:.3} noise_w={d:.3}\n",
-            .{ item.id, item.length_scale, item.noise_scale, item.noise_w },
+            "[worker] piper id={d} tech={any} length_scale={d:.3} noise_scale={d:.3} noise_w={d:.3} speaker_id={d} sentence_pause_ms={d}\n",
+            .{ item.id, item.tech, item.length_scale, item.noise_scale, item.noise_w, item.speaker_id, item.sentence_pause_ms },
         );
     }
     const args = SynthArgs{
@@ -810,6 +865,8 @@ fn runPiperStreaming(
         .length_scale = item.length_scale,
         .noise_scale = item.noise_scale,
         .noise_w = item.noise_w,
+        .tech = item.tech,
+        .speaker_id = item.speaker_id,
     };
     const synth_thread = try std.Thread.spawn(.{}, synthWorker, .{args});
 

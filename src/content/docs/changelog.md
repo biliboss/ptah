@@ -9,6 +9,30 @@ Per milestone: what shipped, how we measured, what slipped to the next one. The 
 
 ---
 
+## v1.10.8 — Tech-report mode + max knobs · 2026-06-04
+
+**Why a patch:** the v1.10.7 A/B knobs proved the theory, but tech reports still came out with "API" pronounced as a Pt-BR diphthong and sentence breaks fixed at 400ms. v1.10.8 ships (a) a curated tech glossary that spells acronyms / expands units inline and (b) every remaining Piper + cadence knob as a per-call MCP parameter so Claude Code can search the engineering-cadence space empirically.
+
+**Shipped:**
+
+- **`src/preproc.zig`** — `processTech(arena, raw, TechOptions)` runs a glossary substitution (API → A P I, MCP → M C P, MB → megabytes, kHz → kilohertz, ONNX → ônix, JSON → jeisson, GitHub → guite hub, …) before the v0.5 abbreviation + cardinal pipeline. Sorted longest-first; word-boundary aware (MBPS does not match MB). New `Pauses` struct + `processWithPauses` / `processTechWithPauses` let any call override the `[[slnc N]]` directives for comma / sentence / newline without recompiling
+- **`src/ipc.zig`** — 9-field wire format `ENQUEUE\t<engine>\t<lang>\t<voice>\t<rate>\t<ssml>\t<tune>\t<extra>\t<text>` where `<extra>` packs `tech:comma:sentence:newline:speaker` (each `-` when unset, empty `""` slot when all defaults). v0.6 → v1.10.7 wire formats keep parsing unchanged
+- **`src/queue.zig`** — five new INTEGER columns (`tech`, `comma_pause_ms`, `sentence_pause_ms`, `newline_pause_ms`, `speaker_id`) with idempotent ALTER TABLE migration. `replay` preserves NULLs so default rows stay default after re-enqueue
+- **`src/piper.zig`** — `synthToSamplesTunedSpeaker` adds a `speaker_id` slot (≥ 0 routes to `piper_synthesize_options.speaker_id`; multi-speaker VCTK exports honour it). `MultiPiperEngine.synthLangTunedSpeaker` dispatches to Pt/En per route
+- **`src/daemon.zig`** — worker runs `preproc.processTech` per chunk before synth when `item.tech == true`. Pause overrides ride through `tts.spawnSayTuned` for the `say` path (piper's continuous PCM gets the cadence from `length_scale` + sentence breaks at the streaming pipeline edge). Diagnostic log gains `tech=… speaker_id=… sentence_pause_ms=…` so A/B sessions surface in one line
+- **`src/client.zig`** — `--tech` / `--comma-pause <ms>` / `--sentence-pause <ms>` / `--newline-pause <ms>` / `--speaker-id <int>` plus a `--profile tech` shorthand bundling `--tech` + `length_scale=0.95` + `noise_scale=0.667` + `noise_w=0.85` + `sentence_pause_ms=500`. New `enqueueLineFull` exposes every per-call knob to MCP
+- **`src/mcp.zig`** — `say` + `synth_voice_test` schemas grow the five new params with strict range gates. New **`voice_knob_search(text, variants, max_variants?)`** tool enqueues up to 16 variants in one round-trip (each carries the same knob bundle as `say` plus a free-form `comment`) and returns `{ items: [{id, comment, knobs}], truncated }` — Claude Code automates the empirical loop without 16 separate MCP calls. Total: **12 tools** (was 11)
+- VERSION 1.10.8 — binary + bundle + MCP server
+
+**Validated end-to-end**: `agent-tts --profile tech "API e MCP rodam em CPU. 250 ms warm synth, 64 MB ONNX."` enqueues → daemon log shows `[worker] piper id=144 tech=true length_scale=0.950 noise_scale=0.667 noise_w=0.850 speaker_id=-1 sentence_pause_ms=500` → audible engineering cadence with acronyms spelled. MCP `voice_knob_search` with 3 variants returns 3 distinct IDs (145/146/147) each logged with its own knob bundle.
+
+**Honest scope**:
+- **Piper pause behaviour** — Piper synthesizes continuous PCM, so `--sentence-pause` doesn't directly stretch breaks inside a chunk. The streaming pipeline already inserts the audible break between sentences via chunking, and tech profile bumps `length_scale` to 0.95 (slightly faster overall). For dramatic breaks use `--engine say` where `[[slnc]]` directives map 1:1
+- **Glossary is curated, not exhaustive** — ~50 entries cover the engineering-report vocabulary that A/B testing exposed (acronyms 2-3 chars, common 4+ acronyms, unit symbols, brand names). Add via `TECH_GLOSSARY` in `preproc.zig`; tests guard the entries that exist
+- **voice_knob_search caps at 16** — anything past gets truncated. Single-call DOS protection; the response carries `truncated: true` when the caller exceeded their declared `max_variants`
+
+---
+
 ## v1.10.7 — Per-call piper knobs · 2026-06-04
 
 **Why a patch:** v1.10.6 added daemon-wide `AGENT_TTS_PIPER_*` env knobs, but A/B testing still required `launchctl kickstart -k` between profiles. Now any single `agent-tts "…"` or MCP `say` call can override `length_scale`, `noise_scale`, and `noise_w` per item — no daemon restart, no envless rewrite.

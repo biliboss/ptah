@@ -34,7 +34,7 @@ const ipc = @import("ipc.zig");
 const client = @import("client.zig");
 const preproc = @import("preproc.zig");
 
-pub const VERSION = "1.10.7";
+pub const VERSION = "1.10.8";
 pub const PROTOCOL_VERSION = "2024-11-05";
 
 const READ_BUF = 256 * 1024; // long agent monologues hit ~8 KB after escaping
@@ -208,7 +208,7 @@ fn buildInitializeResponse(a: std.mem.Allocator, id: json.Value) ![]const u8 {
 
 fn buildToolsListResponse(a: std.mem.Allocator, id: json.Value) ![]const u8 {
     const tools = try arr(a, &.{
-        try toolDescriptor(a, "say", "Enqueue Pt-BR TTS on the running daemon. Returns the queue item id. v1.10.7: optional length_scale / noise_scale / noise_w override piper inference per call.", try saySchema(a)),
+        try toolDescriptor(a, "say", "Enqueue Pt-BR TTS on the running daemon. Returns the queue item id. v1.10.7: optional length_scale / noise_scale / noise_w override piper inference per call. v1.10.8: + tech mode (acronym/unit glossary), per-call pause overrides, multi-speaker selector.", try saySchema(a)),
         try toolDescriptor(a, "queue", "List items currently in the TTS queue (pending + playing).", try emptySchema(a)),
         try toolDescriptor(a, "skip", "Skip the currently playing TTS item. Returns the skipped id (0 = nothing playing).", try skipSchema(a)),
         try toolDescriptor(a, "clear", "Drop all pending TTS items. Returns the number dropped.", try emptySchema(a)),
@@ -220,7 +220,9 @@ fn buildToolsListResponse(a: std.mem.Allocator, id: json.Value) ![]const u8 {
         try toolDescriptor(a, "replay", "Re-enqueue a past item by id (any state). Returns the new pending id (0 = item not found).", try replaySchema(a)),
         try toolDescriptor(a, "history", "List the last N items, including done/skipped. Default limit 20, max 100.", try historySchema(a)),
         // v1.10.7 — A/B helper for piper inference knobs.
-        try toolDescriptor(a, "synth_voice_test", "Enqueue a one-shot piper synth with explicit length_scale / noise_scale / noise_w. Returns the enqueue id plus the resolved knobs so an agent can A/B Faber profiles without daemon restart.", try synthVoiceTestSchema(a)),
+        try toolDescriptor(a, "synth_voice_test", "Enqueue a one-shot piper synth with explicit length_scale / noise_scale / noise_w (v1.10.8: + tech / pause overrides / speaker_id). Returns the enqueue id plus the resolved knobs so an agent can A/B Faber profiles without daemon restart.", try synthVoiceTestSchema(a)),
+        // v1.10.8 — automate the discovery loop: one call, N variants enqueued.
+        try toolDescriptor(a, "voice_knob_search", "Enqueue the same text once per `variants` entry, each with its own knob bundle (length_scale / noise_scale / noise_w / tech / *_pause_ms / speaker_id). Returns the list of `{id, knobs}` so the caller can compare A/B/.../N profiles in a single MCP round-trip. max_variants capped at 16.", try voiceKnobSearchSchema(a)),
     });
     const result = try obj(a, &.{
         .{ "tools", tools },
@@ -282,6 +284,27 @@ fn saySchema(a: std.mem.Allocator) !json.Value {
         .{ "type", str("number") },
         .{ "description", str("v1.10.7+: Piper noise_w (0..2). Higher = more pronunciation variation. Omit to keep voice/env default. Faber sweet spot ~0.8. Ignored for engine=say.") },
     });
+    // v1.10.8 — tech mode + pause overrides + speaker selector.
+    const tech_prop = try obj(a, &.{
+        .{ "type", str("boolean") },
+        .{ "description", str("v1.10.8+: tech-report mode. Expands acronyms (API → A P I, MCP → M C P), unit symbols (MB → megabytes, ms → milissegundos), and brand phonetics (ONNX → ônix). Pair with engine=piper for the cleanest result.") },
+    });
+    const comma_pause_prop = try obj(a, &.{
+        .{ "type", str("integer") },
+        .{ "description", str("v1.10.8+: pause ms after `,` (default 150). 0 = use default. Ignored for engine=piper continuous PCM.") },
+    });
+    const sentence_pause_prop = try obj(a, &.{
+        .{ "type", str("integer") },
+        .{ "description", str("v1.10.8+: pause ms after `.` `!` `?` (default 400). 0 = use default. Tech profile uses 500.") },
+    });
+    const newline_pause_prop = try obj(a, &.{
+        .{ "type", str("integer") },
+        .{ "description", str("v1.10.8+: pause ms after newline (default 600). 0 = use default.") },
+    });
+    const speaker_id_prop = try obj(a, &.{
+        .{ "type", str("integer") },
+        .{ "description", str("v1.10.8+: Piper multi-speaker integer index. -1 = use voice config default. Faber is single-speaker (ignored).") },
+    });
 
     const props = try obj(a, &.{
         .{ "text", text_prop },
@@ -292,6 +315,11 @@ fn saySchema(a: std.mem.Allocator) !json.Value {
         .{ "length_scale", length_scale_prop },
         .{ "noise_scale", noise_scale_prop },
         .{ "noise_w", noise_w_prop },
+        .{ "tech", tech_prop },
+        .{ "comma_pause_ms", comma_pause_prop },
+        .{ "sentence_pause_ms", sentence_pause_prop },
+        .{ "newline_pause_ms", newline_pause_prop },
+        .{ "speaker_id", speaker_id_prop },
     });
     const required = try arr(a, &.{str("text")});
 
@@ -319,13 +347,74 @@ fn synthVoiceTestSchema(a: std.mem.Allocator) !json.Value {
         .{ "type", str("number") },
         .{ "description", str("Piper noise_w (0..2). Higher = more pronunciation variation.") },
     });
+    // v1.10.8 — extras echoed back so the agent can record the full
+    // A/B/C parameter vector per variant.
+    const tech_prop = try obj(a, &.{ .{ "type", str("boolean") }, .{ "description", str("v1.10.8+: tech-report glossary substitution.") } });
+    const comma_pause_prop = try obj(a, &.{ .{ "type", str("integer") }, .{ "description", str("v1.10.8+: comma pause override (ms).") } });
+    const sentence_pause_prop = try obj(a, &.{ .{ "type", str("integer") }, .{ "description", str("v1.10.8+: sentence pause override (ms).") } });
+    const newline_pause_prop = try obj(a, &.{ .{ "type", str("integer") }, .{ "description", str("v1.10.8+: newline pause override (ms).") } });
+    const speaker_id_prop = try obj(a, &.{ .{ "type", str("integer") }, .{ "description", str("v1.10.8+: Piper speaker index (-1 = default).") } });
     const props = try obj(a, &.{
         .{ "text", text_prop },
         .{ "length_scale", length_scale_prop },
         .{ "noise_scale", noise_scale_prop },
         .{ "noise_w", noise_w_prop },
+        .{ "tech", tech_prop },
+        .{ "comma_pause_ms", comma_pause_prop },
+        .{ "sentence_pause_ms", sentence_pause_prop },
+        .{ "newline_pause_ms", newline_pause_prop },
+        .{ "speaker_id", speaker_id_prop },
     });
     const required = try arr(a, &.{str("text")});
+    return try obj(a, &.{
+        .{ "type", str("object") },
+        .{ "properties", props },
+        .{ "required", required },
+    });
+}
+
+/// v1.10.8 — bulk knob search. Each variant is an object with the same
+/// schema as `say` (minus `engine`/`voice`/`rate` — fixed to piper Faber
+/// for comparability). The daemon enqueues each variant in order and the
+/// MCP response carries the matched ids.
+fn voiceKnobSearchSchema(a: std.mem.Allocator) !json.Value {
+    const text_prop = try obj(a, &.{
+        .{ "type", str("string") },
+        .{ "description", str("Sentence used for every variant. Pick something that exercises the dimensions you care about — acronym density, sentence cadence, prosody range.") },
+    });
+    // Sub-schema for each variant object. Pure documentation aid; the
+    // dispatch reads fields case-by-case so it tolerates omissions.
+    const variant_props = try obj(a, &.{
+        .{ "length_scale", try obj(a, &.{ .{ "type", str("number") } }) },
+        .{ "noise_scale", try obj(a, &.{ .{ "type", str("number") } }) },
+        .{ "noise_w", try obj(a, &.{ .{ "type", str("number") } }) },
+        .{ "tech", try obj(a, &.{ .{ "type", str("boolean") } }) },
+        .{ "comma_pause_ms", try obj(a, &.{ .{ "type", str("integer") } }) },
+        .{ "sentence_pause_ms", try obj(a, &.{ .{ "type", str("integer") } }) },
+        .{ "newline_pause_ms", try obj(a, &.{ .{ "type", str("integer") } }) },
+        .{ "speaker_id", try obj(a, &.{ .{ "type", str("integer") } }) },
+        .{ "comment", try obj(a, &.{ .{ "type", str("string") }, .{ "description", str("Free-form label echoed back so the caller knows which variant produced which id.") } }) },
+    });
+    const variant_item_schema = try obj(a, &.{
+        .{ "type", str("object") },
+        .{ "properties", variant_props },
+    });
+    const variants_prop = try obj(a, &.{
+        .{ "type", str("array") },
+        .{ "items", variant_item_schema },
+        .{ "description", str("List of knob bundles. Up to 16 entries — anything past is rejected to keep the daemon socket happy.") },
+    });
+    const max_prop = try obj(a, &.{
+        .{ "type", str("integer") },
+        .{ "description", str("Soft cap (1..16, default 8). Variants list longer than this is truncated; shorter list runs in full.") },
+    });
+
+    const props = try obj(a, &.{
+        .{ "text", text_prop },
+        .{ "variants", variants_prop },
+        .{ "max_variants", max_prop },
+    });
+    const required = try arr(a, &.{ str("text"), str("variants") });
     return try obj(a, &.{
         .{ "type", str("object") },
         .{ "properties", props },
@@ -461,6 +550,8 @@ fn buildToolsCallResponse(
     if (std.mem.eql(u8, tool, "history")) return callHistory(a, io, home, id, args_val);
     // v1.10.7 — A/B Faber profiles inline.
     if (std.mem.eql(u8, tool, "synth_voice_test")) return callSynthVoiceTest(a, io, home, id, args_val);
+    // v1.10.8 — bulk N-way knob search.
+    if (std.mem.eql(u8, tool, "voice_knob_search")) return callVoiceKnobSearch(a, io, home, id, args_val);
 
     return try toolErrorResponse(a, id, "unknown tool");
 }
@@ -611,8 +702,55 @@ fn callSay(
         if (f < 0.0 or f > 2.0) return try toolErrorResponse(a, id, "noise_w out of range (0..2)");
         noise_w = f;
     }
+    // v1.10.8 — tech mode + pause overrides + speaker_id.
+    var tech_flag: bool = false;
+    if (ao.get("tech")) |v| {
+        if (v != .bool) return try toolErrorResponse(a, id, "tech must be a boolean");
+        tech_flag = v.bool;
+    }
+    var comma_pause_ms: u32 = 0;
+    if (ao.get("comma_pause_ms")) |v| {
+        if (v != .integer) return try toolErrorResponse(a, id, "comma_pause_ms must be an integer");
+        if (v.integer < 0 or v.integer > 5000) return try toolErrorResponse(a, id, "comma_pause_ms out of range (0..5000)");
+        comma_pause_ms = @intCast(v.integer);
+    }
+    var sentence_pause_ms: u32 = 0;
+    if (ao.get("sentence_pause_ms")) |v| {
+        if (v != .integer) return try toolErrorResponse(a, id, "sentence_pause_ms must be an integer");
+        if (v.integer < 0 or v.integer > 5000) return try toolErrorResponse(a, id, "sentence_pause_ms out of range (0..5000)");
+        sentence_pause_ms = @intCast(v.integer);
+    }
+    var newline_pause_ms: u32 = 0;
+    if (ao.get("newline_pause_ms")) |v| {
+        if (v != .integer) return try toolErrorResponse(a, id, "newline_pause_ms must be an integer");
+        if (v.integer < 0 or v.integer > 5000) return try toolErrorResponse(a, id, "newline_pause_ms out of range (0..5000)");
+        newline_pause_ms = @intCast(v.integer);
+    }
+    var speaker_id: i32 = -1;
+    if (ao.get("speaker_id")) |v| {
+        if (v != .integer) return try toolErrorResponse(a, id, "speaker_id must be an integer");
+        if (v.integer < -1 or v.integer > 1000) return try toolErrorResponse(a, id, "speaker_id out of range (-1..1000)");
+        speaker_id = @intCast(v.integer);
+    }
 
-    const id_str = client.enqueueLineTuned(a, io, home, engine, voice, rate, text, ssml_flag, length_scale, noise_scale, noise_w) catch |e| switch (e) {
+    const id_str = client.enqueueLineFull(
+        a,
+        io,
+        home,
+        engine,
+        voice,
+        rate,
+        text,
+        ssml_flag,
+        length_scale,
+        noise_scale,
+        noise_w,
+        tech_flag,
+        comma_pause_ms,
+        sentence_pause_ms,
+        newline_pause_ms,
+        speaker_id,
+    ) catch |e| switch (e) {
         error.DaemonUnreachable => return try toolErrorResponse(a, id, "daemon not running — start with `agent-tts daemon` or `agent-tts daemon install`"),
         error.DaemonError => return try toolErrorResponse(a, id, "daemon returned an error"),
         error.UnexpectedResponse => return try toolErrorResponse(a, id, "daemon returned an unexpected response"),
@@ -710,8 +848,38 @@ fn callSynthVoiceTest(
         if (f < 0.0 or f > 2.0) return try toolErrorResponse(a, id, "noise_w out of range (0..2)");
         noise_w = f;
     }
+    // v1.10.8 — additional knobs echoed for full A/B/C parameter vectors.
+    var tech_flag: bool = false;
+    if (ao.get("tech")) |v| {
+        if (v != .bool) return try toolErrorResponse(a, id, "tech must be a boolean");
+        tech_flag = v.bool;
+    }
+    var comma_pause_ms: u32 = 0;
+    if (ao.get("comma_pause_ms")) |v| {
+        if (v != .integer) return try toolErrorResponse(a, id, "comma_pause_ms must be an integer");
+        if (v.integer < 0 or v.integer > 5000) return try toolErrorResponse(a, id, "comma_pause_ms out of range (0..5000)");
+        comma_pause_ms = @intCast(v.integer);
+    }
+    var sentence_pause_ms: u32 = 0;
+    if (ao.get("sentence_pause_ms")) |v| {
+        if (v != .integer) return try toolErrorResponse(a, id, "sentence_pause_ms must be an integer");
+        if (v.integer < 0 or v.integer > 5000) return try toolErrorResponse(a, id, "sentence_pause_ms out of range (0..5000)");
+        sentence_pause_ms = @intCast(v.integer);
+    }
+    var newline_pause_ms: u32 = 0;
+    if (ao.get("newline_pause_ms")) |v| {
+        if (v != .integer) return try toolErrorResponse(a, id, "newline_pause_ms must be an integer");
+        if (v.integer < 0 or v.integer > 5000) return try toolErrorResponse(a, id, "newline_pause_ms out of range (0..5000)");
+        newline_pause_ms = @intCast(v.integer);
+    }
+    var speaker_id: i32 = -1;
+    if (ao.get("speaker_id")) |v| {
+        if (v != .integer) return try toolErrorResponse(a, id, "speaker_id must be an integer");
+        if (v.integer < -1 or v.integer > 1000) return try toolErrorResponse(a, id, "speaker_id out of range (-1..1000)");
+        speaker_id = @intCast(v.integer);
+    }
 
-    const id_str = client.enqueueLineTuned(
+    const id_str = client.enqueueLineFull(
         a,
         io,
         home,
@@ -723,6 +891,11 @@ fn callSynthVoiceTest(
         length_scale,
         noise_scale,
         noise_w,
+        tech_flag,
+        comma_pause_ms,
+        sentence_pause_ms,
+        newline_pause_ms,
+        speaker_id,
     ) catch |e| switch (e) {
         error.DaemonUnreachable => return try toolErrorResponse(a, id, "daemon not running"),
         error.DaemonError => return try toolErrorResponse(a, id, "daemon returned an error"),
@@ -736,6 +909,154 @@ fn callSynthVoiceTest(
         .{ "length_scale", json.Value{ .float = @floatCast(length_scale) } },
         .{ "noise_scale", json.Value{ .float = @floatCast(noise_scale) } },
         .{ "noise_w", json.Value{ .float = @floatCast(noise_w) } },
+        .{ "tech", boolean(tech_flag) },
+        .{ "comma_pause_ms", int(@intCast(comma_pause_ms)) },
+        .{ "sentence_pause_ms", int(@intCast(sentence_pause_ms)) },
+        .{ "newline_pause_ms", int(@intCast(newline_pause_ms)) },
+        .{ "speaker_id", int(@intCast(speaker_id)) },
+    });
+    const text_block = try formatJsonAsText(a, payload);
+    return try toolTextResponse(a, id, text_block);
+}
+
+// v1.10.8 — voice_knob_search: enqueue one item per variant. Capped at 16
+// to keep the daemon socket healthy. Each variant inherits the call's
+// `text` and routes to piper Faber so the comparison is apples-to-apples.
+fn callVoiceKnobSearch(
+    a: std.mem.Allocator,
+    io: std.Io,
+    home: []const u8,
+    id: json.Value,
+    args: json.Value,
+) ![]const u8 {
+    if (args != .object) return try toolErrorResponse(a, id, "arguments must be an object");
+    const ao = args.object;
+
+    const text_val = ao.get("text") orelse return try toolErrorResponse(a, id, "text is required");
+    if (text_val != .string) return try toolErrorResponse(a, id, "text must be a string");
+    const text = text_val.string;
+
+    const variants_val = ao.get("variants") orelse return try toolErrorResponse(a, id, "variants is required");
+    if (variants_val != .array) return try toolErrorResponse(a, id, "variants must be an array");
+    const variants = variants_val.array;
+    if (variants.items.len == 0) return try toolErrorResponse(a, id, "variants must not be empty");
+
+    var max_variants: usize = 8;
+    if (ao.get("max_variants")) |v| {
+        if (v != .integer) return try toolErrorResponse(a, id, "max_variants must be an integer");
+        if (v.integer < 1 or v.integer > 16) return try toolErrorResponse(a, id, "max_variants out of range (1..16)");
+        max_variants = @intCast(v.integer);
+    }
+    const HARD_CAP: usize = 16;
+    const limit = @min(@min(variants.items.len, max_variants), HARD_CAP);
+
+    var items: json.Array = .init(a);
+    var idx: usize = 0;
+    while (idx < limit) : (idx += 1) {
+        const variant = variants.items[idx];
+        if (variant != .object) return try toolErrorResponse(a, id, "each variant must be an object");
+        const vo = variant.object;
+
+        var length_scale: f32 = 0.0;
+        if (vo.get("length_scale")) |v| {
+            const f = try jsonNumberToF32(v) orelse return try toolErrorResponse(a, id, "variant.length_scale must be a number");
+            if (f < 0.1 or f > 3.0) return try toolErrorResponse(a, id, "variant.length_scale out of range (0.1..3.0)");
+            length_scale = f;
+        }
+        var noise_scale: f32 = -1.0;
+        if (vo.get("noise_scale")) |v| {
+            const f = try jsonNumberToF32(v) orelse return try toolErrorResponse(a, id, "variant.noise_scale must be a number");
+            if (f < 0.0 or f > 2.0) return try toolErrorResponse(a, id, "variant.noise_scale out of range (0..2)");
+            noise_scale = f;
+        }
+        var noise_w: f32 = -1.0;
+        if (vo.get("noise_w")) |v| {
+            const f = try jsonNumberToF32(v) orelse return try toolErrorResponse(a, id, "variant.noise_w must be a number");
+            if (f < 0.0 or f > 2.0) return try toolErrorResponse(a, id, "variant.noise_w out of range (0..2)");
+            noise_w = f;
+        }
+        var tech_flag: bool = false;
+        if (vo.get("tech")) |v| {
+            if (v != .bool) return try toolErrorResponse(a, id, "variant.tech must be a boolean");
+            tech_flag = v.bool;
+        }
+        var comma_pause_ms: u32 = 0;
+        if (vo.get("comma_pause_ms")) |v| {
+            if (v != .integer) return try toolErrorResponse(a, id, "variant.comma_pause_ms must be an integer");
+            if (v.integer < 0 or v.integer > 5000) return try toolErrorResponse(a, id, "variant.comma_pause_ms out of range");
+            comma_pause_ms = @intCast(v.integer);
+        }
+        var sentence_pause_ms: u32 = 0;
+        if (vo.get("sentence_pause_ms")) |v| {
+            if (v != .integer) return try toolErrorResponse(a, id, "variant.sentence_pause_ms must be an integer");
+            if (v.integer < 0 or v.integer > 5000) return try toolErrorResponse(a, id, "variant.sentence_pause_ms out of range");
+            sentence_pause_ms = @intCast(v.integer);
+        }
+        var newline_pause_ms: u32 = 0;
+        if (vo.get("newline_pause_ms")) |v| {
+            if (v != .integer) return try toolErrorResponse(a, id, "variant.newline_pause_ms must be an integer");
+            if (v.integer < 0 or v.integer > 5000) return try toolErrorResponse(a, id, "variant.newline_pause_ms out of range");
+            newline_pause_ms = @intCast(v.integer);
+        }
+        var speaker_id: i32 = -1;
+        if (vo.get("speaker_id")) |v| {
+            if (v != .integer) return try toolErrorResponse(a, id, "variant.speaker_id must be an integer");
+            if (v.integer < -1 or v.integer > 1000) return try toolErrorResponse(a, id, "variant.speaker_id out of range");
+            speaker_id = @intCast(v.integer);
+        }
+        const comment: []const u8 = blk: {
+            if (vo.get("comment")) |cv| {
+                if (cv != .string) return try toolErrorResponse(a, id, "variant.comment must be a string");
+                break :blk cv.string;
+            }
+            break :blk "";
+        };
+
+        const id_str = client.enqueueLineFull(
+            a,
+            io,
+            home,
+            .piper,
+            "faber",
+            client.DEFAULT_RATE,
+            text,
+            false,
+            length_scale,
+            noise_scale,
+            noise_w,
+            tech_flag,
+            comma_pause_ms,
+            sentence_pause_ms,
+            newline_pause_ms,
+            speaker_id,
+        ) catch |e| switch (e) {
+            error.DaemonUnreachable => return try toolErrorResponse(a, id, "daemon not running"),
+            error.DaemonError => return try toolErrorResponse(a, id, "daemon returned an error mid-search"),
+            error.UnexpectedResponse => return try toolErrorResponse(a, id, "daemon returned an unexpected response mid-search"),
+            else => return e,
+        };
+
+        const knobs = try obj(a, &.{
+            .{ "length_scale", json.Value{ .float = @floatCast(length_scale) } },
+            .{ "noise_scale", json.Value{ .float = @floatCast(noise_scale) } },
+            .{ "noise_w", json.Value{ .float = @floatCast(noise_w) } },
+            .{ "tech", boolean(tech_flag) },
+            .{ "comma_pause_ms", int(@intCast(comma_pause_ms)) },
+            .{ "sentence_pause_ms", int(@intCast(sentence_pause_ms)) },
+            .{ "newline_pause_ms", int(@intCast(newline_pause_ms)) },
+            .{ "speaker_id", int(@intCast(speaker_id)) },
+        });
+        const entry = try obj(a, &.{
+            .{ "id", str(id_str) },
+            .{ "comment", str(comment) },
+            .{ "knobs", knobs },
+        });
+        try items.append(entry);
+    }
+
+    const payload = try obj(a, &.{
+        .{ "items", json.Value{ .array = items } },
+        .{ "truncated", boolean(variants.items.len > limit) },
     });
     const text_block = try formatJsonAsText(a, payload);
     return try toolTextResponse(a, id, text_block);
@@ -1014,7 +1335,7 @@ test "build initialize response shape" {
     try std.testing.expectEqual(false, tools.get("listChanged").?.bool);
 }
 
-test "build tools/list returns 11 tools (v1.10.7 + synth_voice_test)" {
+test "build tools/list returns 12 tools (v1.10.8 + voice_knob_search)" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -1022,10 +1343,10 @@ test "build tools/list returns 11 tools (v1.10.7 + synth_voice_test)" {
     const resp = try buildToolsListResponse(a, .{ .integer = 2 });
     const parsed = try json.parseFromSliceLeaky(json.Value, a, resp, .{});
     const tools = parsed.object.get("result").?.object.get("tools").?.array;
-    try std.testing.expectEqual(@as(usize, 11), tools.items.len);
+    try std.testing.expectEqual(@as(usize, 12), tools.items.len);
 
     // Spot-check names. Order is fixed:
-    //   say/queue/skip/clear/voices/say_stream/pause/resume/replay/history/synth_voice_test.
+    //   say/queue/skip/clear/voices/say_stream/pause/resume/replay/history/synth_voice_test/voice_knob_search.
     try std.testing.expectEqualStrings("say", tools.items[0].object.get("name").?.string);
     try std.testing.expectEqualStrings("queue", tools.items[1].object.get("name").?.string);
     try std.testing.expectEqualStrings("skip", tools.items[2].object.get("name").?.string);
@@ -1037,12 +1358,40 @@ test "build tools/list returns 11 tools (v1.10.7 + synth_voice_test)" {
     try std.testing.expectEqualStrings("replay", tools.items[8].object.get("name").?.string);
     try std.testing.expectEqualStrings("history", tools.items[9].object.get("name").?.string);
     try std.testing.expectEqualStrings("synth_voice_test", tools.items[10].object.get("name").?.string);
+    try std.testing.expectEqualStrings("voice_knob_search", tools.items[11].object.get("name").?.string);
 
     // Every tool has an inputSchema with type=object.
     for (tools.items) |t| {
         const schema = t.object.get("inputSchema").?.object;
         try std.testing.expectEqualStrings("object", schema.get("type").?.string);
     }
+}
+
+test "v1.10.8 say schema exposes tech + pause overrides + speaker_id" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const schema = try saySchema(a);
+    const props = schema.object.get("properties").?.object;
+    try std.testing.expect(props.get("tech") != null);
+    try std.testing.expect(props.get("comma_pause_ms") != null);
+    try std.testing.expect(props.get("sentence_pause_ms") != null);
+    try std.testing.expect(props.get("newline_pause_ms") != null);
+    try std.testing.expect(props.get("speaker_id") != null);
+}
+
+test "v1.10.8 voice_knob_search schema requires text + variants" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const schema = try voiceKnobSearchSchema(a);
+    const required = schema.object.get("required").?.array;
+    try std.testing.expectEqual(@as(usize, 2), required.items.len);
+    try std.testing.expectEqualStrings("text", required.items[0].string);
+    try std.testing.expectEqualStrings("variants", required.items[1].string);
+    const props = schema.object.get("properties").?.object;
+    try std.testing.expect(props.get("variants") != null);
+    try std.testing.expect(props.get("max_variants") != null);
 }
 
 test "v1.10.7 say schema exposes length_scale/noise_scale/noise_w" {

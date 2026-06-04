@@ -40,6 +40,7 @@ Every milestone has a published baseline in [`_qa/`](https://github.com/biliboss
 | **v1.10.5** | Daemon + CLI resolve sidecar via absolute path | `$AGENT_TTS_REPO_ROOT` → `/opt/homebrew/share/agent-tts` probe; voice routing finally correct from launchd cwd | 2026-06-03 |
 | **v1.10.6** | XTTS quality knobs (temp/top_k/top_p/repetition_penalty) + longer reference window | re-clone bogdo → live playback validated; `AGENT_TTS_*` env overrides for A/B | 2026-06-04 |
 | **v1.10.7** | Per-call Piper knobs (`--length-scale` / `--noise-scale` / `--noise-w`) + MCP | 8-field ENQUEUE with tune triplet; 3 new SQLite REAL columns; 11 MCP tools (added `synth_voice_test`) | 2026-06-04 |
+| **v1.10.8** | Tech-report mode + max knob exposure (`--tech` / `--*-pause` / `--speaker-id` / `--profile tech`) + `voice_knob_search` MCP tool | 9-field ENQUEUE with extra quintuple; 5 new SQLite columns; 12 MCP tools; ~50-entry acronym/unit glossary | 2026-06-04 |
 
 ## KPI delivered
 

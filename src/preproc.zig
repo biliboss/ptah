@@ -123,6 +123,41 @@ pub const Pause = struct {
     pub const NEWLINE_MS: u32 = 600;
 };
 
+/// v1.10.8 — per-call pause overrides. Each field is 0 to mean "use the
+/// built-in `Pause.*_MS` default". `process` / `processTech` keep working
+/// with their original defaults; `processWithPauses` / `processTechWithPauses`
+/// honour any non-zero override so a single ENQUEUE can stretch sentence
+/// breaks for a tech-report cadence without recompiling.
+pub const Pauses = struct {
+    comma_ms: u32 = 0,
+    sentence_ms: u32 = 0,
+    newline_ms: u32 = 0,
+
+    /// Resolve into a fully-populated triplet, applying defaults where the
+    /// override is zero. Kept private to the file so `insertPauses` doesn't
+    /// have to repeat the math.
+    fn resolved(self: Pauses) ResolvedPauses {
+        return .{
+            .comma = if (self.comma_ms == 0) Pause.COMMA_MS else self.comma_ms,
+            .sentence = if (self.sentence_ms == 0) Pause.SENTENCE_MS else self.sentence_ms,
+            .newline = if (self.newline_ms == 0) Pause.NEWLINE_MS else self.newline_ms,
+        };
+    }
+};
+
+const ResolvedPauses = struct { comma: u32, sentence: u32, newline: u32 };
+
+/// v1.10.8 — knobs for the tech-report preproc. `extra_pause_after_*` is
+/// added on top of the resolved Pauses values (or defaults) so a tech
+/// run gets longer breath naturally. Currently consumed only by
+/// `processTech*` so the v0.5 path keeps its compact cadence.
+pub const TechOptions = struct {
+    extra_pause_after_sentence_ms: u32 = 80,
+    extra_pause_after_acronym_ms: u32 = 40,
+    extra_pause_after_number_ms: u32 = 60,
+    keep_acronyms_short_limit: usize = 3,
+};
+
 // v1.2 streaming Chunk type unified with v1.1's lang-aware shape — see
 // `pub const Chunk` near the top of this file. chunkSentences emits
 // `lang = .unknown` and the daemon's runPiper assigns the detected
@@ -152,11 +187,58 @@ const ABBREVS = [_]Abbrev{
 /// Main entry. Returns a freshly allocated buffer (in `arena`) with the
 /// transformed text. Caller does not need to free — arena owns it.
 pub fn process(arena: std.mem.Allocator, raw: []const u8) ![]u8 {
+    return processWithPauses(arena, raw, .{});
+}
+
+/// v1.10.8 — `process` with explicit pause overrides. Pass `.{}` to mirror
+/// the legacy defaults. Non-zero fields stretch / shrink the corresponding
+/// `[[slnc N]]` directive without recompiling.
+pub fn processWithPauses(
+    arena: std.mem.Allocator,
+    raw: []const u8,
+    pauses: Pauses,
+) ![]u8 {
     if (raw.len == 0) return arena.alloc(u8, 0);
 
     const after_abbrev = try expandAbbreviations(arena, raw);
     const after_numbers = try expandNumbers(arena, after_abbrev);
-    const after_pauses = try insertPauses(arena, after_numbers);
+    const after_pauses = try insertPausesTuned(arena, after_numbers, pauses.resolved());
+    return after_pauses;
+}
+
+/// v1.10.8 — tech-report mode. Runs the v0.5 pipeline + a curated tech
+/// glossary substitution (acronyms spelled, units expanded) before the
+/// pause stage. Designed for engineering-report cadence — the resulting
+/// PCM has crisper acronyms and a slower-but-rhythmic sentence break.
+///
+/// `tech` controls the glossary behaviour. `Pauses` rides through to the
+/// pause stage so `--profile tech` can stretch the sentence pause in one
+/// shot.
+pub fn processTech(
+    arena: std.mem.Allocator,
+    raw: []const u8,
+    tech: TechOptions,
+) ![]u8 {
+    return processTechWithPauses(arena, raw, tech, .{});
+}
+
+/// v1.10.8 — tech preproc with explicit pause overrides. The glossary
+/// substitution happens FIRST so multi-letter acronyms (e.g. "API")
+/// already look like spaced single letters before `expandNumbers` sees
+/// them, which keeps cardinal expansion from misfiring on glossary
+/// residue.
+pub fn processTechWithPauses(
+    arena: std.mem.Allocator,
+    raw: []const u8,
+    tech: TechOptions,
+    pauses: Pauses,
+) ![]u8 {
+    if (raw.len == 0) return arena.alloc(u8, 0);
+
+    const after_glossary = try expandTechGlossary(arena, raw, tech);
+    const after_abbrev = try expandAbbreviations(arena, after_glossary);
+    const after_numbers = try expandNumbers(arena, after_abbrev);
+    const after_pauses = try insertPausesTuned(arena, after_numbers, pauses.resolved());
     return after_pauses;
 }
 
@@ -180,6 +262,22 @@ pub fn processSsmlStripped(arena: std.mem.Allocator, raw: []const u8) ![]u8 {
     const tokens = try ssml.parse(arena, raw);
     const plain = try ssml.stripToPlain(arena, tokens);
     return try process(arena, plain);
+}
+
+/// v1.10.8 — SSML-stripped tech preproc. Same shape as
+/// `processSsmlStripped`, but runs the glossary substitution + tech
+/// pauses so an agent can route SSML markup AND tech-report rendering
+/// through the same call site without choosing one or the other.
+pub fn processSsmlStrippedTech(
+    arena: std.mem.Allocator,
+    raw: []const u8,
+    tech: TechOptions,
+    pauses: Pauses,
+) ![]u8 {
+    if (raw.len == 0) return arena.alloc(u8, 0);
+    const tokens = try ssml.parse(arena, raw);
+    const plain = try ssml.stripToPlain(arena, tokens);
+    return try processTechWithPauses(arena, plain, tech, pauses);
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -406,11 +504,11 @@ fn expandNumbers(arena: std.mem.Allocator, input: []const u8) ![]u8 {
 // '\n' is dropped — only its pause survives), and append a single
 // `[[slnc N]]` with N = max pause across all chars.
 
-fn pauseMsFor(c: u8) ?u32 {
+fn pauseMsForTuned(c: u8, p: ResolvedPauses) ?u32 {
     return switch (c) {
-        ',' => Pause.COMMA_MS,
-        '.', '!', '?' => Pause.SENTENCE_MS,
-        '\n' => Pause.NEWLINE_MS,
+        ',' => p.comma,
+        '.', '!', '?' => p.sentence,
+        '\n' => p.newline,
         else => null,
     };
 }
@@ -420,7 +518,21 @@ fn isRunByte(c: u8) bool {
         c == '\n' or c == ' ' or c == '\t';
 }
 
+/// Backward-compatible front-end — used by tests / call sites that don't
+/// need overrides. Delegates to `insertPausesTuned` with all defaults.
 fn insertPauses(arena: std.mem.Allocator, input: []const u8) ![]u8 {
+    return insertPausesTuned(arena, input, .{
+        .comma = Pause.COMMA_MS,
+        .sentence = Pause.SENTENCE_MS,
+        .newline = Pause.NEWLINE_MS,
+    });
+}
+
+fn insertPausesTuned(
+    arena: std.mem.Allocator,
+    input: []const u8,
+    pauses: ResolvedPauses,
+) ![]u8 {
     var out: std.ArrayList(u8) = .empty;
     // Worst case: every char becomes "X [[slnc 600]]". ~12 byte overhead.
     try out.ensureTotalCapacity(arena, input.len * 2);
@@ -439,7 +551,7 @@ fn insertPauses(arena: std.mem.Allocator, input: []const u8) ![]u8 {
             // Compute max pause + collect printable punctuation chars.
             var max_pause: u32 = 0;
             for (run) |ch| {
-                if (pauseMsFor(ch)) |p| {
+                if (pauseMsForTuned(ch, pauses)) |p| {
                     if (p > max_pause) max_pause = p;
                 }
             }
@@ -476,6 +588,145 @@ fn insertPauses(arena: std.mem.Allocator, input: []const u8) ![]u8 {
         i += 1;
     }
 
+    return out.toOwnedSlice(arena);
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// v1.10.8 — tech glossary
+// ──────────────────────────────────────────────────────────────────────
+//
+// The tech-report mode substitutes a curated set of technical terms
+// before the rest of the v0.5 preproc runs. Two flavours:
+//
+//   * Acronyms ≤ keep_acronyms_short_limit chars (default 3) get spelled
+//     out: "API" → "A P I", "MCP" → "M C P". Letters are routed through
+//     the Pt-BR letter map ("A" → "A", "X" → "xis") so Piper's espeak-ng
+//     frontend pronounces them correctly without a phoneme dictionary.
+//   * Branded words / multi-letter acronyms longer than the limit get a
+//     curated phonetic transcription ("ONNX" → "ônix", "JSON" → "jeisson")
+//     to dodge espeak-ng's English-default fallback.
+//   * Unit symbols (MB, KB, ms, Hz) expand to their Pt-BR pronunciation.
+//
+// Matching: case-insensitive by default for the units / pure-letter
+// acronyms; sort by longest src first so "kHz" beats "Hz" and "MBPS"
+// (kept verbatim — not in the table) doesn't get half-matched.
+// Word-boundary check mirrors `expandAbbreviations` so "Bitmap" doesn't
+// turn into "BITM A P".
+
+const TechEntry = struct {
+    src: []const u8,
+    dst: []const u8,
+    /// When true, match is case-insensitive AND the destination is used
+    /// verbatim regardless of input case. When false, the match is exact.
+    /// Mixed-case branded entries ("GitHub" → "gite hub") stay exact.
+    case_insensitive: bool = false,
+};
+
+// Sorted longest-first to keep the linear scan's first-match logic from
+// stealing prefixes (e.g. "kHz" before "Hz", "milissegundos" before "ms").
+const TECH_GLOSSARY = [_]TechEntry{
+    // Multi-letter brands / acronyms that read poorly when spelled
+    .{ .src = "Claude Code", .dst = "Claude Code" },
+    .{ .src = "ChatGPT", .dst = "chate gê pê tê" },
+    .{ .src = "SwiftUI", .dst = "swift U I" },
+    .{ .src = "libpiper", .dst = "lib paiper" },
+    .{ .src = "GitHub", .dst = "guite hub" },
+    .{ .src = "Anthropic", .dst = "Anthropic" },
+    .{ .src = "Cursor", .dst = "Cursor" },
+    .{ .src = "Cline", .dst = "Cline" },
+    .{ .src = "Piper", .dst = "Piper" },
+    .{ .src = "Faber", .dst = "Faber" },
+    // 4+ letter acronyms that get a phonetic spelling
+    .{ .src = "XTTS v2", .dst = "X T T S vê dois" },
+    .{ .src = "XTTS", .dst = "X T T S" },
+    .{ .src = "ONNX", .dst = "ônix" },
+    .{ .src = "JSON", .dst = "jeisson", .case_insensitive = true },
+    .{ .src = "HTML", .dst = "agá tê eme éle", .case_insensitive = true },
+    .{ .src = "yaml", .dst = "iâmel", .case_insensitive = true },
+    .{ .src = "YAML", .dst = "iâmel" },
+    // Unit symbols (longest-first within their family)
+    .{ .src = "kHz", .dst = "kilohertz" },
+    .{ .src = "µs", .dst = "microssegundos" },
+    .{ .src = "ms", .dst = "milissegundos" },
+    .{ .src = "ns", .dst = "nanossegundos" },
+    .{ .src = "Hz", .dst = "hertz" },
+    .{ .src = "MB", .dst = "megabytes" },
+    .{ .src = "KB", .dst = "kilobytes" },
+    .{ .src = "GB", .dst = "gigabytes" },
+    .{ .src = "TB", .dst = "terabytes" },
+    // 3-letter acronyms spelled out (Pt-BR letter names)
+    .{ .src = "API", .dst = "A P I", .case_insensitive = true },
+    .{ .src = "MCP", .dst = "M C P", .case_insensitive = true },
+    .{ .src = "CPU", .dst = "C P U", .case_insensitive = true },
+    .{ .src = "GPU", .dst = "G P U", .case_insensitive = true },
+    .{ .src = "RAM", .dst = "RAM", .case_insensitive = true },
+    .{ .src = "TTS", .dst = "T T S", .case_insensitive = true },
+    .{ .src = "SQL", .dst = "S Q L", .case_insensitive = true },
+    .{ .src = "URL", .dst = "U R L", .case_insensitive = true },
+    .{ .src = "DNS", .dst = "D N S", .case_insensitive = true },
+    .{ .src = "SSH", .dst = "S S H", .case_insensitive = true },
+    .{ .src = "IDE", .dst = "I D E", .case_insensitive = true },
+    .{ .src = "LLM", .dst = "L L M", .case_insensitive = true },
+    .{ .src = "CSS", .dst = "C S S", .case_insensitive = true },
+    .{ .src = "XML", .dst = "X M L", .case_insensitive = true },
+    .{ .src = "SDK", .dst = "S D K", .case_insensitive = true },
+    .{ .src = "CLI", .dst = "C L I", .case_insensitive = true },
+    // 2-letter
+    .{ .src = "OS", .dst = "O S" },
+};
+
+fn asciiEqlIgnoreCase(a: []const u8, b: []const u8) bool {
+    if (a.len != b.len) return false;
+    for (a, b) |x, y| {
+        const xl = if (x >= 'A' and x <= 'Z') x + 32 else x;
+        const yl = if (y >= 'A' and y <= 'Z') y + 32 else y;
+        if (xl != yl) return false;
+    }
+    return true;
+}
+
+fn matchesGlossaryAt(input: []const u8, idx: usize, entry: TechEntry) bool {
+    if (idx + entry.src.len > input.len) return false;
+    const slice = input[idx .. idx + entry.src.len];
+    if (entry.case_insensitive) return asciiEqlIgnoreCase(slice, entry.src);
+    return std.mem.eql(u8, slice, entry.src);
+}
+
+fn expandTechGlossary(
+    arena: std.mem.Allocator,
+    input: []const u8,
+    tech: TechOptions,
+) ![]u8 {
+    _ = tech; // currently informational — sweet-spot knob for v1.10.9
+    var out: std.ArrayList(u8) = .empty;
+    try out.ensureTotalCapacity(arena, input.len);
+
+    var i: usize = 0;
+    while (i < input.len) {
+        const at_word_start = (i == 0) or !isWordByte(input[i - 1]);
+
+        var matched: ?TechEntry = null;
+        if (at_word_start) {
+            for (TECH_GLOSSARY) |entry| {
+                if (!matchesGlossaryAt(input, i, entry)) continue;
+                // Word-boundary tail: the byte after `src` must not be a
+                // word byte (otherwise "MBPS" would match "MB").
+                const tail = i + entry.src.len;
+                const at_word_end = (tail >= input.len) or !isWordByte(input[tail]);
+                if (!at_word_end) continue;
+                matched = entry;
+                break;
+            }
+        }
+
+        if (matched) |entry| {
+            try out.appendSlice(arena, entry.dst);
+            i += entry.src.len;
+        } else {
+            try out.append(arena, input[i]);
+            i += 1;
+        }
+    }
     return out.toOwnedSlice(arena);
 }
 
@@ -723,6 +974,111 @@ test "out of range 0..9999 leaves raw" {
 
 test "leading number" {
     try runProcess("7 anões", "sete anões");
+}
+
+// ─── v1.10.8 tech glossary + pause overrides ───────────────────────────
+
+fn runTech(input: []const u8, expected: []const u8) !void {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const got = try processTech(arena, input, .{});
+    testing.expectEqualStrings(expected, got) catch |e| {
+        std.debug.print("\ninput:    {s}\nexpected: {s}\ngot:      {s}\n", .{ input, expected, got });
+        return e;
+    };
+}
+
+test "tech: API spelled out at word boundary" {
+    try runTech("API rodou", "A P I rodou");
+}
+
+test "tech: MCP and CPU together" {
+    try runTech("MCP em CPU", "M C P em C P U");
+}
+
+test "tech: MB expands to megabytes" {
+    try runTech("64 MB", "sessenta e quatro megabytes");
+}
+
+test "tech: ms expands to milissegundos" {
+    try runTech("250 ms warm", "duzentos e cinquenta milissegundos warm");
+}
+
+test "tech: kHz beats Hz (longest-first)" {
+    try runTech("44 kHz", "quarenta e quatro kilohertz");
+}
+
+test "tech: ONNX gets phonetic" {
+    try runTech("modelo ONNX", "modelo ônix");
+}
+
+test "tech: JSON case-insensitive" {
+    try runTech("payload json válido", "payload jeisson válido");
+}
+
+test "tech: branded GitHub stays exact" {
+    try runTech("clonei do GitHub", "clonei do guite hub");
+}
+
+test "tech: mid-word non-match (BITMAP not BIT-MA-P)" {
+    // "MB" inside "MBPS" must NOT match — word boundary stops the steal.
+    try runTech("MBPS speed", "MBPS speed");
+}
+
+test "tech: lower-case api still matches" {
+    try runTech("a api caiu", "a A P I caiu");
+}
+
+test "tech: glossary + number + comma pause" {
+    try runTech(
+        "API caiu, 250 ms.",
+        "A P I caiu, [[slnc 150]] duzentos e cinquenta milissegundos. [[slnc 400]] ",
+    );
+}
+
+test "tech: XTTS v2 phrase (multi-word src)" {
+    try runTech("rodando XTTS v2 local", "rodando X T T S vê dois local");
+}
+
+test "tech: empty input" {
+    try runTech("", "");
+}
+
+test "tech: untouched text without acronyms" {
+    try runTech("Olá mundo.", "Olá mundo. [[slnc 400]] ");
+}
+
+test "pauses override: comma stretched to 220ms" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const got = try processWithPauses(arena, "um, dois", .{ .comma_ms = 220 });
+    try testing.expectEqualStrings("um, [[slnc 220]] dois", got);
+}
+
+test "pauses override: sentence stretched to 500ms (tech profile shape)" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const got = try processWithPauses(arena, "vai. agora", .{ .sentence_ms = 500 });
+    try testing.expectEqualStrings("vai. [[slnc 500]] agora", got);
+}
+
+test "pauses override: zero falls back to default" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const got = try processWithPauses(arena, "vai. agora", .{});
+    try testing.expectEqualStrings("vai. [[slnc 400]] agora", got);
+}
+
+test "tech + pauses: profile-tech-like shape" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const got = try processTechWithPauses(arena, "API ok.", .{}, .{ .sentence_ms = 500 });
+    try testing.expectEqualStrings("A P I ok. [[slnc 500]] ", got);
 }
 
 // ─── v1.1 splitByLang tests ──────────────────────────────────────────────

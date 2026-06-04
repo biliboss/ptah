@@ -93,6 +93,16 @@ pub const PoppedItem = struct {
     length_scale: f32 = 0.0,
     noise_scale: f32 = -1.0,
     noise_w: f32 = -1.0,
+    /// v1.10.8 — tech-report mode toggle. Carried so the worker can pick
+    /// `preproc.processTechWithPauses` over the v0.5 path.
+    tech: bool = false,
+    /// v1.10.8 — per-call pause overrides. 0 = use defaults from
+    /// `preproc.Pause`. Worker bundles them into a `preproc.Pauses`.
+    comma_pause_ms: u32 = 0,
+    sentence_pause_ms: u32 = 0,
+    newline_pause_ms: u32 = 0,
+    /// v1.10.8 — Piper multi-speaker id; -1 = use voice config default.
+    speaker_id: i32 = -1,
     text: []u8,
 };
 
@@ -126,7 +136,12 @@ const SCHEMA =
     \\  ssml INTEGER NOT NULL DEFAULT 0,
     \\  length_scale REAL,
     \\  noise_scale REAL,
-    \\  noise_w REAL
+    \\  noise_w REAL,
+    \\  tech INTEGER,
+    \\  comma_pause_ms INTEGER,
+    \\  sentence_pause_ms INTEGER,
+    \\  newline_pause_ms INTEGER,
+    \\  speaker_id INTEGER
     \\);
     \\CREATE INDEX IF NOT EXISTS items_pending_idx ON items(state, id) WHERE state IN ('pending','playing');
 ;
@@ -188,6 +203,25 @@ pub const Queue = struct {
             try execSimple(q.db, "ALTER TABLE items ADD COLUMN noise_w REAL;");
         }
 
+        // v1.10.8 migration: tech / pause-overrides / speaker_id columns.
+        // NULL = unset across the board; worker treats NULL identically to
+        // the ipc.Message defaults.
+        if (!try hasColumn(q.db, "items", "tech")) {
+            try execSimple(q.db, "ALTER TABLE items ADD COLUMN tech INTEGER;");
+        }
+        if (!try hasColumn(q.db, "items", "comma_pause_ms")) {
+            try execSimple(q.db, "ALTER TABLE items ADD COLUMN comma_pause_ms INTEGER;");
+        }
+        if (!try hasColumn(q.db, "items", "sentence_pause_ms")) {
+            try execSimple(q.db, "ALTER TABLE items ADD COLUMN sentence_pause_ms INTEGER;");
+        }
+        if (!try hasColumn(q.db, "items", "newline_pause_ms")) {
+            try execSimple(q.db, "ALTER TABLE items ADD COLUMN newline_pause_ms INTEGER;");
+        }
+        if (!try hasColumn(q.db, "items", "speaker_id")) {
+            try execSimple(q.db, "ALTER TABLE items ADD COLUMN speaker_id INTEGER;");
+        }
+
         // Crash recovery: any row left in 'playing' from a prior daemon run
         // belongs to a `say` that was killed by daemon death — re-queue it.
         try execSimple(q.db, "UPDATE items SET state='pending', started_at=NULL WHERE state='playing';");
@@ -205,7 +239,7 @@ pub const Queue = struct {
         try q.mu.lock(io);
         defer q.mu.unlock(io);
 
-        const sql = "INSERT INTO items(text,voice,rate,state,enqueued_at,engine,ssml,length_scale,noise_scale,noise_w) VALUES (?,?,?,'pending',?,?,?,?,?,?);";
+        const sql = "INSERT INTO items(text,voice,rate,state,enqueued_at,engine,ssml,length_scale,noise_scale,noise_w,tech,comma_pause_ms,sentence_pause_ms,newline_pause_ms,speaker_id) VALUES (?,?,?,'pending',?,?,?,?,?,?,?,?,?,?,?);";
         var stmt: ?*c.sqlite3_stmt = null;
         if (c.sqlite3_prepare_v2(q.db, sql, -1, &stmt, null) != c.SQLITE_OK) return error.DbPrepare;
         defer _ = c.sqlite3_finalize(stmt);
@@ -235,6 +269,33 @@ pub const Queue = struct {
         } else {
             if (c.sqlite3_bind_null(stmt, 9) != c.SQLITE_OK) return error.DbBind;
         }
+        // v1.10.8 — bind the extras. NULL when the caller left them at
+        // sentinels so the column stays "unset" through queue dumps + replays.
+        if (msg.tech) {
+            if (c.sqlite3_bind_int(stmt, 10, 1) != c.SQLITE_OK) return error.DbBind;
+        } else {
+            if (c.sqlite3_bind_null(stmt, 10) != c.SQLITE_OK) return error.DbBind;
+        }
+        if (msg.comma_pause_ms != 0) {
+            if (c.sqlite3_bind_int(stmt, 11, @intCast(msg.comma_pause_ms)) != c.SQLITE_OK) return error.DbBind;
+        } else {
+            if (c.sqlite3_bind_null(stmt, 11) != c.SQLITE_OK) return error.DbBind;
+        }
+        if (msg.sentence_pause_ms != 0) {
+            if (c.sqlite3_bind_int(stmt, 12, @intCast(msg.sentence_pause_ms)) != c.SQLITE_OK) return error.DbBind;
+        } else {
+            if (c.sqlite3_bind_null(stmt, 12) != c.SQLITE_OK) return error.DbBind;
+        }
+        if (msg.newline_pause_ms != 0) {
+            if (c.sqlite3_bind_int(stmt, 13, @intCast(msg.newline_pause_ms)) != c.SQLITE_OK) return error.DbBind;
+        } else {
+            if (c.sqlite3_bind_null(stmt, 13) != c.SQLITE_OK) return error.DbBind;
+        }
+        if (msg.speaker_id >= 0) {
+            if (c.sqlite3_bind_int(stmt, 14, @intCast(msg.speaker_id)) != c.SQLITE_OK) return error.DbBind;
+        } else {
+            if (c.sqlite3_bind_null(stmt, 14) != c.SQLITE_OK) return error.DbBind;
+        }
         if (c.sqlite3_step(stmt) != c.SQLITE_DONE) return error.DbStep;
 
         const id: u64 = @intCast(c.sqlite3_last_insert_rowid(q.db));
@@ -258,7 +319,7 @@ pub const Queue = struct {
 
     // Returns next pending row marked 'playing'. Must be called under `mu`.
     fn tryClaimNext(q: *Queue, io: std.Io, gpa: std.mem.Allocator) ?PoppedItem {
-        const sql_sel = "SELECT id, voice, rate, text, engine, ssml, length_scale, noise_scale, noise_w FROM items WHERE state='pending' ORDER BY id ASC LIMIT 1;";
+        const sql_sel = "SELECT id, voice, rate, text, engine, ssml, length_scale, noise_scale, noise_w, tech, comma_pause_ms, sentence_pause_ms, newline_pause_ms, speaker_id FROM items WHERE state='pending' ORDER BY id ASC LIMIT 1;";
         var stmt: ?*c.sqlite3_stmt = null;
         if (c.sqlite3_prepare_v2(q.db, sql_sel, -1, &stmt, null) != c.SQLITE_OK) return null;
         defer _ = c.sqlite3_finalize(stmt);
@@ -300,6 +361,27 @@ pub const Queue = struct {
             if (c.sqlite3_column_type(stmt, 8) == c.SQLITE_NULL) break :blk -1.0;
             break :blk @floatCast(c.sqlite3_column_double(stmt, 8));
         };
+        // v1.10.8 — extras. NULL → ipc.Message defaults.
+        const tech: bool = blk: {
+            if (c.sqlite3_column_type(stmt, 9) == c.SQLITE_NULL) break :blk false;
+            break :blk c.sqlite3_column_int(stmt, 9) != 0;
+        };
+        const comma_ms: u32 = blk: {
+            if (c.sqlite3_column_type(stmt, 10) == c.SQLITE_NULL) break :blk 0;
+            break :blk @intCast(c.sqlite3_column_int(stmt, 10));
+        };
+        const sentence_ms: u32 = blk: {
+            if (c.sqlite3_column_type(stmt, 11) == c.SQLITE_NULL) break :blk 0;
+            break :blk @intCast(c.sqlite3_column_int(stmt, 11));
+        };
+        const newline_ms: u32 = blk: {
+            if (c.sqlite3_column_type(stmt, 12) == c.SQLITE_NULL) break :blk 0;
+            break :blk @intCast(c.sqlite3_column_int(stmt, 12));
+        };
+        const speaker_id: i32 = blk: {
+            if (c.sqlite3_column_type(stmt, 13) == c.SQLITE_NULL) break :blk -1;
+            break :blk @intCast(c.sqlite3_column_int(stmt, 13));
+        };
 
         const sql_upd = "UPDATE items SET state='playing', started_at=? WHERE id=?;";
         var ustmt: ?*c.sqlite3_stmt = null;
@@ -326,6 +408,11 @@ pub const Queue = struct {
             .length_scale = length_scale,
             .noise_scale = noise_scale,
             .noise_w = noise_w,
+            .tech = tech,
+            .comma_pause_ms = comma_ms,
+            .sentence_pause_ms = sentence_ms,
+            .newline_pause_ms = newline_ms,
+            .speaker_id = speaker_id,
             .text = text,
         };
     }
@@ -486,7 +573,7 @@ pub const Queue = struct {
         defer q.mu.unlock(io);
 
         // Look up source row.
-        const sql_sel = "SELECT text, voice, rate, engine, ssml, length_scale, noise_scale, noise_w FROM items WHERE id=?;";
+        const sql_sel = "SELECT text, voice, rate, engine, ssml, length_scale, noise_scale, noise_w, tech, comma_pause_ms, sentence_pause_ms, newline_pause_ms, speaker_id FROM items WHERE id=?;";
         var sel: ?*c.sqlite3_stmt = null;
         if (c.sqlite3_prepare_v2(q.db, sql_sel, -1, &sel, null) != c.SQLITE_OK) return error.DbPrepare;
         defer _ = c.sqlite3_finalize(sel);
@@ -511,9 +598,20 @@ pub const Queue = struct {
         const noise_scale_val: f64 = if (noise_scale_null) 0 else c.sqlite3_column_double(sel, 6);
         const noise_w_null = c.sqlite3_column_type(sel, 7) == c.SQLITE_NULL;
         const noise_w_val: f64 = if (noise_w_null) 0 else c.sqlite3_column_double(sel, 7);
+        // v1.10.8 — extras: tech / pause overrides / speaker_id.
+        const tech_null = c.sqlite3_column_type(sel, 8) == c.SQLITE_NULL;
+        const tech_val: c_int = if (tech_null) 0 else c.sqlite3_column_int(sel, 8);
+        const comma_null = c.sqlite3_column_type(sel, 9) == c.SQLITE_NULL;
+        const comma_val: c_int = if (comma_null) 0 else c.sqlite3_column_int(sel, 9);
+        const sentence_null = c.sqlite3_column_type(sel, 10) == c.SQLITE_NULL;
+        const sentence_val: c_int = if (sentence_null) 0 else c.sqlite3_column_int(sel, 10);
+        const newline_null = c.sqlite3_column_type(sel, 11) == c.SQLITE_NULL;
+        const newline_val: c_int = if (newline_null) 0 else c.sqlite3_column_int(sel, 11);
+        const speaker_null = c.sqlite3_column_type(sel, 12) == c.SQLITE_NULL;
+        const speaker_val: c_int = if (speaker_null) 0 else c.sqlite3_column_int(sel, 12);
 
         // INSERT the copy.
-        const sql_ins = "INSERT INTO items(text,voice,rate,state,enqueued_at,engine,ssml,length_scale,noise_scale,noise_w) VALUES (?,?,?,'pending',?,?,?,?,?,?);";
+        const sql_ins = "INSERT INTO items(text,voice,rate,state,enqueued_at,engine,ssml,length_scale,noise_scale,noise_w,tech,comma_pause_ms,sentence_pause_ms,newline_pause_ms,speaker_id) VALUES (?,?,?,'pending',?,?,?,?,?,?,?,?,?,?,?);";
         var ins: ?*c.sqlite3_stmt = null;
         if (c.sqlite3_prepare_v2(q.db, sql_ins, -1, &ins, null) != c.SQLITE_OK) return error.DbPrepare;
         defer _ = c.sqlite3_finalize(ins);
@@ -533,6 +631,21 @@ pub const Queue = struct {
         if (noise_w_null) {
             if (c.sqlite3_bind_null(ins, 9) != c.SQLITE_OK) return error.DbBind;
         } else if (c.sqlite3_bind_double(ins, 9, noise_w_val) != c.SQLITE_OK) return error.DbBind;
+        if (tech_null) {
+            if (c.sqlite3_bind_null(ins, 10) != c.SQLITE_OK) return error.DbBind;
+        } else if (c.sqlite3_bind_int(ins, 10, tech_val) != c.SQLITE_OK) return error.DbBind;
+        if (comma_null) {
+            if (c.sqlite3_bind_null(ins, 11) != c.SQLITE_OK) return error.DbBind;
+        } else if (c.sqlite3_bind_int(ins, 11, comma_val) != c.SQLITE_OK) return error.DbBind;
+        if (sentence_null) {
+            if (c.sqlite3_bind_null(ins, 12) != c.SQLITE_OK) return error.DbBind;
+        } else if (c.sqlite3_bind_int(ins, 12, sentence_val) != c.SQLITE_OK) return error.DbBind;
+        if (newline_null) {
+            if (c.sqlite3_bind_null(ins, 13) != c.SQLITE_OK) return error.DbBind;
+        } else if (c.sqlite3_bind_int(ins, 13, newline_val) != c.SQLITE_OK) return error.DbBind;
+        if (speaker_null) {
+            if (c.sqlite3_bind_null(ins, 14) != c.SQLITE_OK) return error.DbBind;
+        } else if (c.sqlite3_bind_int(ins, 14, speaker_val) != c.SQLITE_OK) return error.DbBind;
         if (c.sqlite3_step(ins) != c.SQLITE_DONE) return error.DbStep;
 
         const new_id: u64 = @intCast(c.sqlite3_last_insert_rowid(q.db));

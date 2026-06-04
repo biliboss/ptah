@@ -4,11 +4,12 @@
 // Transport: UNIX stream socket at $HOME/.cache/agent-tts/sock
 //
 // Request lines (one per connection):
-//   ENQUEUE\t<engine>\t<lang>\t<voice>\t<rate>\t<ssml>\t<tune>\t<text>\n → v1.10.7 8-field form
-//   ENQUEUE\t<engine>\t<lang>\t<voice>\t<rate>\t<ssml>\t<text>\n        → v1.8 7-field form
-//   ENQUEUE\t<engine>\t<lang>\t<voice>\t<rate>\t<text>\n                → v1.1 6-field form
-//   ENQUEUE\t<engine>\t<voice>\t<rate>\t<text>\n                        → v0.7 5-field form
-//   ENQUEUE\t<voice>\t<rate>\t<text>\n                                  → v0.6 4-field form
+//   ENQUEUE\t<engine>\t<lang>\t<voice>\t<rate>\t<ssml>\t<tune>\t<extra>\t<text>\n → v1.10.8 9-field form
+//   ENQUEUE\t<engine>\t<lang>\t<voice>\t<rate>\t<ssml>\t<tune>\t<text>\n         → v1.10.7 8-field form
+//   ENQUEUE\t<engine>\t<lang>\t<voice>\t<rate>\t<ssml>\t<text>\n                 → v1.8 7-field form
+//   ENQUEUE\t<engine>\t<lang>\t<voice>\t<rate>\t<text>\n                         → v1.1 6-field form
+//   ENQUEUE\t<engine>\t<voice>\t<rate>\t<text>\n                                 → v0.7 5-field form
+//   ENQUEUE\t<voice>\t<rate>\t<text>\n                                           → v0.6 4-field form
 //   QUEUE\n                                                             → list items
 //   SKIP\n                                                              → skip current
 //   CLEAR\n                                                             → drop pending
@@ -24,8 +25,11 @@
 //      - "0" / "1" exactly           → v1.8+ 7- or 8-field (token is ssml flag)
 //      - Anything else               → v1.1 6-field (rest is text)
 //   4. In v1.8+ layout, peek the field after the ssml flag.
-//      - empty "" OR contains ':'    → v1.10.7 8-field (token is the tune triplet)
+//      - empty "" OR contains ':'    → v1.10.7+ 8/9-field (token is the tune triplet)
 //      - Anything else               → v1.8 7-field (rest is text)
+//   5. In v1.10.7+ layout, peek the field after the tune triplet.
+//      - empty "" OR contains ':' with ≥4 colons → v1.10.8 9-field (extra quintuple)
+//      - Anything else               → v1.10.7 8-field (rest is text)
 //
 // Tune triplet format (v1.10.7 8-field): `<length>:<noise>:<noise_w>`. Each
 // component is either a float literal (e.g. `1.05`) or `-` for unset. An
@@ -107,6 +111,19 @@ pub const Message = struct {
     /// v1.10.7 — Piper noise_w knob. Sentinel `< 0` means unset.
     /// Range when set: 0.0..2.0. Higher = more variation in pronunciation.
     noise_w: f32 = -1.0,
+    /// v1.10.8 — tech-report mode. When true, the daemon runs the
+    /// `processTech*` preproc instead of `process*`, expanding curated
+    /// acronyms (API → A P I) and units (MB → megabytes).
+    tech: bool = false,
+    /// v1.10.8 — per-call pause overrides. 0 = use the built-in default
+    /// from `preproc.Pause`. Non-zero stretches/shrinks the corresponding
+    /// `[[slnc N]]` directive.
+    comma_pause_ms: u32 = 0,
+    sentence_pause_ms: u32 = 0,
+    newline_pause_ms: u32 = 0,
+    /// v1.10.8 — Piper multi-speaker selector. `-1` means "use voice
+    /// config default". Single-speaker voices (Faber) ignore this.
+    speaker_id: i32 = -1,
     text: []const u8,
 };
 
@@ -155,18 +172,112 @@ pub fn sanitizeText(arena: std.mem.Allocator, raw: []const u8) ![]u8 {
 }
 
 pub fn encodeEnqueue(arena: std.mem.Allocator, msg: Message) ![]u8 {
-    // v1.10.7 wire format: 8 fields. The tune triplet between ssml and text
-    // carries optional piper inference knobs. When all three are at their
-    // unset sentinels, we emit an empty `""` field so the daemon parser
-    // distinguishes 8-field-with-defaults from 7-field (which has text in
-    // that slot — but text is never empty).
+    // v1.10.8 wire format: 9 fields. The extra quintuple between the tune
+    // triplet and text carries (tech:comma:sentence:newline:speaker). When
+    // every component is unset (false / 0 / -1), the field collapses to
+    // an empty `""` slot to keep the common case compact — the parser
+    // treats empty AND any field with ≥4 colons as the extra slot.
     const ssml_str: []const u8 = if (msg.ssml) "1" else "0";
     const tune = try formatTuneTriplet(arena, msg.length_scale, msg.noise_scale, msg.noise_w);
+    const extra = try formatExtraQuintuple(
+        arena,
+        msg.tech,
+        msg.comma_pause_ms,
+        msg.sentence_pause_ms,
+        msg.newline_pause_ms,
+        msg.speaker_id,
+    );
     return try std.fmt.allocPrint(
         arena,
-        "ENQUEUE\t{s}\t{s}\t{s}\t{d}\t{s}\t{s}\t{s}\n",
-        .{ msg.engine.str(), msg.lang.str(), msg.voice, msg.rate, ssml_str, tune, msg.text },
+        "ENQUEUE\t{s}\t{s}\t{s}\t{d}\t{s}\t{s}\t{s}\t{s}\n",
+        .{ msg.engine.str(), msg.lang.str(), msg.voice, msg.rate, ssml_str, tune, extra, msg.text },
     );
+}
+
+/// v1.10.8 — format the extra quintuple `<tech>:<comma>:<sentence>:<newline>:<speaker>`.
+/// Each component is either its concrete value or `-` for "unset". When
+/// every component is at its default, returns an empty string so the
+/// 8-field common case stays untouched on the wire.
+pub fn formatExtraQuintuple(
+    arena: std.mem.Allocator,
+    tech: bool,
+    comma_ms: u32,
+    sentence_ms: u32,
+    newline_ms: u32,
+    speaker_id: i32,
+) ![]u8 {
+    const all_default = !tech and comma_ms == 0 and sentence_ms == 0 and newline_ms == 0 and speaker_id < 0;
+    if (all_default) return try arena.dupe(u8, "");
+
+    var bufs: [5][32]u8 = undefined;
+    const tech_str: []const u8 = if (tech) "1" else "-";
+    const comma_str: []const u8 = if (comma_ms == 0) "-" else try std.fmt.bufPrint(&bufs[0], "{d}", .{comma_ms});
+    const sent_str: []const u8 = if (sentence_ms == 0) "-" else try std.fmt.bufPrint(&bufs[1], "{d}", .{sentence_ms});
+    const nl_str: []const u8 = if (newline_ms == 0) "-" else try std.fmt.bufPrint(&bufs[2], "{d}", .{newline_ms});
+    const sp_str: []const u8 = if (speaker_id < 0) "-" else try std.fmt.bufPrint(&bufs[3], "{d}", .{speaker_id});
+    return try std.fmt.allocPrint(arena, "{s}:{s}:{s}:{s}:{s}", .{ tech_str, comma_str, sent_str, nl_str, sp_str });
+}
+
+/// v1.10.8 — parsed extra quintuple. `tech` defaults false; pause /
+/// speaker defaults are the unset sentinels (0 / -1).
+pub const ExtraQuintuple = struct {
+    tech: bool = false,
+    comma_ms: u32 = 0,
+    sentence_ms: u32 = 0,
+    newline_ms: u32 = 0,
+    speaker_id: i32 = -1,
+};
+
+pub fn parseExtraQuintuple(s: []const u8) ParseError!ExtraQuintuple {
+    var out: ExtraQuintuple = .{};
+    if (s.len == 0) return out;
+
+    var it = std.mem.splitScalar(u8, s, ':');
+    const a = it.next() orelse return error.Malformed;
+    const b = it.next() orelse return error.Malformed;
+    const c = it.next() orelse return error.Malformed;
+    const d = it.next() orelse return error.Malformed;
+    const e = it.next() orelse return error.Malformed;
+    if (it.next() != null) return error.Malformed;
+
+    if (a.len > 0 and !std.mem.eql(u8, a, "-")) {
+        if (std.mem.eql(u8, a, "1")) {
+            out.tech = true;
+        } else if (std.mem.eql(u8, a, "0")) {
+            out.tech = false;
+        } else return error.Malformed;
+    }
+    if (b.len > 0 and !std.mem.eql(u8, b, "-")) {
+        out.comma_ms = std.fmt.parseInt(u32, b, 10) catch return error.Malformed;
+    }
+    if (c.len > 0 and !std.mem.eql(u8, c, "-")) {
+        out.sentence_ms = std.fmt.parseInt(u32, c, 10) catch return error.Malformed;
+    }
+    if (d.len > 0 and !std.mem.eql(u8, d, "-")) {
+        out.newline_ms = std.fmt.parseInt(u32, d, 10) catch return error.Malformed;
+    }
+    if (e.len > 0 and !std.mem.eql(u8, e, "-")) {
+        out.speaker_id = std.fmt.parseInt(i32, e, 10) catch return error.Malformed;
+    }
+    return out;
+}
+
+/// v1.10.8 — heuristic: does this field look like the 5-tuple extra
+/// slot? Empty is yes (signals all defaults). Otherwise the field needs
+/// at least 4 colons AND every character must be in `[0-9-:]` (no
+/// dots — those would be tune triplet floats, not pause integers).
+fn looksLikeExtraQuintuple(s: []const u8) bool {
+    if (s.len == 0) return true;
+    var colon_count: usize = 0;
+    for (s) |ch| {
+        if (ch == ':') {
+            colon_count += 1;
+            continue;
+        }
+        const ok = (ch >= '0' and ch <= '9') or ch == '-';
+        if (!ok) return false;
+    }
+    return colon_count == 4;
 }
 
 /// v1.10.7 — format the per-call tune triplet for the 8-field wire.
@@ -295,12 +406,55 @@ pub fn parseRequest(arena: std.mem.Allocator, line: []const u8) ParseError!Reque
                     };
 
                     if (looksLikeTuneTriplet(peek)) {
-                        // v1.10.7 8-field path. Parse the tune triplet,
-                        // remainder is the text.
+                        // v1.10.7 8-field or v1.10.8 9-field path. Parse the
+                        // tune triplet first, then peek the NEXT field: if it
+                        // looks like the extra quintuple (empty OR
+                        // [0-9-:] only with 4 colons) we're in 9-field land.
+                        // Otherwise that field IS the text head and we're in
+                        // legacy 8-field.
                         const tune = try parseTuneTriplet(peek);
-                        const text = it.rest();
-                        if (text.len == 0) return error.Malformed;
-                        const text_dup = arena.dupe(u8, text) catch return error.Malformed;
+
+                        const extra_peek_opt = it.next();
+                        if (extra_peek_opt == null) return error.Malformed;
+                        const extra_peek = extra_peek_opt.?;
+
+                        if (looksLikeExtraQuintuple(extra_peek)) {
+                            const extra = try parseExtraQuintuple(extra_peek);
+                            const text = it.rest();
+                            if (text.len == 0) return error.Malformed;
+                            const text_dup = arena.dupe(u8, text) catch return error.Malformed;
+                            return .{ .enqueue = .{
+                                .engine = engine,
+                                .lang = lang,
+                                .voice = voice_dup,
+                                .rate = rate,
+                                .ssml = ssml_flag,
+                                .length_scale = tune.length_scale,
+                                .noise_scale = tune.noise_scale,
+                                .noise_w = tune.noise_w,
+                                .tech = extra.tech,
+                                .comma_pause_ms = extra.comma_ms,
+                                .sentence_pause_ms = extra.sentence_ms,
+                                .newline_pause_ms = extra.newline_ms,
+                                .speaker_id = extra.speaker_id,
+                                .text = text_dup,
+                            } };
+                        }
+
+                        // v1.10.7 8-field: extra_peek IS the first text segment.
+                        const rest_after_tune = it.rest();
+                        const text_dup = blk3: {
+                            if (rest_after_tune.len == 0) {
+                                const dup = arena.dupe(u8, extra_peek) catch return error.Malformed;
+                                break :blk3 dup;
+                            }
+                            const total = arena.alloc(u8, extra_peek.len + 1 + rest_after_tune.len) catch return error.Malformed;
+                            @memcpy(total[0..extra_peek.len], extra_peek);
+                            total[extra_peek.len] = '\t';
+                            @memcpy(total[extra_peek.len + 1 ..], rest_after_tune);
+                            break :blk3 total;
+                        };
+                        if (text_dup.len == 0) return error.Malformed;
                         return .{ .enqueue = .{
                             .engine = engine,
                             .lang = lang,
@@ -768,6 +922,136 @@ test "v1.10.7 parseTuneTriplet handles dashes and floats" {
 
     try std.testing.expectError(error.Malformed, parseTuneTriplet("1.0:0.8"));
     try std.testing.expectError(error.Malformed, parseTuneTriplet("abc:0.8:1.0"));
+}
+
+// ---- v1.10.8 — extra quintuple (9-field wire) ----
+
+test "v1.10.8 parseRequest 9-field ENQUEUE with tech=1 and pauses set" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const req = try parseRequest(
+        arena.allocator(),
+        "ENQUEUE\tpiper\tpt\tfaber\t330\t0\t-:-:-\t1:120:500:700:-\tAPI rodou.",
+    );
+    try std.testing.expectEqual(true, req.enqueue.tech);
+    try std.testing.expectEqual(@as(u32, 120), req.enqueue.comma_pause_ms);
+    try std.testing.expectEqual(@as(u32, 500), req.enqueue.sentence_pause_ms);
+    try std.testing.expectEqual(@as(u32, 700), req.enqueue.newline_pause_ms);
+    try std.testing.expectEqual(@as(i32, -1), req.enqueue.speaker_id);
+    try std.testing.expectEqualStrings("API rodou.", req.enqueue.text);
+}
+
+test "v1.10.8 parseRequest 9-field with speaker_id set" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const req = try parseRequest(
+        arena.allocator(),
+        "ENQUEUE\tpiper\tpt\tfaber\t330\t0\t-:-:-\t-:-:-:-:3\tOlá",
+    );
+    try std.testing.expectEqual(false, req.enqueue.tech);
+    try std.testing.expectEqual(@as(i32, 3), req.enqueue.speaker_id);
+}
+
+test "v1.10.8 parseRequest 9-field empty extra slot keeps defaults" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const req = try parseRequest(
+        arena.allocator(),
+        "ENQUEUE\tpiper\tpt\tfaber\t330\t0\t1.05:0.667:0.85\t\tTeste warm.",
+    );
+    try std.testing.expectEqual(false, req.enqueue.tech);
+    try std.testing.expectEqual(@as(u32, 0), req.enqueue.comma_pause_ms);
+    try std.testing.expectEqual(@as(i32, -1), req.enqueue.speaker_id);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.05), req.enqueue.length_scale, 0.001);
+    try std.testing.expectEqualStrings("Teste warm.", req.enqueue.text);
+}
+
+test "v1.10.8 encodeEnqueue round-trips extra quintuple" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const original: Message = .{
+        .engine = .piper,
+        .lang = .pt,
+        .voice = "faber",
+        .rate = 330,
+        .ssml = false,
+        .length_scale = 0.95,
+        .noise_scale = 0.667,
+        .noise_w = 0.85,
+        .tech = true,
+        .comma_pause_ms = 120,
+        .sentence_pause_ms = 500,
+        .newline_pause_ms = 700,
+        .speaker_id = 2,
+        .text = "API e MCP rodam em CPU.",
+    };
+    const wire = try encodeEnqueue(a, original);
+    const line = wire[0 .. wire.len - 1];
+    const req = try parseRequest(a, line);
+    try std.testing.expectEqual(true, req.enqueue.tech);
+    try std.testing.expectEqual(@as(u32, 120), req.enqueue.comma_pause_ms);
+    try std.testing.expectEqual(@as(u32, 500), req.enqueue.sentence_pause_ms);
+    try std.testing.expectEqual(@as(u32, 700), req.enqueue.newline_pause_ms);
+    try std.testing.expectEqual(@as(i32, 2), req.enqueue.speaker_id);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.95), req.enqueue.length_scale, 0.001);
+    try std.testing.expectEqualStrings("API e MCP rodam em CPU.", req.enqueue.text);
+}
+
+test "v1.10.8 encodeEnqueue all extras unset emits empty extra slot" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const original: Message = .{
+        .engine = .piper,
+        .lang = .pt,
+        .voice = "faber",
+        .rate = 330,
+        .text = "Olá",
+    };
+    const wire = try encodeEnqueue(a, original);
+    // Wire should contain two adjacent tabs (empty tune AND empty extra
+    // → "\t\t\t" sequence between rate-field and text).
+    try std.testing.expect(std.mem.indexOf(u8, wire, "\t\t\t") != null);
+    const line = wire[0 .. wire.len - 1];
+    const req = try parseRequest(a, line);
+    try std.testing.expectEqual(false, req.enqueue.tech);
+    try std.testing.expectEqual(@as(i32, -1), req.enqueue.speaker_id);
+    try std.testing.expectEqualStrings("Olá", req.enqueue.text);
+}
+
+test "v1.10.8 parseExtraQuintuple shapes" {
+    const t1 = try parseExtraQuintuple("1:120:500:700:2");
+    try std.testing.expectEqual(true, t1.tech);
+    try std.testing.expectEqual(@as(u32, 120), t1.comma_ms);
+    try std.testing.expectEqual(@as(u32, 500), t1.sentence_ms);
+    try std.testing.expectEqual(@as(u32, 700), t1.newline_ms);
+    try std.testing.expectEqual(@as(i32, 2), t1.speaker_id);
+
+    const t2 = try parseExtraQuintuple("-:-:-:-:-");
+    try std.testing.expectEqual(false, t2.tech);
+    try std.testing.expectEqual(@as(u32, 0), t2.comma_ms);
+    try std.testing.expectEqual(@as(i32, -1), t2.speaker_id);
+
+    const t3 = try parseExtraQuintuple("");
+    try std.testing.expectEqual(false, t3.tech);
+    try std.testing.expectEqual(@as(i32, -1), t3.speaker_id);
+
+    try std.testing.expectError(error.Malformed, parseExtraQuintuple("1:120:500"));
+    try std.testing.expectError(error.Malformed, parseExtraQuintuple("x:120:500:700:2"));
+}
+
+test "v1.10.8 backward-compat: v1.10.7 8-field still parses" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const req = try parseRequest(
+        arena.allocator(),
+        "ENQUEUE\tpiper\tpt\tfaber\t330\t0\t1.05:0.8:1\tOlá warm Faber.",
+    );
+    try std.testing.expectApproxEqAbs(@as(f32, 1.05), req.enqueue.length_scale, 0.001);
+    try std.testing.expectEqual(false, req.enqueue.tech);
+    try std.testing.expectEqual(@as(i32, -1), req.enqueue.speaker_id);
+    try std.testing.expectEqualStrings("Olá warm Faber.", req.enqueue.text);
 }
 
 test "v1.10.7 backward-compat: v1.8 7-field still parses with knobs at sentinels" {

@@ -46,7 +46,7 @@ const mcp = @import("mcp.zig");
 const stream_mod = @import("stream.zig");
 const build_options = @import("build_options");
 
-pub const VERSION = "1.10.7";
+pub const VERSION = "1.10.8";
 
 const HELP =
     \\agent-tts v{s} — multilingual TTS via system voice or libpiper
@@ -97,6 +97,12 @@ const HELP =
     \\  --length-scale F    v1.10.7+: Piper length_scale (0.1..3.0). <1=faster.
     \\  --noise-scale F     v1.10.7+: Piper noise_scale (0..2). Higher=more prosody variation.
     \\  --noise-w F         v1.10.7+: Piper noise_w (0..2). Higher=more pronunciation variation.
+    \\  --tech              v1.10.8+: tech-report mode (acronym + unit glossary)
+    \\  --comma-pause MS    v1.10.8+: pause ms after `,` (default 150)
+    \\  --sentence-pause MS v1.10.8+: pause ms after .!? (default 400)
+    \\  --newline-pause MS  v1.10.8+: pause ms after newline (default 600)
+    \\  --speaker-id N      v1.10.8+: Piper multi-speaker id (-1 = voice default)
+    \\  --profile tech      v1.10.8+: bundle --tech + warm Faber knobs + 500ms sentence
     \\  -h, --help          this help
     \\  -V, --version       print version
     \\
