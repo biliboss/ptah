@@ -112,6 +112,9 @@ public final class CloneVoiceModel: ObservableObject {
     private var sentenceTimer: Timer?
     // Stash the spawn so we can kill it if the user cancels.
     private var cloneProcess: Process?
+    // v1.10.4: persist staged path so a failed clone exposes a "Show in Finder"
+    // affordance. Cleared on cancel().
+    @Published public var stagedURLForDebug: URL?
 
     public init() {}
 
@@ -239,8 +242,18 @@ public final class CloneVoiceModel: ObservableObject {
             return
         }
 
+        // v1.10.4 diagnostic: log staged WAV size so the user can verify
+        // the recording produced bytes before XTTS gets blamed for a silent fail.
+        let stagedSize: Int = {
+            if let attrs = try? FileManager.default.attributesOfItem(atPath: stagedURL.path),
+               let n = attrs[.size] as? Int { return n }
+            return 0
+        }()
+        stagedURLForDebug = stagedURL
+
         phase = .processing
-        processingLog = "Spawning agent-tts voice clone…\n"
+        processingLog = "Staged WAV: \(stagedURL.path) (\(stagedSize) bytes)\n"
+        processingLog += "Spawning agent-tts voice clone…\n"
 
         let proc = Process()
         // Prefer the canonical install location, fall back to the one in the
@@ -325,9 +338,19 @@ public final class CloneVoiceModel: ObservableObject {
         phase = .idle
         recordedURL = nil
         processingLog = ""
+        stagedURLForDebug = nil
         elapsed = 0
         meter = 0
         currentSentence = 0
+    }
+
+    /// v1.10.4: open the staged WAV in Finder so the user can verify the
+    /// recording actually captured audio. Useful when the XTTS sidecar
+    /// reports a failure and we want to rule out the recorder.
+    public func revealStagedWAV() {
+        guard let url = stagedURLForDebug,
+              FileManager.default.fileExists(atPath: url.path) else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([url])
     }
 }
 
@@ -482,6 +505,13 @@ public struct CloneVoiceView: View {
                 onDone()
             }
             .keyboardShortcut(.cancelAction)
+            // v1.10.4: surface staged WAV in Finder when something went wrong,
+            // so the user can verify the recording before blaming XTTS.
+            if model.stagedURLForDebug != nil {
+                Button("Show WAV in Finder") {
+                    model.revealStagedWAV()
+                }
+            }
             Spacer()
             if isDone {
                 Button("Done") {

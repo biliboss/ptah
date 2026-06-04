@@ -76,8 +76,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleIdentifier</key><string>io.github.biliboss.agent-tts.menubar</string>
   <key>CFBundleName</key><string>$APP_NAME</string>
   <key>CFBundleDisplayName</key><string>agent-tts</string>
-  <key>CFBundleVersion</key><string>1.10.3</string>
-  <key>CFBundleShortVersionString</key><string>1.10.3</string>
+  <key>CFBundleVersion</key><string>1.10.4</string>
+  <key>CFBundleShortVersionString</key><string>1.10.4</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>LSMinimumSystemVersion</key><string>14.0</string>
