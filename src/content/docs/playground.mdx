@@ -1,6 +1,6 @@
 ---
 title: Playground
-description: Browser-based voice picker for agent-tts. v1.10.1 ships the widget scaffold; the WASM Piper synth lands in v1.10.2.
+description: Browser-based voice picker scaffold for agent-tts. Shipped in v1.10.1; WASM Piper synth deferred indefinitely while the production discovery loop lives in MCP.
 head:
   - tag: link
     attrs:
@@ -16,9 +16,11 @@ head:
 
 ## TL;DR
 
-Press a button, hear a voice — no install. v1.10.1 ships the **playground UI scaffold**: voice dropdown, text input, Speak button, audio element wired to the Web Audio API. The synth backend (libpiper compiled to WebAssembly + ONNX Runtime Web) lands in **v1.10.2**.
+Press a button, hear a voice — no install. v1.10.1 ships the **playground UI scaffold**: voice dropdown, text input, Speak button, audio element wired to the Web Audio API. The synth backend (libpiper compiled to WebAssembly + ONNX Runtime Web) is **deferred indefinitely** — the runtime stack (CLI / MCP / menubar floating player / `tech_profile_search` 4×2 matrix) covers Gabriel's needs, and shipping the WASM build means a multi-day commit to an Emscripten + ONNX Runtime Web pipeline that doesn't move the needle on production usage.
 
-Today the Speak button POSTs to a stub endpoint that returns a sentinel marker the widget reads as "WASM build pending". The UX is real; the audio is not. The point is to lock the interaction shape before the heavy lift.
+The page is **unchanged from v1.10.1 through v1.10.13**. Today the Speak button POSTs to a stub endpoint that returns a sentinel marker the widget reads as "WASM build pending". The UX is real; the audio is not. The point is to lock the interaction shape so the heavy lift is a pure backend swap **if and when** the runtime needs a web surface.
+
+> **For real audio comparison, use `tech_profile_search`.** The production A/B loop is the MCP `tech_profile_search` tool — one MCP round-trip enqueues the curated 4-knob × 2-postfx matrix through the local daemon's actual Faber piper + ffmpeg post-fx, on your real audio hardware. See [MCP server → `tech_profile_search`](/agent-tts/mcp/#v1109--v11010--tech_profile_search-42-matrix). The playground exists to lock the eventual browser-surface UX, not to replace the production discovery loop.
 
 ## Try it
 
@@ -47,31 +49,32 @@ Today the Speak button POSTs to a stub endpoint that returns a sentinel marker t
 
 ## How the widget works
 
-| Layer | Today (v1.10.1) | v1.10.2 |
-|---|---|---|
-| UI | Vanilla `<select>` + `<textarea>` + `<button>` in MDX | unchanged |
-| Stylesheet | External `public/playground/widget.css` referenced via `head` frontmatter | unchanged |
-| Script | External `public/playground/widget.js` referenced via `head` frontmatter | unchanged |
-| Endpoint | `public/api/synth.html` — static sentinel `{"status":501,"error":"not_implemented"}`; widget probes `/api/synth` first, falls back to `.html` on 404 | Astro server endpoint **or** in-browser WASM, the bare `/api/synth` probe resolves directly |
-| Voice catalog | Hardcoded 4 entries (Faber, Luciana, Felipe, Amy) | Same list — actual model files lazy-load from R2 |
-| Playback | Web Audio API context created on first click; `<audio>` element shown for replay | Same path; decoded PCM streams through `AudioBufferSourceNode` |
-| Cold latency | n/a (no synth) | Target < 1.5 s including 63 MB Faber ONNX over residential link |
+| Layer | Status from v1.10.1 → v1.10.13 |
+|---|---|
+| UI | Vanilla `<select>` + `<textarea>` + `<button>` in MDX |
+| Stylesheet | External `public/playground/widget.css` referenced via `head` frontmatter `<link rel="stylesheet">` |
+| Script | External `public/playground/widget.js` referenced via `head` frontmatter `<script defer>` |
+| Endpoint | `public/api/synth.html` — static sentinel `{"status":501,"error":"not_implemented"}`; widget probes `/api/synth` first, falls back to `.html` on 404 |
+| Voice catalog | Hardcoded 4 entries (Faber, Luciana, Felipe, Amy) |
+| Playback | Web Audio API context created on first click; `<audio>` element shown for replay |
+| Cold latency | n/a (no synth) |
 
-The widget treats the static HTML body as a 501 sentinel so the v1.10.1 ship-it builds cleanly on GitHub Pages (no SSR adapter, no Cloudflare Worker). When v1.10.2 lands, the only swap is the endpoint — the widget code stays.
+The widget treats the static HTML body as a 501 sentinel so the page builds cleanly on GitHub Pages (no SSR adapter, no Cloudflare Worker). If/when WASM synth lands, the only swap is the endpoint — the widget code stays.
 
-**Why externalized in v1.10.1**: v1.9 inlined the `<script>` + `<style>` via MDX template literals. Starlight's MDX pipeline stripped or mangled them on production GitHub Pages, leaving the page with no interaction at all. v1.10.1 splits the assets out to `public/playground/` and references them via Starlight's `head` frontmatter, which always ships. See [`feedback-ship-only-tested`](https://github.com/biliboss/agent-tts/issues?q=ship-only-tested).
+**Why externalized**: v1.9 inlined the `<script>` + `<style>` via MDX template literals. Starlight's MDX pipeline stripped or mangled them on production GitHub Pages, leaving the page with no interaction at all. v1.10.1 split the assets out to `public/playground/` and referenced them via Starlight's `head` frontmatter, which always ships. See `_memory/feedback-ship-only-tested.md` for the post-mortem rule that came out of this — "shipped" requires end-to-end live-URL validation, not just `npm run build` green.
 
 ## Honest scope
 
-- **No audio is produced.** Every Speak click ends in "501 — WASM build pending". This is intentional. v1.10.1 locks the interaction surface so v1.10.2 is a pure backend swap.
-- **Voice list is informational.** The dropdown does not gate the request — selecting "Faber" sends `voice: "faber"` to the stub, the stub ignores it. v1.10.2 will route to the matching ONNX session.
-- **No WASM compile yet.** Building libpiper for `wasm32-emscripten`, shipping the ONNX Runtime Web variant, and wiring them through `zig build` is a multi-day exercise. The scaffold ships today; the heavy lift ships next.
-- **No CDN model hosting.** v1.10.2 will publish the four ONNX models on Cloudflare R2 and lazy-load on first click.
+- **No audio is produced.** Every Speak click ends in "501 — WASM build pending". This is intentional. The page locks the interaction surface; the backend swap is deferred indefinitely.
+- **WASM synth is deferred indefinitely — no ETA.** v1.10.1's TL;DR predicted "v1.10.2"; that prediction did not come true and is retracted. The runtime stack (CLI + MCP + menubar floating player + `tech_profile_search` 4×2 matrix) covers Gabriel's actual usage. Re-prioritize when there's a concrete need for a web surface that the native runtime can't serve.
+- **Voice list is informational.** The dropdown does not gate the request — selecting "Faber" sends `voice: "faber"` to the stub, the stub ignores it.
+- **No WASM compile yet.** Building libpiper for `wasm32-emscripten`, shipping the ONNX Runtime Web variant, and wiring them through `zig build` remains the original heavy-lift estimate.
+- **No CDN model hosting.** The eventual web path would publish the four ONNX models on Cloudflare R2 and lazy-load on first click.
 - **Browser support matrix not measured.** The widget assumes `AudioContext`, `fetch`, `URL.createObjectURL`, and `ArrayBuffer` — all baseline 2020. No polyfills.
 
-## Build the WASM target
+## The plan if it ever ships
 
-`scripts/build-wasm.sh` is an executable readme. It documents the four steps v1.10.2 needs:
+`scripts/build-wasm.sh` is an executable readme. It documents the four steps the WASM backend would need:
 
 1. Build libpiper for `wasm32-emscripten` via Emscripten SDK (`emcmake cmake … && emmake make`).
 2. Ship the ONNX Runtime Web variant (`onnxruntime-web`) — the JS package, not the native `.dylib`.
@@ -84,10 +87,10 @@ Run it to see the steps:
 ./scripts/build-wasm.sh --plan
 ```
 
-Today the script exits cleanly with the plan printed; v1.10.2 wires the real cmake invocations.
+Today the script exits cleanly with the plan printed; no v1.10.x release wires the real cmake invocations.
 
 ## Related
 
-- [What's next](/agent-tts/whats-next/) — v1.10.2 lives there as the next slate
-- [TTS engine](/agent-tts/motor/) — the native (non-WASM) synth path
-- [Changelog](/agent-tts/changelog/) — v1.10.1 entry with the fix story
+- [MCP server → `tech_profile_search`](/agent-tts/mcp/#v1109--v11010--tech_profile_search-42-matrix) — the actual production A/B audio comparison loop, against your local daemon + real audio hardware
+- [TTS engine](/agent-tts/motor/) — the native (non-WASM) synth path that does ship today
+- [Changelog](/agent-tts/changelog/) — v1.10.1 entry has the externalization fix story

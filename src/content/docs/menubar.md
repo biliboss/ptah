@@ -1,13 +1,13 @@
 ---
 title: Menubar UI
-description: Native macOS menubar app for agent-tts — same UNIX-socket protocol as the CLI and the MCP server, third client on the wire.
+description: Native macOS menubar app for agent-tts — same UNIX-socket protocol as the CLI and the MCP server, third client on the wire. Floating player + guided voice clone live since v1.10.2 / v1.10.3.
 ---
 
 ## TL;DR
 
-`AgentTTSMenubar` is a SwiftUI menubar app that gives the daemon a face. It speaks the same line-delimited TSV protocol the CLI and MCP server use — third client on `~/.cache/agent-tts/sock`, daemon unchanged. Live queue, click-to-skip, voice picker with cloned voices auto-discovered from disk. 321 KB binary, 911 Swift LOC, macOS 14+, Swift 5.9+.
+`AgentTTSMenubar` is a SwiftUI menubar app that gives the daemon a face. It speaks the same line-delimited TSV protocol the CLI and MCP server use — third client on `~/.cache/agent-tts/sock`, daemon unchanged. Live queue, click-to-skip, voice picker with cloned voices auto-discovered from disk, floating overlay player (v1.10.2+), and a guided one-button voice-clone window (v1.10.3+). macOS 14+, Swift 5.9+.
 
-Volume ducking and the Linux GTK4 equivalent are deferred to v1.10.1 — explicit honest scope in the [Changelog](/agent-tts/changelog/).
+Volume ducking and the Linux GTK4 equivalent are still on the wishlist — explicit honest scope at the bottom of this page.
 
 ## Install
 
@@ -23,10 +23,11 @@ Wrap it into a `.app` bundle with the helper script:
 
 ```bash
 ./scripts/build-menubar.sh
-open ui/menubar/build/AgentTTSMenubar.app
+cp -R ui/menubar/build/AgentTTSMenubar.app /Applications/
+open /Applications/AgentTTSMenubar.app
 ```
 
-Then drag it into `Login Items` (System Settings → General → Login Items) so it starts on login alongside the daemon.
+`scripts/build-menubar.sh` bakes `AppIcon.icns` (16×16 → 512×512@2x, from `public/logos/agent-tts-logo.png` via `sips` + `iconutil`, baked into the bundle since v1.10.1) and stamps `NSMicrophoneUsageDescription` into the Info.plist so the v1.10.3 clone window can request mic access. Then drag the installed bundle into `Login Items` (System Settings → General → Login Items) so it starts on login alongside the daemon.
 
 ![AgentTTSMenubar status item — captured live from /Applications/AgentTTSMenubar.app on macOS 26.5](/agent-tts/screenshots/menubar-v1.10.1.png)
 
@@ -35,7 +36,8 @@ Then drag it into `Login Items` (System Settings → General → Login Items) so
 ## What's in the popover
 
 - **Header** — title + refresh button (forces a queue re-poll).
-- **Voice picker** — Luciana / Felipe / Faber / Amy plus any cloned voices discovered under `~/.cache/agent-tts/voices/<slug>/metadata.json` (same probe path `agent-tts --voice <slug>` uses). Selection persists to UserDefaults under `AgentTTSMenubar.selectedVoiceId`.
+- **Voice picker** — Luciana / Felipe / Faber / Amy plus any cloned voices discovered under `~/.cache/agent-tts/voices/<slug>/metadata.json` (same probe path `agent-tts --voice <slug>` uses since v1.4). Selection persists to UserDefaults under `AgentTTSMenubar.selectedVoiceId`. The picker only exposes engine + voice today — tech-profile knobs (`length_scale` / `noise_scale` / `noise_w` / `postfx`) stay env-only via `AGENT_TTS_*` or the MCP `say` arguments. See honest scope below.
+- **Clone my voice…** row (v1.10.3+) — opens the guided clone window described in the next section.
 - **Floating-player toggle** (v1.10.2+) — "Show floating player while speaking" mirrors `AgentTTSMenubar.floatingPlayerEnabled` in UserDefaults. Default OFF on upgrade. When ON, the panel auto-shows during playback and auto-hides on idle (see below).
 - **Queue list** — one row per item with a state dot (green = playing, grey = pending), the text preview, the engine + voice + rate, and the daemon's `id`. Polls every 750 ms while the popover is open, 0 polls while it's closed.
 - **Footer** — Skip + Clear buttons (same semantics as `agent-tts skip` / `agent-tts clear`), last-poll round-trip readout in milliseconds, power button to quit.
@@ -54,7 +56,15 @@ The window walks the user through five steps:
 
 The `--quiet` flag is a v1.10.3 addition (`src/voice.zig`): it suppresses the `[voice clone] …` progress chatter, redirects the sidecar's stdout to `/dev/null`, and emits exactly one parseable `OK\t<slug>\n` line on success. Errors still go to stderr so they show up in the menubar app's log textbox.
 
-The bundle now ships an `NSMicrophoneUsageDescription` — required by macOS for any app that touches `AVAudioRecorder`. The string surfaces verbatim in the permission prompt.
+The bundle ships an `NSMicrophoneUsageDescription` — required by macOS for any app that touches `AVAudioRecorder`. The string surfaces verbatim in the permission prompt.
+
+### v1.10.4 — Staged WAV diagnostic + Show in Finder
+
+The clone window logs the staged WAV path **and byte count** right before spawning the subprocess (`Staged WAV: /Users/.../voices/.tmp-<slug>.wav (1563906 bytes)`). The byte count is the diagnostic: **0 bytes ⇒ the recorder broke**, **non-zero ⇒ the sidecar broke**. The window also gains a **Show WAV in Finder** button that appears whenever `stagedURLForDebug` is set, so the user can `afplay` the staged recording without leaving the window. v1.10.4 fixed a user-facing failure where v1.10.3 surfaced `error: unknown flag '—quiet'` (em-dash rendered by the terminal font) because the installed binary lagged the bundle — the diagnostic now makes that class of failure obvious.
+
+### v1.10.5 — Absolute path resolution for `voice_synth.py`
+
+The daemon's clone-time call to the Python sidecar now resolves `voice_synth.py` via the binary's absolute install path instead of `argv[0]`-relative lookup, so the menubar's spawned `agent-tts voice clone --quiet` finds the sidecar even when the menubar app launches the daemon from a different working directory than the CLI. Fully transparent to the menubar code; the user-visible effect is "Save & Clone works on first launch after install" instead of needing a manual `agent-tts daemon restart` first.
 
 ![Clone window — captured live at the Recording state from /Applications/AgentTTSMenubar.app on macOS 26.5](/agent-tts/screenshots/v1.10.3-clone-window.png)
 
@@ -62,7 +72,7 @@ The bundle now ships an `NSMicrophoneUsageDescription` — required by macOS for
 
 ## Floating player (v1.10.2+)
 
-A compact 320×60 `NSPanel` that floats above other windows (`level = .floating`, `.canJoinAllSpaces`) and surfaces the currently playing item plus controls — so you can pause/resume/skip/replay without opening the popover. Lifecycle:
+A compact 320×60 `NSPanel` that floats above other windows (`level = .floating`, `.canJoinAllSpaces`, `.hudWindow` style) and surfaces the currently playing item plus controls — so you can pause/resume/skip/replay without opening the popover. Lifecycle:
 
 1. AppDelegate polls `agent-tts queue` every 750 ms regardless of popover state.
 2. When a `state == "playing"` row appears AND the user toggled the widget on, the panel `orderFrontRegardless()`s.
@@ -71,7 +81,7 @@ A compact 320×60 `NSPanel` that floats above other windows (`level = .floating`
 
 Controls:
 
-- **Pause / Resume** (single button — SF Symbol switches `pause.fill` ↔ `play.fill`) → calls daemon `PAUSE` / `RESUME`. Disabled when no current item.
+- **Pause / Resume — single button** (SF Symbol switches `pause.fill` ↔ `play.fill` based on `current_playing_id` + paused state) → calls daemon `PAUSE` / `RESUME`. Disabled when no current item.
 - **Skip** → daemon `SKIP`.
 - **Replay** → daemon `REPLAY\t<currently-playing-id>` (re-enqueues the same utterance as a new pending row).
 
@@ -134,12 +144,13 @@ The parser is permissive: it also accepts the v0.6 legacy `ITEM\t<id>\t<state>\t
 | Popover starts/stops polling on open/close | Saves IPC traffic — the daemon doesn't need a poll every 750 ms while the popover is closed |
 | Click-to-skip only on the playing row in v1.10 | Daemon's `SKIP\n` targets the head of the queue. Per-id skip needs a daemon-side `SKIP\t<id>\n` extension. UI rows are clickable for forward-compat, so v1.10.1 plugs in without UI churn |
 
-## Honest scope (deferred)
+## Honest scope (still deferred at v1.10.13)
 
-- **Volume ducking** — needs CoreAudio + entitlement + signing. v1.10.1
-- **Linux GTK4 status icon** — different runtime, separate session. v1.10.1 or v1.11
-- **Drag-to-reorder pending items** — needs a daemon-side `MOVE` op. v1.10.1
-- **Per-id skip** — daemon extension, see above. v1.10.1
-- **Signed `.app` + brew cask** — v1.10.1 alongside ducking
+- **Volume ducking** — needs CoreAudio + entitlement + signing. Wishlist; no v1.11 date.
+- **Linux GTK4 status icon** — different runtime, separate session. Wishlist.
+- **Drag-to-reorder pending items** — needs a daemon-side `MOVE` op.
+- **Per-id skip** — daemon extension, see above (`SKIP\t<id>\n`).
+- **Signed `.app` + brew cask** — ad-hoc codesign (`-` identity) today; brew cask + notarization pending.
+- **Tech-profile knobs in the picker** — `length_scale` / `noise_scale` / `noise_w` / `postfx` are env-only or per-MCP-call today. The picker surfaces engine + voice only. The MCP `tech_profile_search` tool is the production discovery loop; see [MCP server → tech_profile_search](/agent-tts/mcp/#v1109--v11010--tech_profile_search-42-matrix).
 
 See also: [Architecture](/agent-tts/arquitetura/), [MCP server](/agent-tts/mcp/), [Changelog](/agent-tts/changelog/).
