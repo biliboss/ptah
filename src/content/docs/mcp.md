@@ -133,6 +133,6 @@ The daemon does the actual synthesis — the MCP server is a stateless bridge. K
 
 ## Related
 
-- [Architecture](/arquitetura/) — MCP server slots into "Components"
-- [Changelog](/changelog/) — v1.5 entry has the install snippet and the binary-size delta
+- [Architecture](/agent-tts/arquitetura/) — MCP server slots into "Components"
+- [Changelog](/agent-tts/changelog/) — v1.5 entry has the install snippet and the binary-size delta
 - [MCP spec](https://modelcontextprotocol.io/specification/2024-11-05) — the protocol agent-tts speaks

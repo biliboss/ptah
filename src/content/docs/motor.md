@@ -149,7 +149,7 @@ The daemon drains stdout into a buffer, feeds it to the same `AudioPlayer.stream
 
 **Why this isn't the default.** Cold startup of XTTS-v2 on Apple Silicon CPU is ~6-10s and warm first-sample is ~500-900ms — pessimistic vs Faber's 91ms. Cloned is opt-in for personal voice, not the snappy default.
 
-See [Changelog v1.4](/changelog/#v14--voice-cloning--2026-06-03) for the install + measurement story.
+See [Changelog v1.4](/agent-tts/changelog/#v14--voice-cloning--2026-06-03) for the install + measurement story.
 
 ## Code-switching EN — closed in v1.1
 
@@ -159,7 +159,7 @@ Cost: ~340 ms additional cold boot when both voices load (~680 ms total piper in
 
 Install the En voice with `./scripts/fetch-voice-en.sh`. The daemon logs `en=off` and falls back to single-voice Pt synth when the file is missing — no crash, no degraded prompt. Force a single voice end-to-end with `agent-tts --lang pt|en "..."`; `auto` (the default) runs the detector per sentence.
 
-The remaining ambition — XTTS-v2-grade multilingual quality from a single ONNX checkpoint — is parked. Piper's per-voice models ship today, work offline, and stay under the disk budget. Single-checkpoint multilingual returns to the table when Coqui's ONNX export stabilizes (see [Coqui discussion #4014](https://github.com/coqui-ai/TTS/discussions/4014)) or a Piper community checkpoint matches Faber/Amy quality. Tracked in [What's next](/whats-next/).
+The remaining ambition — XTTS-v2-grade multilingual quality from a single ONNX checkpoint — is parked. Piper's per-voice models ship today, work offline, and stay under the disk budget. Single-checkpoint multilingual returns to the table when Coqui's ONNX export stabilizes (see [Coqui discussion #4014](https://github.com/coqui-ai/TTS/discussions/4014)) or a Piper community checkpoint matches Faber/Amy quality. Tracked in [What's next](/agent-tts/whats-next/).
 
 ## SSML support per engine — v1.8
 

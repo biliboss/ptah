@@ -71,7 +71,7 @@ Everything is benchmarked against the gap between calling `agent-tts "text"` and
 
 <CardGrid>
   <Card title="MCP server bundled" icon="puzzle">
-    `agent-tts mcp` — stdio JSON-RPC. 10 tools: `say`, `queue`, `skip`, `clear`, `voices`, `say_stream`, `pause`, `resume`, `replay`, `history`. Drop-in for Claude Code / Cursor / Cline. [Read →](/mcp/)
+    `agent-tts mcp` — stdio JSON-RPC. 10 tools: `say`, `queue`, `skip`, `clear`, `voices`, `say_stream`, `pause`, `resume`, `replay`, `history`. Drop-in for Claude Code / Cursor / Cline. [Read →](/agent-tts/mcp/)
   </Card>
   <Card title="Streaming input" icon="open-book">
     `agent-tts stream` reads stdin and emits sentences as terminators arrive. MCP `say_stream(stream_id, chunk, final?)` matches the LLM delta shape. Hear the agent before it finishes thinking.
@@ -83,10 +83,10 @@ Everything is benchmarked against the gap between calling `agent-tts "text"` and
     SQLite WAL keeps every utterance. Pause mid-playback, resume from the same cursor, replay any past item by id. CLI + MCP + menubar all hit the same ops.
   </Card>
   <Card title="Menubar floating player" icon="laptop">
-    macOS NSStatusItem + floating NSPanel. Skip / Replay / voice picker — without opening a terminal. [Read →](/menubar/)
+    macOS NSStatusItem + floating NSPanel. Skip / Replay / voice picker — without opening a terminal. [Read →](/agent-tts/menubar/)
   </Card>
   <Card title="SSML & prosody" icon="document">
-    W3C SSML 1.1 subset: `<emphasis>`, `<break>`, `<prosody>`, `<say-as>`. Parse < 0.2 µs / 280 chars. Works on `say` and on Piper (length-scale + silence). [Read →](/motor/)
+    W3C SSML 1.1 subset: `<emphasis>`, `<break>`, `<prosody>`, `<say-as>`. Parse < 0.2 µs / 280 chars. Works on `say` and on Piper (length-scale + silence). [Read →](/agent-tts/motor/)
   </Card>
 </CardGrid>
 
@@ -104,6 +104,6 @@ Dual **MIT OR Apache-2.0** for the agent-tts source. **GPL-3.0-or-later** inheri
 
 ## Stay in sync
 
-Living project. Eighteen base + six patch milestones already shipped — see the [Roadmap](/roadmap/) and [Changelog](/changelog/) for the full timeline. The current state of every feature lives in [Architecture](/arquitetura/), [TTS engine](/motor/), [MCP server](/mcp/), [Menubar UI](/menubar/), and [Playground](/playground/).
+Living project. Eighteen base + six patch milestones already shipped — see the [Roadmap](/agent-tts/roadmap/) and [Changelog](/agent-tts/changelog/) for the full timeline. The current state of every feature lives in [Architecture](/agent-tts/arquitetura/), [TTS engine](/agent-tts/motor/), [MCP server](/agent-tts/mcp/), [Menubar UI](/agent-tts/menubar/), and [Playground](/agent-tts/playground/).
 
 > PRs welcome at [biliboss/agent-tts](https://github.com/biliboss/agent-tts). Vote with stars + issues tagged `roadmap` to push priority.

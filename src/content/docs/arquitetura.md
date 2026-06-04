@@ -67,7 +67,7 @@ The client does NOT fork the daemon. The daemon survives because of launchd (`ag
 
 ### Third client: SwiftUI menubar app (v1.10+)
 
-`ui/menubar/AgentTTSMenubar.app` is a Swift Package outside the Zig binary that talks the same UNIX-socket TSV protocol. NSStatusItem hosts a 320×420 SwiftUI popover with the live queue, Skip + Clear buttons, and a voice picker that discovers cloned voices under `~/.cache/agent-tts/voices/<slug>/metadata.json`. The daemon is unchanged — the menubar app is a third client on the wire, alongside the CLI and the MCP shim. See [Menubar UI](/menubar/).
+`ui/menubar/AgentTTSMenubar.app` is a Swift Package outside the Zig binary that talks the same UNIX-socket TSV protocol. NSStatusItem hosts a 320×420 SwiftUI popover with the live queue, Skip + Clear buttons, and a voice picker that discovers cloned voices under `~/.cache/agent-tts/voices/<slug>/metadata.json`. The daemon is unchanged — the menubar app is a third client on the wire, alongside the CLI and the MCP shim. See [Menubar UI](/agent-tts/menubar/).
 
 **v1.10.2 — floating player overlay.** AppDelegate runs a 750 ms `Timer` that polls `QUEUE` regardless of popover state. When a `state=="playing"` row appears AND the user toggled the floating widget on (`AgentTTSMenubar.floatingPlayerEnabled` in UserDefaults), an always-on-top `NSPanel` (`level = .floating`, `.hudWindow` style, `.canJoinAllSpaces`) shows the current item plus pause / resume / skip / replay buttons. The polling cadence matches the popover's so daemon load is constant; the toggle defaults OFF so v1.10.1 upgrades don't surface a new window unexpectedly.
 

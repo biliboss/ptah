@@ -7,11 +7,11 @@ description: v0.1 → v1.5 shipped 2026-06-03 in a single session. Roadmap compl
 
 v0.1 → v1.5 shipped on **2026-06-03**, in one session, behind one KPI. Thirteen milestones, each with a published measurement. Universal binary, brew tap, launchd + systemd auto-start, multilingual code-switch, sentence streaming, Linux/Windows code paths, voice cloning scaffold, and stdio JSON-RPC MCP server — all landed the same day.
 
-The next slate (v1.6+) is unscheduled; see [What's next](/whats-next/).
+The next slate (v1.6+) is unscheduled; see [What's next](/agent-tts/whats-next/).
 
 ## v0.1 → v1.5 — Shipped
 
-Every milestone has a published baseline in [`_qa/`](https://github.com/biliboss/agent-tts/tree/main/_qa) and a section in the [Changelog](/changelog/).
+Every milestone has a published baseline in [`_qa/`](https://github.com/biliboss/agent-tts/tree/main/_qa) and a section in the [Changelog](/agent-tts/changelog/).
 
 | Milestone | Focus | Result | Date |
 |-------|------|--------|------|
@@ -54,7 +54,7 @@ Every milestone was measured against **time-to-first-audio (TTFA)**.
 | Multi-piper boot (Pt only) | < 800 ms | pre-warm 255 ms + zaudio 54 ms + multi-piper 313 ms = ~622 ms ✅ |
 | Lang detect per message | < 100 µs | informational, not captured this session |
 
-Baselines: [`_qa/v0.1` … `_qa/v1.3`](https://github.com/biliboss/agent-tts/tree/main/_qa). Real audio-device dtruss not captured (SIP-on host); documented honestly in `_qa/v1.0-baseline.md`. v1.1+v1.2+v1.3 measurements live inline in the [Changelog](/changelog/).
+Baselines: [`_qa/v0.1` … `_qa/v1.3`](https://github.com/biliboss/agent-tts/tree/main/_qa). Real audio-device dtruss not captured (SIP-on host); documented honestly in `_qa/v1.0-baseline.md`. v1.1+v1.2+v1.3 measurements live inline in the [Changelog](/agent-tts/changelog/).
 
 ## Installation
 
@@ -106,7 +106,7 @@ Auto-start unit paths:
 
 ## What's next
 
-The whole v1.1 → v1.5 marketing slate shipped 2026-06-03. The next slate is unscheduled — see [What's next](/whats-next/) for the policy and how to push priority.
+The whole v1.1 → v1.5 marketing slate shipped 2026-06-03. The next slate is unscheduled — see [What's next](/agent-tts/whats-next/) for the policy and how to push priority.
 
 ## Locked nots
 

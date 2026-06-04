@@ -7,7 +7,7 @@ description: Native macOS menubar app for agent-tts — same UNIX-socket protoco
 
 `AgentTTSMenubar` is a SwiftUI menubar app that gives the daemon a face. It speaks the same line-delimited TSV protocol the CLI and MCP server use — third client on `~/.cache/agent-tts/sock`, daemon unchanged. Live queue, click-to-skip, voice picker with cloned voices auto-discovered from disk. 321 KB binary, 911 Swift LOC, macOS 14+, Swift 5.9+.
 
-Volume ducking and the Linux GTK4 equivalent are deferred to v1.10.1 — explicit honest scope in the [Changelog](/changelog/).
+Volume ducking and the Linux GTK4 equivalent are deferred to v1.10.1 — explicit honest scope in the [Changelog](/agent-tts/changelog/).
 
 ## Install
 
@@ -142,4 +142,4 @@ The parser is permissive: it also accepts the v0.6 legacy `ITEM\t<id>\t<state>\t
 - **Per-id skip** — daemon extension, see above. v1.10.1
 - **Signed `.app` + brew cask** — v1.10.1 alongside ducking
 
-See also: [Architecture](/arquitetura/), [MCP server](/mcp/), [Changelog](/changelog/).
+See also: [Architecture](/agent-tts/arquitetura/), [MCP server](/agent-tts/mcp/), [Changelog](/agent-tts/changelog/).

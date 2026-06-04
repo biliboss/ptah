@@ -19,7 +19,7 @@ description: v1.1 → v1.10.6 all shipped 2026-06-03/04. Next milestones land he
 - **v1.10.5 Daemon sidecar absolute paths** — daemon + CLI probe install roots, fixes launchd-spawn cwd
 - **v1.10.6 XTTS quality tuning** — temperature/top_k/top_p/repetition_penalty env knobs; longer reference window for speaker latents
 
-See the [Changelog](/changelog/) for measurements + honest scope per version. The next slate (v1.11+) is unscheduled.
+See the [Changelog](/agent-tts/changelog/) for measurements + honest scope per version. The next slate (v1.11+) is unscheduled.
 
 Vote, watch, or send a PR at [biliboss/agent-tts](https://github.com/biliboss/agent-tts).
 
@@ -33,4 +33,4 @@ The next milestone is the one with the loudest signal.
 - ⭐ Star the repo — repo traffic guides priority
 - 🛠 Send a PR — the changelog will name you
 
-See also: [Roadmap](/roadmap/), [Changelog](/changelog/), [TTS engine](/motor/), [MCP server](/mcp/), [Playground](/playground/), [Menubar UI](/menubar/).
+See also: [Roadmap](/agent-tts/roadmap/), [Changelog](/agent-tts/changelog/), [TTS engine](/agent-tts/motor/), [MCP server](/agent-tts/mcp/), [Playground](/agent-tts/playground/), [Menubar UI](/agent-tts/menubar/).

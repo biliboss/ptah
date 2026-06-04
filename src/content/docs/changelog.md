@@ -815,7 +815,7 @@ The "queue survives daemon crash" criterion holds: killing daemon + `say` mid-ut
 
 ## Benchmark interlude · 2026-06-03
 
-Before coding v0.3, I spent a session benchmarking alternative engines to fix Pt+En code-switching. Conclusions in [TTS engine](/motor/). Summary:
+Before coding v0.3, I spent a session benchmarking alternative engines to fix Pt+En code-switching. Conclusions in [TTS engine](/agent-tts/motor/). Summary:
 
 - Piper Faber via Python — Pt-only, rejected
 - XTTS-v2 multilingual via Python — 27s/call from the CLI, Python sidecar rejected by the "only Zig" constraint
