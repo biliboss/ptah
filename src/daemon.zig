@@ -78,15 +78,22 @@ pub fn run(arena: std.mem.Allocator, io: std.Io, home: []const u8) !void {
     }
     defer audio_player.deinit();
 
-    // ONNX thread-pool knobs (single-threaded optimal for Kokoro VITS on Apple Silicon).
+    // ONNX threading: use the machine's cores. kokoro.zig calls
+    // SetIntraOpNumThreads(0) so ORT picks the physical-core count. We do NOT
+    // force single-thread anymore (that was a piper-era knob) — Kokoro VITS
+    // synth is the TTFA bottleneck and wants the cores. Honor an explicit
+    // PTAH_ORT_THREADS override if set, otherwise leave OMP/ORT at ORT default.
     {
         const cenv = @cImport({
             @cInclude("stdlib.h");
         });
-        _ = cenv.setenv("OMP_NUM_THREADS", "1", 0);
-        _ = cenv.setenv("ORT_NUM_THREADS", "1", 0);
-        _ = cenv.setenv("OMP_THREAD_LIMIT", "1", 0);
-        dlog.info("onnx env: OMP_NUM_THREADS=1 ORT_NUM_THREADS=1 OMP_THREAD_LIMIT=1", .{});
+        if (cenv.getenv("PTAH_ORT_THREADS")) |n| {
+            _ = cenv.setenv("OMP_NUM_THREADS", n, 1);
+            _ = cenv.setenv("ORT_NUM_THREADS", n, 1);
+            dlog.info("onnx threading: PTAH_ORT_THREADS={s}", .{std.mem.span(n)});
+        } else {
+            dlog.info("onnx threading: multi-thread (ORT auto intra-op)", .{});
+        }
     }
 
     // Speed from env (overridable per-call later via --speed flag when wired).
