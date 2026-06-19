@@ -38,3 +38,9 @@ vendor/onnxruntime/
 # stray probe test binary + probe wav
 test_ort
 /tmp/kokoro_probe.wav
+assets/brand/preview*.png
+assets/brand/_*.png
+assets/brand/icon-tl.png
+assets/brand/ptah-logo-v2.png
+assets/brand/ptah-logo-gemini-v1.png
+assets/brand/ptah-icon-transparent.png
