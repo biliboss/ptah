@@ -1,0 +1,33 @@
+/* Ptah brand tokens — extracted from the logo (assets/brand/ptah-logo-v2-clean.png).
+ * Palette: lapis blue + gold leaf on charcoal. Import into the Starlight docsite
+ * (astro.config → customCss) for the rebrand (#12).
+ *
+ * Contrast (WCAG AA, from the SEO study): use lapis as an ACCENT, not body text
+ * on dark — lapis #244794 on charcoal is ~3.8:1 (fails AA for normal text).
+ * Gold #D4AA44 on charcoal passes AA+AAA. Body text on dark = white/off-white.
+ */
+:root {
+  /* core palette */
+  --ptah-lapis: #244794;        /* deep lapis — accent / primary on light */
+  --ptah-lapis-2: #4e669e;      /* lighter lapis — secondary */
+  --ptah-gold: #d4aa44;         /* gold leaf — accent, AA-safe on charcoal */
+  --ptah-charcoal: #11151c;     /* deep charcoal — dark bg */
+  --ptah-ink: #f4f6fb;          /* off-white — body text on dark (AA) */
+
+  /* semantic */
+  --ptah-accent: var(--ptah-gold);
+  --ptah-bg-dark: var(--ptah-charcoal);
+  --ptah-text-on-dark: var(--ptah-ink);
+  --ptah-link: var(--ptah-gold);          /* gold links on charcoal pass AA */
+  --ptah-link-on-light: var(--ptah-lapis); /* lapis on white ~7.5:1 — AAA */
+}
+
+/* Starlight accent hooks (used when wired in #12) */
+:root[data-theme="dark"] {
+  --sl-color-accent: var(--ptah-gold);
+  --sl-color-accent-high: var(--ptah-ink);
+  --sl-color-bg: var(--ptah-charcoal);
+}
+:root[data-theme="light"] {
+  --sl-color-accent: var(--ptah-lapis);
+}
