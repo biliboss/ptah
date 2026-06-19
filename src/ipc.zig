@@ -129,12 +129,12 @@ pub const Message = struct {
     sentence_pause_ms: u32 = 0,
     newline_pause_ms: u32 = 0,
     /// v1.10.8 — Piper multi-speaker selector. `-1` means "use voice
-    /// config default". Single-speaker voices (Faber) ignore this.
+    /// config default". Single-speaker voices (Dora) ignore this.
     speaker_id: i32 = -1,
     /// v1.10.10 — opt-in audio post-processing chain. `.off` means the
     /// daemon plays the synth PCM unchanged. The other variants route
     /// the PCM through an ffmpeg subprocess (RNNoise + EQ + de-esser +
-    /// compressor) before the zaudio device pump. See `postfx.zig`.
+    /// compressor) before the afplay device pump. See `postfx.zig`.
     postfx: Postfx = .off,
     text: []const u8,
 };
@@ -893,7 +893,7 @@ test "v1.10.7 parseRequest 8-field ENQUEUE with all 3 knobs set" {
     defer arena.deinit();
     const req = try parseRequest(
         arena.allocator(),
-        "ENQUEUE\tkokoro\tpt\tpf_dora\t330\t0\t1.05:0.8:1\tOlá warm Faber.",
+        "ENQUEUE\tkokoro\tpt\tpf_dora\t330\t0\t1.05:0.8:1\tOlá warm Dora.",
     );
     try std.testing.expectEqual(Engine.kokoro, req.enqueue.engine);
     try std.testing.expectEqual(Lang.pt, req.enqueue.lang);
@@ -903,7 +903,7 @@ test "v1.10.7 parseRequest 8-field ENQUEUE with all 3 knobs set" {
     try std.testing.expectApproxEqAbs(@as(f32, 1.05), req.enqueue.length_scale, 0.0001);
     try std.testing.expectApproxEqAbs(@as(f32, 0.8), req.enqueue.noise_scale, 0.0001);
     try std.testing.expectApproxEqAbs(@as(f32, 1.0), req.enqueue.noise_w, 0.0001);
-    try std.testing.expectEqualStrings("Olá warm Faber.", req.enqueue.text);
+    try std.testing.expectEqualStrings("Olá warm Dora.", req.enqueue.text);
 }
 
 test "v1.10.7 parseRequest 8-field ENQUEUE with empty tune triplet means defaults" {
@@ -1116,12 +1116,12 @@ test "v1.10.8 backward-compat: v1.10.7 8-field still parses" {
     defer arena.deinit();
     const req = try parseRequest(
         arena.allocator(),
-        "ENQUEUE\tpiper\tpt\tfaber\t330\t0\t1.05:0.8:1\tOlá warm Faber.",
+        "ENQUEUE\tpiper\tpt\tfaber\t330\t0\t1.05:0.8:1\tOlá warm Dora.",
     );
     try std.testing.expectApproxEqAbs(@as(f32, 1.05), req.enqueue.length_scale, 0.001);
     try std.testing.expectEqual(false, req.enqueue.tech);
     try std.testing.expectEqual(@as(i32, -1), req.enqueue.speaker_id);
-    try std.testing.expectEqualStrings("Olá warm Faber.", req.enqueue.text);
+    try std.testing.expectEqualStrings("Olá warm Dora.", req.enqueue.text);
 }
 
 test "v1.10.7 backward-compat: v1.8 7-field still parses with knobs at sentinels" {

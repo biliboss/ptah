@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-// AudioPlayer — afplay-only stub (zaudio/miniaudio dropped, v0.7+ → Ptah).
+// AudioPlayer — afplay-only stub (no audio-library dependency, v0.7+ → Ptah).
 //
 // Ptah ships a single engine (Kokoro Dora) which synthesises a whole utterance
 // at once. We play it with macOS-native `afplay` (write s16le → temp WAV →
 // spawn afplay) from the daemon's `playViaAfplay`. That keeps the binary
-// dependency-free (no vendored ~100k-LoC miniaudio) — Gabriel's "zero peso".
+// dependency-free (no vendored audio library) — Gabriel's "zero peso".
 //
 // This type stays as a thin, always-not-ready shim so the daemon's existing
 // `if (audio_player.ready) <stream> else <afplay>` branch always takes the
@@ -43,7 +43,7 @@ pub const AudioPlayer = struct {
     /// Always returns a not-ready player; the daemon uses afplay.
     pub fn init(allocator: std.mem.Allocator) AudioPlayer {
         _ = allocator;
-        alog.info("audio: afplay-only player (zaudio dropped — zero vendor weight)", .{});
+        alog.info("audio: afplay-only player (no audio-lib dep — zero vendor weight)", .{});
         return .{ .ready = false };
     }
 

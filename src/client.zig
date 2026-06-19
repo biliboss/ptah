@@ -28,7 +28,7 @@ pub const QueueItem = struct {
 };
 
 const HELP =
-    \\ptah — multilingual TTS via macOS `say` or libpiper (v1.1+)
+    \\ptah — multilingual TTS via macOS `say` or Kokoro (v1.1+)
     \\
     \\Usage:
     \\  ptah "texto"                enqueue text on the running daemon
@@ -70,7 +70,7 @@ const HELP =
     \\                       expressive   --tech + length=1.00 + noise=0.85
     \\                                    + noise_w=1.10 + sent=500 + comma=160.
     \\  --postfx P          v1.10.10: ffmpeg post-processing chain applied to
-    \\                       the synth PCM before zaudio playback. Requires
+    \\                       the synth PCM before afplay playback. Requires
     \\                       ffmpeg on PATH (or PTAH_FFMPEG_PATH).
     \\                       off          no-op (default).
     \\                       clean        highpass 80 Hz + 2:1 compressor.

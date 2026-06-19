@@ -973,7 +973,7 @@ const TECH_GLOSSARY = [_]TechEntry{
     .{ .src = "Cursor", .dst = "Cursor" },
     .{ .src = "Cline", .dst = "Cline" },
     .{ .src = "Piper", .dst = "Piper" },
-    .{ .src = "Faber", .dst = "Faber" },
+    .{ .src = "Dora", .dst = "Dora" },
     .{ .src = "NATS", .dst = "nats" },
     .{ .src = "Zsh", .dst = "zi shell" },
 

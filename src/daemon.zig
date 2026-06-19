@@ -209,7 +209,7 @@ fn runOne(res: *Resources, io: std.Io, gpa: std.mem.Allocator, item: queue_mod.P
 }
 
 /// Play samples through the postfx chain (when postfx != .off) then onto
-/// the device. Falls back to afplay when zaudio is unavailable.
+/// the device. Falls back to afplay when afplay is unavailable.
 fn playWithPostfx(
     res: *Resources,
     io: std.Io,
@@ -241,7 +241,7 @@ fn playWithPostfx(
         else
             res.audio_player.streamS16le(processed, sample_rate);
         play_res catch |e| {
-            wlog.warn("zaudio play failed: {s} — falling back to afplay", .{@errorName(e)});
+            wlog.warn("afplay play failed: {s} — falling back to afplay", .{@errorName(e)});
             try playViaAfplay(io, sa, processed, sample_rate);
         };
     } else {

@@ -3,7 +3,7 @@
 //
 // Goal: take the i16 PCM the synth path produces and run it through an
 // ffmpeg filter chain (RNNoise + 4-band EQ + de-esser + 2:1 compressor)
-// before the zaudio engine pumps it to the device. Opt-in per call via
+// before afplay plays it to the device. Opt-in per call via
 // `Postfx` enum on the IPC message; the daemon worker calls `apply()`
 // after `piper.synth*` returns and before `audio_player.streamS16le*`.
 //

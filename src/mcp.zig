@@ -308,7 +308,7 @@ fn saySchema(a: std.mem.Allocator) !json.Value {
     });
     const speaker_id_prop = try obj(a, &.{
         .{ "type", str("integer") },
-        .{ "description", str("v1.10.8+: Piper multi-speaker integer index. -1 = use voice config default. Faber is single-speaker (ignored).") },
+        .{ "description", str("v1.10.8+: Piper multi-speaker integer index. -1 = use voice config default. Dora is single-speaker (ignored).") },
     });
     // v1.10.10 — ffmpeg post-fx selector.
     const postfx_enum = try arr(a, &.{ str("off"), str("clean"), str("tech"), str("broadcast") });
