@@ -897,7 +897,7 @@ test "v1.10.7 parseRequest 8-field ENQUEUE with all 3 knobs set" {
     );
     try std.testing.expectEqual(Engine.kokoro, req.enqueue.engine);
     try std.testing.expectEqual(Lang.pt, req.enqueue.lang);
-    try std.testing.expectEqualStrings("faber", req.enqueue.voice);
+    try std.testing.expectEqualStrings("pf_dora", req.enqueue.voice);
     try std.testing.expectEqual(@as(u32, 330), req.enqueue.rate);
     try std.testing.expectEqual(false, req.enqueue.ssml);
     try std.testing.expectApproxEqAbs(@as(f32, 1.05), req.enqueue.length_scale, 0.0001);
