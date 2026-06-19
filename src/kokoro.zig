@@ -340,14 +340,17 @@ pub const KokoroEngine = struct {
 
         // espeak_TextToPhonemes may split at punctuation boundaries (e.g. commas).
         // Join chunks with a space so "olˈa" + "eʊ..." → "olˈa eʊ..." (matches Python oracle).
+        const text_base = @intFromPtr(text_z.ptr);
         var textptr: ?*const anyopaque = @ptrCast(text_z.ptr);
         var first_chunk = true;
         while (textptr != null) {
+            const start_off = @intFromPtr(textptr.?) - text_base;
             const phoneme_cstr = esp.espeak_TextToPhonemes(
                 @ptrCast(&textptr),
                 1, // UTF-8
                 0x02, // IPA mode
             );
+            const end_off = if (textptr) |tp| @intFromPtr(tp) - text_base else text_z.len;
             if (phoneme_cstr) |p| {
                 const phoneme_slice = std.mem.sliceTo(p, 0);
                 if (phoneme_slice.len == 0) continue;
@@ -358,6 +361,20 @@ pub const KokoroEngine = struct {
                 }
                 try ipa_buf.appendSlice(out_allocator, phoneme_slice);
                 first_chunk = false;
+                // espeak consumes the clause terminator (,.!?;:) as a split
+                // boundary and drops it from the IPA. Python's phonemizer keeps
+                // it (preserve_punctuation) → tokenizes to a pause/intonation id.
+                // Re-insert it by scanning the consumed source span backwards.
+                const hi = @min(end_off, text_z.len);
+                var pi = hi;
+                while (pi > start_off) {
+                    pi -= 1;
+                    const b = text_z[pi];
+                    if (b == ';' or b == ':' or b == ',' or b == '.' or b == '!' or b == '?') {
+                        try ipa_buf.append(out_allocator, b);
+                        break;
+                    }
+                }
             }
         }
 

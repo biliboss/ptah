@@ -34,3 +34,7 @@ assets/kokoro-v1.0.onnx
 
 # onnxruntime runtime dep (~30MB) — fetch via scripts/fetch-deps.sh
 vendor/onnxruntime/
+
+# stray probe test binary + probe wav
+test_ort
+/tmp/kokoro_probe.wav
