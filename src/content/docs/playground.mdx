@@ -16,11 +16,11 @@ head:
 
 ## TL;DR
 
-Press a button, hear a voice — no install. v1.10.1 ships the **playground UI scaffold**: voice dropdown, text input, Speak button, audio element wired to the Web Audio API. The synth backend (libpiper compiled to WebAssembly + ONNX Runtime Web) is **deferred indefinitely** — the runtime stack (CLI / MCP / menubar floating player / `tech_profile_search` 4×2 matrix) covers Gabriel's needs, and shipping the WASM build means a multi-day commit to an Emscripten + ONNX Runtime Web pipeline that doesn't move the needle on production usage.
+Press a button, hear a voice — no install. v1.10.1 ships the **playground UI scaffold**: voice dropdown, text input, Speak button, audio element wired to the Web Audio API. The synth backend (Kokoro compiled to WebAssembly + ONNX Runtime Web) is **deferred indefinitely** — the runtime stack (CLI / MCP / menubar floating player / `tech_profile_search` 4×2 matrix) covers Gabriel's needs, and shipping the WASM build means a multi-day commit to an Emscripten + ONNX Runtime Web pipeline that doesn't move the needle on production usage.
 
 The page is **unchanged from v1.10.1 through v1.10.13**. Today the Speak button POSTs to a stub endpoint that returns a sentinel marker the widget reads as "WASM build pending". The UX is real; the audio is not. The point is to lock the interaction shape so the heavy lift is a pure backend swap **if and when** the runtime needs a web surface.
 
-> **For real audio comparison, use `tech_profile_search`.** The production A/B loop is the MCP `tech_profile_search` tool — one MCP round-trip enqueues the curated 4-knob × 2-postfx matrix through the local daemon's actual Faber piper + ffmpeg post-fx, on your real audio hardware. See [MCP server → `tech_profile_search`](/ptah/mcp/#v1109--v11010--tech_profile_search-42-matrix). The playground exists to lock the eventual browser-surface UX, not to replace the production discovery loop.
+> **For real audio comparison, use `tech_profile_search`.** The production A/B loop is the MCP `tech_profile_search` tool — one MCP round-trip enqueues the curated 4-knob × 2-postfx matrix through the local daemon's actual Dora piper + ffmpeg post-fx, on your real audio hardware. See [MCP server → `tech_profile_search`](/ptah/mcp/#v1109--v11010--tech_profile_search-42-matrix). The playground exists to lock the eventual browser-surface UX, not to replace the production discovery loop.
 
 ## Try it
 
@@ -28,7 +28,7 @@ The page is **unchanged from v1.10.1 through v1.10.13**. Today the Speak button 
   <label>
     Voice
     <select data-role="voice">
-      <option value="faber">Faber — Pt-BR neural (Piper default)</option>
+      <option value="pf_dora">Dora — Pt-BR neural (Piper default)</option>
       <option value="luciana">Dora — Pt-BR macOS `say` fallback</option>
       <option value="felipe">Felipe — Pt-BR macOS `say` alternate</option>
       <option value="amy">Amy — En-US Piper</option>
@@ -55,7 +55,7 @@ The page is **unchanged from v1.10.1 through v1.10.13**. Today the Speak button 
 | Stylesheet | External `public/playground/widget.css` referenced via `head` frontmatter `<link rel="stylesheet">` |
 | Script | External `public/playground/widget.js` referenced via `head` frontmatter `<script defer>` |
 | Endpoint | `public/api/synth.html` — static sentinel `{"status":501,"error":"not_implemented"}`; widget probes `/api/synth` first, falls back to `.html` on 404 |
-| Voice catalog | Hardcoded 4 entries (Faber, Dora, Felipe, Amy) |
+| Voice catalog | Hardcoded 4 entries (Dora, Dora, Felipe, Amy) |
 | Playback | Web Audio API context created on first click; `<audio>` element shown for replay |
 | Cold latency | n/a (no synth) |
 
@@ -67,8 +67,8 @@ The widget treats the static HTML body as a 501 sentinel so the page builds clea
 
 - **No audio is produced.** Every Speak click ends in "501 — WASM build pending". This is intentional. The page locks the interaction surface; the backend swap is deferred indefinitely.
 - **WASM synth is deferred indefinitely — no ETA.** v1.10.1's TL;DR predicted "v1.10.2"; that prediction did not come true and is retracted. The runtime stack (CLI + MCP + menubar floating player + `tech_profile_search` 4×2 matrix) covers Gabriel's actual usage. Re-prioritize when there's a concrete need for a web surface that the native runtime can't serve.
-- **Voice list is informational.** The dropdown does not gate the request — selecting "Faber" sends `voice: "faber"` to the stub, the stub ignores it.
-- **No WASM compile yet.** Building libpiper for `wasm32-emscripten`, shipping the ONNX Runtime Web variant, and wiring them through `zig build` remains the original heavy-lift estimate.
+- **Voice list is informational.** The dropdown does not gate the request — selecting "Dora" sends `voice: "pf_dora"` to the stub, the stub ignores it.
+- **No WASM compile yet.** Building Kokoro for `wasm32-emscripten`, shipping the ONNX Runtime Web variant, and wiring them through `zig build` remains the original heavy-lift estimate.
 - **No CDN model hosting.** The eventual web path would publish the four ONNX models on Cloudflare R2 and lazy-load on first click.
 - **Browser support matrix not measured.** The widget assumes `AudioContext`, `fetch`, `URL.createObjectURL`, and `ArrayBuffer` — all baseline 2020. No polyfills.
 
@@ -76,7 +76,7 @@ The widget treats the static HTML body as a 501 sentinel so the page builds clea
 
 `scripts/build-wasm.sh` is an executable readme. It documents the four steps the WASM backend would need:
 
-1. Build libpiper for `wasm32-emscripten` via Emscripten SDK (`emcmake cmake … && emmake make`).
+1. Build Kokoro for `wasm32-emscripten` via Emscripten SDK (`emcmake cmake … && emmake make`).
 2. Ship the ONNX Runtime Web variant (`onnxruntime-web`) — the JS package, not the native `.dylib`.
 3. Link the bundle via `zig build -Dtarget=wasm32-emscripten -Dwith-piper-wasm=true`.
 4. Copy `zig-out/bin/ptah.wasm` + the ONNX runtime JS shim into `public/wasm/`.

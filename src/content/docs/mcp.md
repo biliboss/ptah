@@ -71,7 +71,7 @@ Each tool is a thin shim over the same UNIX socket the CLI uses. Tool-level erro
 | Profile | `length_scale` | `noise_scale` | `noise_w` | Intent |
 |---|---|---|---|---|
 | `tight-narrator` | 1.05 | 0.35 | 0.45 | v1.10.9 research-anchored default — recovers intelligibility on symbol-heavy strings without flattening prosody |
-| `stock-tech` | 0.95 | 0.667 | 0.85 | v1.10.8 default — Faber's stock recommendation, warmer + faster |
+| `stock-tech` | 0.95 | 0.667 | 0.85 | v1.10.8 default — Dora's stock recommendation, warmer + faster |
 | `broadcast` | 1.00 | 0.50 | 0.60 | balanced read for narrated release notes |
 | `expressive` | 1.10 | 0.80 | 1.00 | wider prosody range — better for marketing copy, worse for acronyms |
 
@@ -79,7 +79,7 @@ Each profile is enqueued **twice** — once dry (`postfx=off`) and once with the
 
 ### v1.10.10 — `postfx` on `say` and `synth_voice_test`
 
-Both tools accept an optional `postfx` enum routing the synth PCM through an ffmpeg subprocess before zaudio plays it. Values: `off` (default — dry path) / `clean` (highpass + light comp) / `tech` (RNNoise + EQ + de-esser + 2:1 comp) / `broadcast` (EQ + de-esser + 3:1 comp). ffmpeg must be on `PATH` (or at `$PTAH_FFMPEG_PATH`); when missing the chain falls back to dry PCM silently. RNNoise also needs a model at `$PTAH_POSTFX_RNNN_MODEL` or `~/.cache/ptah/rnnoise/cb.rnnn`.
+Both tools accept an optional `postfx` enum routing the synth PCM through an ffmpeg subprocess before afplay plays it. Values: `off` (default — dry path) / `clean` (highpass + light comp) / `tech` (RNNoise + EQ + de-esser + 2:1 comp) / `broadcast` (EQ + de-esser + 3:1 comp). ffmpeg must be on `PATH` (or at `$PTAH_FFMPEG_PATH`); when missing the chain falls back to dry PCM silently. RNNoise also needs a model at `$PTAH_POSTFX_RNNN_MODEL` or `~/.cache/ptah/rnnoise/cb.rnnn`.
 
 > v1.10.13 fixed a postfx two-pipe deadlock — the stdin write and stdout drain now run concurrently with a 5-second watchdog (`PTAH_POSTFX_TIMEOUT_MS`). Postfx calls are safe to drive at queue depth ≥10 again.
 
@@ -105,7 +105,7 @@ Five more optional params land on `say` + `synth_voice_test`:
 | `comma_pause_ms` | 0 – 5000 | Override `[[slnc N]]` after `,` (default 150). 0 = use default. |
 | `sentence_pause_ms` | 0 – 5000 | Override `[[slnc N]]` after .!? (default 400). Tech profile uses 500. |
 | `newline_pause_ms` | 0 – 5000 | Override `[[slnc N]]` after newline (default 600). |
-| `speaker_id` | -1 – 1000 | Piper multi-speaker integer. -1 = voice default. Faber is single-speaker. |
+| `speaker_id` | -1 – 1000 | Piper multi-speaker integer. -1 = voice default. Dora is single-speaker. |
 
 The **`voice_knob_search`** tool lets an agent scan an N-variant knob hyperplane in **one MCP round-trip** instead of N sequential `tools/call`s. Each variant carries any subset of the per-call knobs plus a free-form `comment`. Cap: 16 variants.
 
@@ -160,14 +160,14 @@ Sample:
 
 ```json
 → {"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"queue","arguments":{}}}
-← {"jsonrpc":"2.0","id":4,"result":{"content":[{"type":"text","text":"{\"items\":[{\"id\":\"42\",\"state\":\"playing\",\"engine\":\"piper\",\"voice\":\"faber\",\"rate\":\"330\",\"text\":\"Deploy concluído\"}]}"}],"isError":false}}
+← {"jsonrpc":"2.0","id":4,"result":{"content":[{"type":"text","text":"{\"items\":[{\"id\":\"42\",\"state\":\"playing\",\"engine\":\"piper\",\"voice\":\"pf_dora\",\"rate\":\"330\",\"text\":\"Deploy concluído\"}]}"}],"isError":false}}
 ```
 
 `tools/call → voices`:
 
 ```json
 → {"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"voices","arguments":{}}}
-← {"jsonrpc":"2.0","id":5,"result":{"content":[{"type":"text","text":"{\"voices\":[{\"engine\":\"say\",\"name\":\"Dora\",...},{\"engine\":\"piper\",\"name\":\"pt_BR-faber-medium\",...}]}"}],"isError":false}}
+← {"jsonrpc":"2.0","id":5,"result":{"content":[{"type":"text","text":"{\"voices\":[{\"engine\":\"say\",\"name\":\"Dora\",...},{\"engine\":\"piper\",\"name\":\"pf_dora\",...}]}"}],"isError":false}}
 ```
 
 Tool error path — daemon not running:

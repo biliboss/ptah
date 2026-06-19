@@ -5,7 +5,7 @@ description: v0.1 → v1.10.13 shipped 2026-06-03 / 04. Motor atual = Kokoro Dor
 
 ## TL;DR
 
-v0.1 → v1.10.13 shipped on **2026-06-03 / 04**, behind one KPI. Eighteen base milestones plus thirteen v1.10.x patches — every row measured. Universal binary, brew tap, launchd + systemd auto-start, multilingual code-switch, sentence streaming, Linux/Windows code paths, stdio JSON-RPC MCP server, tech-report mode, audio post-fx, and structured logging — all landed. Motor migrado de libpiper para **Kokoro Dora** (ONNX nativo).
+v0.1 → v1.10.13 shipped on **2026-06-03 / 04**, behind one KPI. Eighteen base milestones plus thirteen v1.10.x patches — every row measured. Universal binary, brew tap, launchd + systemd auto-start, multilingual code-switch, sentence streaming, Linux/Windows code paths, stdio JSON-RPC MCP server, tech-report mode, audio post-fx, and structured logging — all landed. Motor migrado de Kokoro para **Kokoro Dora** (ONNX nativo).
 
 The next slate (v1.11+) is unscheduled; see [What's next](/ptah/whats-next/).
 
@@ -20,7 +20,7 @@ Every milestone has a published baseline in [`_qa/`](https://github.com/biliboss
 | **v0.3** | SQLite WAL queue + `queue` / `skip` / `clear` | survives `kill -9`, 476 KB | 2026-06-03 |
 | **v0.4** | launchd `daemon install \| uninstall \| status` | 10 ms install round-trip | 2026-06-03 |
 | **v0.5** | Pt-BR preprocessor (cardinals, abbreviations, pauses) | 2-5 µs / msg, 26 unit tests | 2026-06-03 |
-| **v0.6** | libpiper FFI baseline (superseded by Kokoro) | piper init 400 ms, synth + WAV 100 ms warm | 2026-06-03 |
+| **v0.6** | Kokoro FFI baseline (superseded by Kokoro) | piper init 400 ms, synth + WAV 100 ms warm | 2026-06-03 |
 | **v0.7** | PCM streaming + `--engine say\|piper` routing (piper → Kokoro later) | piper synth warm **91 ms** | 2026-06-03 |
 | **v1.0** | Universal binary + brew formula + GitHub Pages docs | universal 1.8 MB, host 918 KB | 2026-06-03 |
 | **v1.1** | Multilingual: detect.zig + `--lang` + En Piper voice | 64/64 tests, host 897 KB, multi-piper boot 313 ms (Pt only) | 2026-06-03 |
@@ -42,7 +42,7 @@ Every milestone has a published baseline in [`_qa/`](https://github.com/biliboss
 | **v1.10.7** | Per-call Piper knobs (`--length-scale` / `--noise-scale` / `--noise-w`) + MCP | 8-field ENQUEUE with tune triplet; 3 new SQLite REAL columns; 11 MCP tools (added `synth_voice_test`) | 2026-06-04 |
 | **v1.10.8** | Tech-report mode + max knob exposure (`--tech` / `--*-pause` / `--speaker-id` / `--profile tech`) + `voice_knob_search` MCP tool | 9-field ENQUEUE with extra quintuple; 5 new SQLite columns; 12 MCP tools; ~50-entry acronym/unit glossary | 2026-06-04 |
 | **v1.10.9** | Research-informed tech profile (`--profile tech` = length 1.05 / noise 0.35 / noise_w 0.45) + glossary +30 entries + CamelCase splitter + version/hash/URL/path/hex normalizer + `tech_profile_search` MCP tool | 13 MCP tools; ~80-entry glossary; 307/307 tests; daemon log `length_scale=1.050 noise_scale=0.350 noise_w=0.450 tech=true` | 2026-06-04 |
-| **v1.10.11** | ONNX session + miniaudio quality knobs — single-threaded ORT via env (`OMP_NUM_THREADS=1` + `ORT_NUM_THREADS=1` + `OMP_THREAD_LIMIT=1` because libpiper@v1.4.2 exposes no `OrtSessionOptions` hook), miniaudio `pitch_resampling.linear.lpf_order=8` (was 0), engine master `setGainDb(-3.0)` for -3 dBFS headroom; 3 new env knobs (`PTAH_AUDIO_DITHER` / `_LPF_ORDER` / `_HEADROOM_DB`); dither is no-op today (engine doesn't expose `dither_mode`, documented) | tests green; daemon log `[audio] v1.10.11 quality knobs: lpf_order=8 headroom_db=-3.0 dither=triangle` + `[daemon] v1.10.11 onnx env: ...` | 2026-06-04 |
+| **v1.10.11** | ONNX session + afplay quality knobs — single-threaded ORT via env (`OMP_NUM_THREADS=1` + `ORT_NUM_THREADS=1` + `OMP_THREAD_LIMIT=1` because Kokoro@v1.4.2 exposes no `OrtSessionOptions` hook), afplay `pitch_resampling.linear.lpf_order=8` (was 0), engine master `setGainDb(-3.0)` for -3 dBFS headroom; 3 new env knobs (`PTAH_AUDIO_DITHER` / `_LPF_ORDER` / `_HEADROOM_DB`); dither is no-op today (engine doesn't expose `dither_mode`, documented) | tests green; daemon log `[audio] v1.10.11 quality knobs: lpf_order=8 headroom_db=-3.0 dither=triangle` + `[daemon] v1.10.11 onnx env: ...` | 2026-06-04 |
 | **v1.10.10** | Audio post-fx pipeline (ffmpeg RNNoise + 4-band EQ + de-esser + 2:1 comp) + locked-in tight-narrator as `--profile tech` default + 3 more profiles (stock-tech / broadcast / expressive) + `tech_profile_search` doubled to 4×2 = 8 matrix | new `postfx.zig` module; 10-field ENQUEUE with optional postfx tag; `postfx TEXT` column; daemon log `postfx=tech postfx_ms=63.5`; live A/B id=190 (off) vs id=191 (tech) | 2026-06-04 |
 | **v1.10.12** | SSML `<phoneme alphabet="ipa" ph="…">` + `<sub alias="…">` for IPA passthrough and code-identifier substitution. `applyCadenceTricks` with list-end pitch drop on 3+-item enumerations, bullet-point lift on `-`/`*`/`•` lines, breathing splice every 2-3 sentences when `PTAH_BREATH_WAV` is set. `--cadence` CLI flag + `cadence` MCP arg | 10-field wire format with cadence flag; `cadence` SQLite column + migration; piper SSML walker emits `[[ipa]]` brackets to espeak-ng | 2026-06-04 |
 | **v1.10.13** | Structured logging foundation (`std.log.scoped` + custom `logFn` writing ISO 8601 lines to stderr + rotating `~/.cache/ptah/daemon.log`) + diagnosed v1.10.12 stall (postfx ffmpeg pipe-buffer deadlock when PCM > 64 KiB; `writeStreamingAll` blocked while ffmpeg blocked on its own full output pipe) + concurrent stdout drain thread + watchdog (`PTAH_POSTFX_TIMEOUT_MS` default 5000 ms, `SIGTERM` + 1 s grace + `SIGKILL`) + `workerLoop` defer-finishPlaying (queue advances even on synth/postfx error escape) + 10 s debug heartbeat | new `log.zig` (~430 LOC + 4 unit tests); 4 runtime env knobs (`PTAH_LOG_PATH`/`_LEVEL`/`_SCOPES`/`_MAX_BYTES`); 3 rotation backups; live-validated: 5-item concurrent enqueue drained sequentially, hung-ffmpeg watchdog fired at exactly 2000 ms, scope/level filters honored | 2026-06-04 |
@@ -57,8 +57,8 @@ Every milestone was measured against **time-to-first-audio (TTFA)**.
 | Piper warm synth (short) | < 1 s | **91 ms** ✅ (v0.7), 92.7 ms re-measured at v1.1 ✅ |
 | Piper first-audio (long, v1.2) | < 200 ms | **41-52 ms** ✅ |
 | Inter-chunk gap (v1.2) | < 10 ms | **0.02 ms median, 0.61 ms max** ✅ |
-| Cold daemon boot | < 800 ms | pre-warm 280 ms + zaudio 79 ms + piper 373 ms = ~720 ms ✅ |
-| Multi-piper boot (Pt only) | < 800 ms | pre-warm 255 ms + zaudio 54 ms + multi-piper 313 ms = ~622 ms ✅ |
+| Cold daemon boot | < 800 ms | pre-warm 280 ms + afplay 79 ms + piper 373 ms = ~720 ms ✅ |
+| Multi-piper boot (Pt only) | < 800 ms | pre-warm 255 ms + afplay 54 ms + multi-piper 313 ms = ~622 ms ✅ |
 | Lang detect per message | < 100 µs | informational, not captured this session |
 | Post-fx per chunk (v1.10.10, `--postfx tech`) | < 100 ms warm | cold ~150 ms (ffmpeg spawn + RNNoise load), warm chunks ~53–70 ms ✅ |
 | Post-fx watchdog kill (v1.10.13, `PTAH_POSTFX_TIMEOUT_MS=2000`) | hard-stop at deadline | killed hung ffmpeg at exactly 2000 ms; dry PCM played ✅ |
@@ -106,7 +106,7 @@ Build deps add `libasound2-dev libsqlite3-dev` if you compile yourself.
 Piper engine requires the vendor build (macOS + Linux; Windows untested):
 
 ```bash
-./scripts/build-libpiper.sh
+./scripts/build-Kokoro.sh
 ./scripts/fetch-voice.sh
 zig build -Doptimize=ReleaseFast -Dwith-piper=true
 ```

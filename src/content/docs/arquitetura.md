@@ -77,7 +77,7 @@ The `worker` thread also emits a `debug`-level heartbeat (`worker heartbeat queu
 
 **Worker resilience (v1.10.13).** `workerLoop` now wraps `runOne` with `defer res.queue.finishPlaying(io, item.id)`. Every `runOne` path is supposed to call `finishPlaying` itself, but the v1.10.12 audit found error escapes (OutOfMemory on SSML cadence prep, panics inside the SSML walker, postfx returns to a closed pipe) that could leave the row stuck in `playing`. The `defer` is idempotent over `state='playing'`, so the well-behaved paths that already called it are unaffected — the defer only fires when the explicit call was skipped due to an error escape. Combined with the postfx watchdog, a single bad item can no longer wedge the queue.
 
-The synth side does NOT yet have a similar watchdog. The v1.10.13 spec asked for a 20 s soft-warn + 60 s hard-fail around piper inference, but libpiper exposes no `piper_cancel()` C ABI — a hard fail would leak the synth thread. The diagnosed v1.10.12 stall was postfx, not synth, so the defer + watchdog combo above closes the actual hole. An `PTAH_SYNTH_TIMEOUT_MS` knob is pencilled in for v1.10.14+ if a real synth hang ever shows up in production.
+The synth side does NOT yet have a similar watchdog. The v1.10.13 spec asked for a 20 s soft-warn + 60 s hard-fail around piper inference, but Kokoro exposes no `piper_cancel()` C ABI — a hard fail would leak the synth thread. The diagnosed v1.10.12 stall was postfx, not synth, so the defer + watchdog combo above closes the actual hole. An `PTAH_SYNTH_TIMEOUT_MS` knob is pencilled in for v1.10.14+ if a real synth hang ever shows up in production.
 
 ## Components
 
@@ -233,7 +233,7 @@ Vendor: ONNX Runtime (MIT, `vendor/onnxruntime/`). espeak-ng linked via Homebrew
 
 ### Post-fx pipeline (v1.10.10+)
 
-A fourth box sits between piper's PCM and zaudio: an opt-in ffmpeg subprocess that runs the research-anchored RNNoise + 4-band EQ + de-esser + 2:1 compressor chain. Wiring:
+A fourth box sits between piper's PCM and afplay: an opt-in ffmpeg subprocess that runs the research-anchored RNNoise + 4-band EQ + de-esser + 2:1 compressor chain. Wiring:
 
 ```
 kokoro.synth  ──► postfx.apply (ffmpeg subprocess)  ──► AudioPlayer.streamS16leAppend
