@@ -195,6 +195,65 @@ pub fn build(b: *std.Build) void {
     // Build vendor/piper1-gpl/libpiper first, then pass -Dwith-piper=true.
     const with_piper = b.option(bool, "with-piper", "Link libpiper FFI (requires vendor build, see vendor/README.md)") orelse false;
 
+    // ── Kokoro native engine (ONNX Runtime C API + espeak-ng, no Python) ──
+    // -Dwith-kokoro=true (default true) links onnxruntime + espeak-ng and
+    // builds the kokoro-probe executable.  Requires:
+    //   vendor/onnxruntime/{include,lib}   (already present)
+    //   brew install espeak-ng
+    // Runtime: set DYLD_LIBRARY_PATH=vendor/onnxruntime/lib:/opt/homebrew/opt/espeak-ng/lib
+    // or use the rpath already wired in via addRPath below.
+    const with_kokoro = b.option(bool, "with-kokoro", "Build Kokoro native engine probe (ONNX + espeak-ng)") orelse true;
+
+    // Kokoro module (shared between probe and future daemon integration).
+    const kokoro_mod = if (with_kokoro) blk: {
+        const mod = b.addModule("kokoro", .{
+            .root_source_file = b.path("src/kokoro.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        });
+        // onnxruntime vendored headers + dylib
+        mod.addIncludePath(b.path("vendor/onnxruntime/include"));
+        mod.addLibraryPath(b.path("vendor/onnxruntime/lib"));
+        mod.linkSystemLibrary("onnxruntime", .{});
+        // espeak-ng (brew)
+        mod.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/espeak-ng/include" });
+        mod.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/espeak-ng/lib" });
+        mod.linkSystemLibrary("espeak-ng", .{});
+        break :blk mod;
+    } else null;
+
+    // kokoro-probe executable
+    if (with_kokoro) {
+        const probe_exe = b.addExecutable(.{
+            .name = "kokoro-probe",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/tools/kokoro_probe.zig"),
+                .target = target,
+                .optimize = optimize,
+                .link_libc = true,
+                .imports = &.{
+                    .{ .name = "kokoro", .module = kokoro_mod.? },
+                },
+            }),
+        });
+        // rpath: point at vendored onnxruntime dylib so probe runs without DYLD_LIBRARY_PATH
+        const ort_lib_abs = b.path("vendor/onnxruntime/lib").getPath(b);
+        probe_exe.root_module.addRPath(.{ .cwd_relative = ort_lib_abs });
+        // espeak-ng rpath (brew)
+        probe_exe.root_module.addRPath(.{ .cwd_relative = "/opt/homebrew/opt/espeak-ng/lib" });
+
+        // Install only the probe binary (not the full ptah install).
+        // This keeps `zig build kokoro-probe` independent of the main ptah exe,
+        // which may be missing vendor/zaudio on some setups.
+        const probe_install = b.addInstallArtifact(probe_exe, .{});
+
+        const run_probe = b.addRunArtifact(probe_exe);
+        run_probe.step.dependOn(&probe_install.step);
+        const probe_step = b.step("kokoro-probe", "Run Kokoro native engine probe (synth test phrase + afplay)");
+        probe_step.dependOn(&run_probe.step);
+    }
+
     const piper_opts = b.addOptions();
     piper_opts.addOption(bool, "enabled", with_piper);
 
