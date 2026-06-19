@@ -11,7 +11,9 @@ if [ -n "$staged_zig" ]; then
   fi
 fi
 
-added() { git diff --cached -- "$@" | grep -E '^\+' | grep -v '^\+\+\+'; }
+# Added lines only (BSD grep: '+' is literal in BRE — no backslash, which would
+# trip "repetition-operator operand invalid" and silently disable the guard).
+added() { git diff --cached -- "$@" | grep -E '^\+' | grep -v '^+++'; }
 
 # Guard: dropped engines must not return (Kokoro Dora is the sole engine).
 if added src/ build.zig | grep -qE 'PiperEngine|@import\("zaudio"\)|@import\("piper'; then
