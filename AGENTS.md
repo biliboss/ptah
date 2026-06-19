@@ -16,7 +16,7 @@ Source of truth for decisions, architecture, and roadmap. Audience: maintainers 
 src/content/docs/
   index.mdx       # Splash + KPI + constraints
   arquitetura.md  # CLI+daemon, IPC socket, SQLite queue, pacing
-  motor.md        # TTS comparison + why we picked say Premium Luciana
+  motor.md        # TTS comparison + why we picked say Premium Dora
   roadmap.md      # Milestones v0.1 → v1.0 + how we measure the KPI
 ```
 
@@ -94,7 +94,7 @@ Why random port + puma-dev:
 Locked summary (details on the pages):
 
 - **Language**: Zig 0.14+ (binary < 2MB, native Apple Silicon)
-- **TTS engine**: macOS `say` with the "Luciana (Premium)" voice
+- **TTS engine**: macOS `say` with the "Dora (Premium)" voice
 - **Architecture**: single binary, client mode + daemon mode
 - **IPC**: UNIX socket at `~/.cache/ptah/sock`
 - **Queue**: SQLite WAL at `~/.cache/ptah/queue.db`

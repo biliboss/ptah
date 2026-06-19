@@ -1,11 +1,11 @@
 ---
 title: Architecture
-description: Single Zig binary, CLI + daemon over UNIX socket, SQLite WAL queue, two interchangeable TTS engines (libpiper + macOS say).
+description: Single Zig binary, CLI + daemon over UNIX socket, SQLite WAL queue, single TTS engine (Kokoro Dora, ONNX nativo) + afplay playback.
 ---
 
 ## TL;DR
 
-Single Zig 0.16 binary. Three modes share one executable: client (default), daemon, and MCP server. The client sends a message over a UNIX socket. The daemon stores it in a SQLite WAL queue and drains serially. Each item is routed to one of two engines: **libpiper** (neural, default) or **macOS `say`** (fallback). Audio plays through **zaudio** (PCM streaming) for piper or directly through `say` for the system voice. Auto-start is handled by **launchd**. The MCP mode (v1.5+) bridges stdio JSON-RPC to the same UNIX socket so agent runners like Claude Code, Cursor, and Cline call the daemon without a shell.
+Single Zig 0.16 binary. Three modes share one executable: client (default), daemon, and MCP server. The client sends a message over a UNIX socket. The daemon stores it in a SQLite WAL queue and drains serially. The sole engine is **Kokoro** (ONNX nativo, voz **Dora** `pf_dora`). Audio plays through **afplay** (macOS nativo). Auto-start is handled by **launchd**. The MCP mode (v1.5+) bridges stdio JSON-RPC to the same UNIX socket so agent runners like Claude Code, Cursor, and Cline call the daemon without a shell.
 
 Every component exists to cut **time-to-first-audio (TTFA)**.
 
@@ -18,20 +18,19 @@ Every component exists to cut **time-to-first-audio (TTFA)**.
 └─────────────┘                   │  - SQLite WAL      │
                                   │  - worker thread   │
                                   └────────┬───────────┘
-                                           │ route by item.engine
-                              ┌────────────┴────────────┐
-                              ▼                         ▼
-                       ┌─────────────┐          ┌───────────────┐
-                       │  /usr/bin/  │          │   libpiper    │
-                       │    say      │          │  (PiperEngine)│
-                       │  -v Luciana │          │  → s16le PCM  │
-                       └─────────────┘          └──────┬────────┘
-                                                       │
-                                                       ▼
-                                                ┌──────────────┐
-                                                │    zaudio    │
-                                                │  (miniaudio) │
-                                                └──────────────┘
+                                           │ single engine
+                                           ▼
+                                  ┌────────────────────┐
+                                  │  KokoroEngine      │
+                                  │  (ONNX + espeak-ng)│
+                                  │  voz: pf_dora      │
+                                  │  → PCM 24000 Hz    │
+                                  └────────┬───────────┘
+                                           │
+                                           ▼
+                                  ┌────────────────────┐
+                                  │  afplay (macOS)    │
+                                  └────────────────────┘
 ```
 
 Filesystem layout:
@@ -40,7 +39,7 @@ Filesystem layout:
 ~/.cache/ptah/
   queue.db          SQLite WAL (items + state machine)
   sock              UNIX stream socket
-  voices/           Piper ONNX models (downloaded once)
+  voices/           Kokoro voice packs (pf_dora.bin, etc.)
   daemon.out.log    launchd stdout
   daemon.err.log    launchd stderr
   daemon.log        v1.10.13+ structured log sink (rotates at 10 MiB)
@@ -86,8 +85,8 @@ The synth side does NOT yet have a similar watchdog. The v1.10.13 spec asked for
 
 - Native arm64 / x86_64 binary, no runtime, no GC
 - Predictable latency, no stop-the-world
-- Direct FFI to `libpiper`, `libsqlite3`, and `miniaudio` via `@cImport`
-- ReleaseFast with libpiper linked: **~975 KB**
+- Direct FFI to ONNX Runtime C API, `libsqlite3`, and espeak-ng via `@cImport`
+- ReleaseFast: **< 2 MB**
 
 Version pinned in `build.zig.zon` — Zig still breaks between minor releases.
 
@@ -97,15 +96,13 @@ Cuts install surface. `ptah` without args = client. `ptah daemon` = server. `pta
 
 The client does NOT fork the daemon. The daemon survives because of launchd (`ptah daemon install`), so the warm-path round-trip stays under a millisecond.
 
-### Third client: SwiftUI menubar app (v1.10+)
+### Third client: MCP server (v1.5+)
 
-`ui/menubar/AgentTTSMenubar.app` is a Swift Package outside the Zig binary that talks the same UNIX-socket TSV protocol. NSStatusItem hosts a 320×420 SwiftUI popover with the live queue, Skip + Clear buttons, and a voice picker that discovers cloned voices under `~/.cache/ptah/voices/<slug>/metadata.json`. The daemon is unchanged — the menubar app is a third client on the wire, alongside the CLI and the MCP shim. See [Menubar UI](/ptah/menubar/).
-
-**v1.10.2 — floating player overlay.** AppDelegate runs a 750 ms `Timer` that polls `QUEUE` regardless of popover state. When a `state=="playing"` row appears AND the user toggled the floating widget on (`AgentTTSMenubar.floatingPlayerEnabled` in UserDefaults), an always-on-top `NSPanel` (`level = .floating`, `.hudWindow` style, `.canJoinAllSpaces`) shows the current item plus pause / resume / skip / replay buttons. The polling cadence matches the popover's so daemon load is constant; the toggle defaults OFF so v1.10.1 upgrades don't surface a new window unexpectedly.
+`ptah mcp` is a third entry point that exposes the same daemon via stdio JSON-RPC 2.0. Newline-delimited JSON (MCP stdio convention). See [MCP server](/ptah/mcp/).
 
 ### Player ops (v1.10.2+): PAUSE / RESUME / REPLAY / HISTORY
 
-The daemon's worker thread publishes the active row id into `Resources.current_playing_id` (atomic `u64`) when it pops; clears it when runOne returns. PAUSE/RESUME accept-thread handlers read that cell, call `AudioPlayer.pause()` / `.resume_play()` (which drive zaudio `sound.stop()`/`sound.start()`), and ack `OK\t<id>`. The streamS16le wait loop in `audio.zig` now stays parked (20 ms nanosleep) while the `paused` atomic is set, so the loop doesn't exit on `isAtEnd` mid-pause.
+The daemon's worker thread publishes the active row id into `Resources.current_playing_id` (atomic `u64`) when it pops; clears it when runOne returns. PAUSE/RESUME accept-thread handlers read that cell, call `AudioPlayer.pause()` / `.resume_play()`, and ack `OK\t<id>`.
 
 REPLAY does a `SELECT … WHERE id=?` followed by `INSERT … VALUES (text,voice,rate,'pending',now,engine,ssml)` under `q.mu` — the schema has persisted completed rows since v0.3 WAL, so any past id is replayable. HISTORY does a `SELECT … ORDER BY id DESC LIMIT ?` and adds a `finished_at` column to the ITEM wire shape (8 columns instead of QUEUE's 7), keeping QUEUE backward-compatible. Limit clamped to 100 at parse time for WRITE_BUF hygiene.
 
@@ -196,29 +193,20 @@ Crash recovery on daemon boot: `UPDATE items SET state='pending' WHERE state='pl
 
 ### Engine routing
 
-Selected per item via the `engine` column. The worker picks the matching path:
+Single engine: **Kokoro** (ONNX nativo, voz Dora `pf_dora`). All items route through `KokoroEngine.synth`. PCM output is 24000 Hz float32, converted to s16le and played via afplay. The `say` engine flag is accepted for the system voice fallback (macOS `say` binary); no piper/cloned paths exist.
 
-| `item.engine` | Path |
-|---------------|------|
-| `say` | `tts.spawnSay(voice, rate, preprocessed_text)` → blocks on `wait()` |
-| `piper` (1 chunk) | `MultiPiperEngine.synthLang(text, route)` → `AudioPlayer.streamS16leAppend(samples, 22050)` (v0.7 fast path) |
-| `piper` (>1 chunk) | v1.2 pipeline: synth thread + audio thread + 2-slot bounded ring; per-chunk lang via `detect.detect` |
-| `cloned` (v1.4) | spawn `scripts/voice_synth.py` → drain s16le PCM on stdout → `AudioPlayer.streamS16le(samples, 22050)` |
-
-If `--engine piper` arrives but the engine is not loaded (binary built without `-Dwith-piper=true`, or `PTAH_PIPER=1` was not set), the worker logs a warning and falls back to `say`. For `cloned`, missing embedding OR sidecar failure falls back to piper Faber when available, else `say` Luciana.
-
-Every PCM-producing path (piper fast-lane, piper streaming, piper SSML, cloned sidecar) funnels through a single `playWithPostfx` helper before reaching `audio_player.streamS16leAppend`. That helper is where the v1.10.10 post-fx pipeline plugs in — see [Post-fx pipeline](#post-fx-pipeline-v11010) below. The `say` path bypasses it entirely (no PCM to filter; `say` owns its own playback).
+Every PCM-producing path funnels through a single `playWithPostfx` helper before reaching `audio_player.streamS16leAppend`. That helper is where the v1.10.10 post-fx pipeline plugs in — see [Post-fx pipeline](#post-fx-pipeline-v11010) below.
 
 ### Streaming pipeline (v1.2)
 
-For multi-sentence piper items, `runPiper` calls `preproc.chunkSentences` to split on `. ! ? \n` (abbreviation-aware: `Sr. Dr. Sra. Av. cf. etc. vs.` don't terminate). When chunk count is 1, the worker takes the v0.7 fast lane. When >1, it forks:
+For multi-sentence items, `chunkSentences` splits on `. ! ? \n` (abbreviation-aware: `Sr. Dr. Sra. Av. cf. etc. vs.` don't terminate). When chunk count is 1, the worker takes the fast lane. When >1, it forks:
 
-- **Synth thread** — for each chunk, allocates a per-chunk arena off `std.heap.smp_allocator` (lock-free fast path), calls `engine.synthToSamples`, pushes the samples + arena into the ring. Blocks on a 2 ms nanosleep when the ring is full.
+- **Synth thread** — for each chunk, allocates a per-chunk arena off `std.heap.smp_allocator` (lock-free fast path), calls `engine.synth`, pushes the PCM + arena into the ring. Blocks on a 2 ms nanosleep when the ring is full.
 - **Audio thread (= worker loop)** — pops from the ring, calls `AudioPlayer.streamS16leAppend`, deinits the chunk's arena. Blocks on 2 ms nanosleep when the ring is empty and synth hasn't closed it.
-- **Ring** — 2-slot SPSC, atomic `head` / `tail`. No `std.Thread.Mutex` (Zig 0.16 removed it; same `nanosleep` idiom already used in `audio.zig`).
+- **Ring** — 2-slot SPSC, atomic `head` / `tail`.
 - **SKIP** — sets a `skip` flag the synth thread checks on every iteration; audio thread drains the ring and breaks.
 
-Result on a 490-word Pt-BR monologue: first-audio drops from ~3 s (v0.7 serial) to **~50 ms** (v1.2 streaming). Inter-chunk gap median is 0.02 ms with back-to-back `AudioBuffer + Sound` plays — well below one device period, so a custom `decoderReadProc` ring isn't needed today (deferred to v1.2.1 if a workload proves the gap audible).
+Result on a 490-word Pt-BR monologue: first-audio drops to **~50 ms** via streaming. Inter-chunk gap median stays well below one device period.
 
 ### Incremental chunker (v1.7)
 
@@ -233,41 +221,29 @@ Emission policy is **eager**: a terminator run that touches end-of-buffer emits 
 
 The CLI path (`stream.zig`) reads stdin in 4 KB blocks via `readSliceShort` and feeds each block. The MCP path (`mcp.zig` → `callSayStream`) holds a `StringHashMapUnmanaged(StreamSession)` keyed by caller-chosen `stream_id`; each session owns its own gpa-backed `ArenaAllocator` so chunker state survives across per-request arenas.
 
-### libpiper FFI
+### KokoroEngine (ONNX nativo)
 
-Vendored from [OHF-Voice/piper1-gpl](https://github.com/OHF-Voice/piper1-gpl) at tag `v1.4.2`. Built once via `scripts/build-libpiper.sh`. Links against `libpiper.dylib` + `libonnxruntime.1.22.0.dylib` (resolved via `@rpath`).
+`src/kokoro.zig` owns the ONNX Runtime C API session. Init loads `kokoro-v1.0.onnx` (~310 MB) once at daemon boot; every subsequent synth is warm. Pipeline: text → espeak-ng (IPA, lang=pt-br) → vocab tokens → ONNX Run → waveform float32 @ 24000 Hz → afplay.
 
-`PiperEngine` is a Zig struct owning the C handle. Init loads the ONNX voice model (~400 ms cold), exposes `synthToSamples(text) → []i16`. Lives in daemon-scoped storage so the cold cost is paid once.
+Vendor: ONNX Runtime (MIT, `vendor/onnxruntime/`). espeak-ng linked via Homebrew. No GPL concern.
 
-License: GPL-3.0-or-later. Built into the binary only when `-Dwith-piper=true`; without it, the binary is MIT/Apache.
+### Audio: afplay (macOS nativo)
 
-### Audio: zaudio (miniaudio)
-
-Vendored from [zig-gamedev/zaudio](https://github.com/zig-gamedev/zaudio). Linked against CoreAudio / AudioUnit / AudioToolbox frameworks on macOS. The daemon owns one `zaudio.Engine` instance.
-
-`AudioPlayer.streamS16le(samples, 22050)` creates an `AudioBuffer` data source pinned to the source rate (22050 Hz for Faber). Without the explicit sample rate, miniaudio upsamples to the device rate (48000 Hz) and pitch shifts ~2.18× higher — a fix shipped in v1.0. `streamS16leAppend` is the v1.2 alias used by the streaming worker; today it shares `streamS16le`'s body because measured inter-chunk gaps stay below one device period.
-
-**v1.10.11 quality config** — `AudioPlayer.init` now constructs an explicit `zaudio.Engine.Config` instead of passing `null`. Three knobs land at engine create time:
-
-- **Linear resampler LPF order** — `pitch_resampling.linear.lpf_order = 8` (default 0 in miniaudio). Catches the 22050 → 48000 upsample edge for every Sound that mixes through the engine; eliminates sibilant aliasing without measurable CPU cost.
-- **Master gain stage** — `engine.setGainDb(-3.0)` drops the f32 mix by 3 dB before the device-format converter. Faber's stressed vowels can push peaks toward 0 dBFS; -3 dB margin avoids hard clipping at the s16 output.
-- **Dither intent** — `PTAH_AUDIO_DITHER` parsed and logged; the Engine doesn't expose `dither_mode` so today this is a no-op declaration. The env knob exists so a future custom `data_callback` over `ma_data_converter` can flip dither without breaking the operator contract.
-
-All three are env-overridable: `PTAH_AUDIO_LPF_ORDER`, `PTAH_AUDIO_HEADROOM_DB`, `PTAH_AUDIO_DITHER`. See [`motor.md`](/ptah/motor/#onnx-runtime--miniaudio-quality-v11011) for the research provenance.
+`AudioPlayer` wraps `afplay` for PCM playback. No vendored C audio library. `streamS16leAppend` writes PCM chunks through a pipe to `afplay`. The daemon owns one `AudioPlayer` instance.
 
 ### Post-fx pipeline (v1.10.10+)
 
 A fourth box sits between piper's PCM and zaudio: an opt-in ffmpeg subprocess that runs the research-anchored RNNoise + 4-band EQ + de-esser + 2:1 compressor chain. Wiring:
 
 ```
-piper.synth*  ──► postfx.apply (ffmpeg subprocess)  ──► AudioPlayer.streamS16leAppend
+kokoro.synth  ──► postfx.apply (ffmpeg subprocess)  ──► AudioPlayer.streamS16leAppend
                   └─ chain string built per profile
-                  └─ stdin: s16le mono 22050 Hz PCM
+                  └─ stdin: s16le mono 24000 Hz PCM
                   └─ stdout: filtered s16le PCM
                   └─ stderr: inherited (lands in daemon.log via launchd)
 ```
 
-The `playWithPostfx` helper in `src/daemon.zig` is the single funnel. Streaming, single-chunk, and SSML piper paths plus the cloned XTTS-v2 path all run through it. `postfx == .off` (the default) is a zero-cost short-circuit: `apply()` returns the original PCM with `was_processed=false`, no subprocess, no allocation.
+The `playWithPostfx` helper in `src/daemon.zig` is the single funnel. All Kokoro synth paths run through it. `postfx == .off` (the default) is a zero-cost short-circuit: `apply()` returns the original PCM with `was_processed=false`, no subprocess, no allocation.
 
 Four profiles (the per-call `<postfx>` slot in the wire format above):
 
@@ -328,23 +304,13 @@ Install snippet (also see `scripts/install-mcp.sh`):
 }
 ```
 
-### Python sidecar (v1.4 — cloned engine only)
+### Drive: `say` / `espeak-ng` / System.Speech (fallback only)
 
-`ptah voice clone --sample <wav> --name <slug>` spawns `scripts/voice_clone.py` via `std.process.Child` to extract the XTTS-v2 speaker conditioning latents from the reference WAV. Synthesis at request time spawns `scripts/voice_synth.py`, which reads text on stdin and writes raw s16le mono 22050Hz PCM to stdout. The daemon drains stdout into a buffer + feeds the same `AudioPlayer.streamS16le` path Faber uses.
+System engine spawn per platform — selected at comptime via `platform.zig`. Used only when `--engine say` is passed explicitly; Kokoro Dora is the default.
 
-Spawn convention: `uv run --with TTS <script>` when `uv` is on PATH, else plain `python3 <script>` (assumes the venv created by `scripts/setup-voice-clone.sh` is activated). The script files at `scripts/voice_clone.py` + `scripts/voice_synth.py` carry SPDX MIT/Apache headers; Coqui TTS itself is MPL-2.0 and runs out-of-process — no MPL code is linked into the Zig binary.
-
-Fallback chain (handled in `daemon.zig::fallbackCloned`): missing embedding OR sidecar exit ≠ 0 → piper Faber (when loaded) → `say` Luciana.
-
-The "only Zig" lifecycle constraint is intentionally relaxed for this engine only. Faber + say still work without Python. See `docs/motor.md` "Cloned voices (v1.4)" for the licensing + UX rationale.
-
-### Drive: `say` / `espeak-ng` / System.Speech
-
-System engine spawn per platform — selected at comptime via `platform.zig` (see [Platform abstraction](#platform-abstraction-v13) below):
-
-- **macOS**: `/usr/bin/say -v "Luciana (Premium)" -r 330`. Pre-warm at daemon boot loads the voice into the Neural Engine; without it, the first call pays an extra 200-400 ms.
-- **Linux**: `espeak-ng -v pt-br -s <rate> <text>`. Lowest-common-denominator Pt-BR voice. No pre-warm (no equivalent to the ANE cache). Quality is below macOS Luciana — Piper Faber is the recommended Linux default.
-- **Windows**: `powershell -Command "Add-Type System.Speech; $s.Speak(...)"`. Best-effort; runtime untested in v1.3.
+- **macOS**: `/usr/bin/say -v <voice> -r 330`.
+- **Linux**: `espeak-ng -v pt-br -s <rate> <text>`. Lowest-common-denominator fallback.
+- **Windows**: `powershell -Command "Add-Type System.Speech; $s.Speak(...)"`. Best-effort; runtime untested.
 
 ### Pt-BR preprocessor (v0.5)
 
@@ -376,7 +342,7 @@ Three small surfaces, one comptime dispatcher, zero runtime branches in the hot 
 
 `src/platform.zig` exports `Platform { macos, linux, windows }` and `current()`, a comptime function that resolves to a single tag via `builtin.target.os.tag`. Unknown OS tags are a `@compileError` — better to fail the build than to ship a binary that does the wrong thing silently. Callers `switch (comptime platform.current())` so dead branches drop out of the binary on the host target.
 
-`src/tts.zig` uses the dispatcher to pick the system TTS argv per platform:
+`src/tts.zig` uses the dispatcher to pick the system TTS argv per platform (say engine only):
 
 | Platform | Spawn |
 |---|---|
@@ -384,17 +350,7 @@ Three small surfaces, one comptime dispatcher, zero runtime branches in the hot 
 | Linux | `espeak-ng -v pt-br -s <rate> <text>` (Pt-BR voice mapping is unit-tested) |
 | Windows | `powershell -NoProfile -Command "Add-Type System.Speech; $s.Speak('...')"` (best-effort) |
 
-Pre-warm (the empty `say` utterance that loads Luciana into the Neural Engine) becomes a no-op on Linux/Windows — `espeak-ng` and `System.Speech` have no equivalent warm cache.
-
-`src/systemd.zig` parallels `launchd.zig`. Same surface: `install`, `uninstall`, `status`. Writes `$XDG_CONFIG_HOME/systemd/user/ptah.service` (falls back to `~/.config/systemd/user/`), drives `systemctl --user daemon-reload && enable --now`. Atomic write via `createFileAtomic` + `replace` like the plist. `Restart=on-failure` mirrors the launchd `KeepAlive { SuccessfulExit = false }` contract: clean exit stays down, crash recovers. Output goes to journald — `journalctl --user -u ptah` is the canonical Linux debug path.
-
-`build.zig configureExe()` switches the audio backend per target:
-
-| Target | miniaudio defines | System libs |
-|---|---|---|
-| macOS | `MA_NO_RUNTIME_LINKING` + everything but CoreAudio off | CoreAudio + CoreFoundation + AudioUnit + AudioToolbox frameworks |
-| Linux | `MA_NO_COREAUDIO` (ALSA + PulseAudio runtime-linked) | `libasound` static + `libpulse` via miniaudio's `dlopen` |
-| Windows | `MA_NO_RUNTIME_LINKING` + everything but WASAPI + winmm off | `winmm` + `ole32` |
+`src/systemd.zig` parallels `launchd.zig`. Same surface: `install`, `uninstall`, `status`. Writes `$XDG_CONFIG_HOME/systemd/user/ptah.service`, drives `systemctl --user daemon-reload && enable --now`. Output goes to journald — `journalctl --user -u ptah` is the canonical Linux debug path.
 
 `main.zig`'s `daemon install|uninstall|status` is a single comptime switch: macOS → `launchd.*`, Linux → `systemd.*`, Windows → print error and exit 2. Same CLI surface, different machinery underneath.
 
@@ -402,16 +358,16 @@ Pre-warm (the empty `say` utterance that loads Luciana into the Neural Engine) b
 
 ```
 src/
-  main.zig         # entry, argv routing, ttfa-bench + piper-test + voice + mcp + stream
+  main.zig         # entry, argv routing, ttfa-bench + mcp + stream
   platform.zig     # comptime OS dispatcher (macos / linux / windows)
   root.zig         # zig-build entry point + module re-exports
   client.zig       # enqueue, queue, skip, clear + pure helpers reused by mcp.zig
-  daemon.zig       # accept loop, worker, engine routing, playWithPostfx funnel
+  daemon.zig       # accept loop, worker, KokoroEngine routing, playWithPostfx funnel
   queue.zig        # SQLite WAL wrapper, schema migration (10 columns + index)
   ipc.zig          # 4 → 10 field wire protocol parser, Engine + Lang + Postfx enums
   tts.zig          # spawn `say` (macOS) / `espeak-ng` (Linux) / powershell (Windows)
-  piper.zig        # libpiper FFI (GPL-3.0-or-later) + MultiPiperEngine (v1.1)
-  audio.zig        # zaudio.Engine wrapper (v1.10.11 LPF + headroom + dither knobs)
+  kokoro.zig       # KokoroEngine — ONNX Runtime C API + espeak-ng fonemização
+  audio.zig        # AudioPlayer — afplay PCM wrapper
   preproc.zig      # Pt-BR cadence + abbreviations + cardinals + chunkSentences (v1.2)
                    # + techPipeline / TECH_GLOSSARY / normalizeIdentifiers / splitCamelCase
                    # + applyCadenceTricks (v1.10.12 SSML cadence pass)
@@ -424,24 +380,18 @@ src/
   log.zig          # v1.10.13 — std.options.logFn sink + rotating file at daemon.log
   launchd.zig      # LaunchAgent install / uninstall / status (macOS)
   systemd.zig      # systemd user unit install / uninstall / status (Linux)
-  voice.zig        # v1.4 — `voice clone` / `voice list` / `voice say` subcommands
   mcp.zig          # v1.5 — MCP server (stdio JSON-RPC 2.0); 13 tools as of v1.10.10
 
 scripts/
-  voice_clone.py        # v1.4 — XTTS-v2 speaker latent extraction
-  voice_synth.py        # v1.4 — XTTS-v2 PCM synthesis to stdout
-  setup-voice-clone.sh  # v1.4 — uv venv bootstrap
   install-mcp.sh        # v1.5 — Claude Code MCP config installer
-  fetch-voice-en.sh     # v1.1 — Amy En voice
+  fetch-kokoro.sh       # download kokoro-v1.0.onnx + pf_dora.bin assets
 ```
 
-Flat. No subdir until it hurts. Cross-check at any time with `ls src/*.zig` — every file in the listing carries the SPDX `MIT OR Apache-2.0` header at line 1 (libpiper-derived code in `piper.zig` is the lone GPL-3.0-or-later exception, gated behind `-Dwith-piper=true`).
+Flat. No subdir until it hurts. Cross-check at any time with `ls src/*.zig` — every file in the listing carries the SPDX `MIT OR Apache-2.0` header at line 1.
 
 ## Locked gotchas
 
-- `say -v Luciana` silently fails if the voice is not installed. The daemon validates with `say -v '?'` at boot and logs a warning.
 - Orphan socket after SIGKILL — startup checks the PID file before reusing it.
 - SQLite without WAL blocks `queue` during `playing`. Always WAL.
-- `AudioBuffer.Config.sample_rate` must be set explicitly; the default upsamples to engine rate and shifts pitch.
-- espeak-ng (under libpiper) caps phoneme source paths at 160 bytes. Build libpiper in a short path (`/tmp/ptah-piper-build`); the vendor script does this for you.
-- `char32_t` in `piper.h` fails Zig's `translate-c`. Shim with `@cDefine("char32_t", "uint32_t")` before `@cInclude`.
+- espeak-ng caps phoneme source paths at 160 bytes. Build/store assets in a short path.
+- `OrtApi` function pointers must be called with `.?`; `NULL OrtStatus` = success.

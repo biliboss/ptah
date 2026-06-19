@@ -1,11 +1,11 @@
 ---
 title: Roadmap
-description: v0.1 → v1.10.13 shipped 2026-06-03 / 04. Roadmap complete; next slate unscheduled.
+description: v0.1 → v1.10.13 shipped 2026-06-03 / 04. Motor atual = Kokoro Dora (ONNX nativo). Roadmap complete; next slate unscheduled.
 ---
 
 ## TL;DR
 
-v0.1 → v1.10.13 shipped on **2026-06-03 / 04**, behind one KPI. Eighteen base milestones plus thirteen v1.10.x patches — every row measured. Universal binary, brew tap, launchd + systemd auto-start, multilingual code-switch, sentence streaming, Linux/Windows code paths, voice cloning end-to-end, stdio JSON-RPC MCP server, menubar app with floating player, tech-report mode, audio post-fx, and structured logging — all landed.
+v0.1 → v1.10.13 shipped on **2026-06-03 / 04**, behind one KPI. Eighteen base milestones plus thirteen v1.10.x patches — every row measured. Universal binary, brew tap, launchd + systemd auto-start, multilingual code-switch, sentence streaming, Linux/Windows code paths, stdio JSON-RPC MCP server, tech-report mode, audio post-fx, and structured logging — all landed. Motor migrado de libpiper para **Kokoro Dora** (ONNX nativo).
 
 The next slate (v1.11+) is unscheduled; see [What's next](/ptah/whats-next/).
 
@@ -20,13 +20,13 @@ Every milestone has a published baseline in [`_qa/`](https://github.com/biliboss
 | **v0.3** | SQLite WAL queue + `queue` / `skip` / `clear` | survives `kill -9`, 476 KB | 2026-06-03 |
 | **v0.4** | launchd `daemon install \| uninstall \| status` | 10 ms install round-trip | 2026-06-03 |
 | **v0.5** | Pt-BR preprocessor (cardinals, abbreviations, pauses) | 2-5 µs / msg, 26 unit tests | 2026-06-03 |
-| **v0.6** | libpiper FFI baseline | piper init 400 ms, synth + WAV 100 ms warm | 2026-06-03 |
-| **v0.7** | zaudio streaming + `--engine say\|piper` routing | piper synth warm **91 ms** | 2026-06-03 |
+| **v0.6** | libpiper FFI baseline (superseded by Kokoro) | piper init 400 ms, synth + WAV 100 ms warm | 2026-06-03 |
+| **v0.7** | PCM streaming + `--engine say\|piper` routing (piper → Kokoro later) | piper synth warm **91 ms** | 2026-06-03 |
 | **v1.0** | Universal binary + brew formula + GitHub Pages docs | universal 1.8 MB, host 918 KB | 2026-06-03 |
 | **v1.1** | Multilingual: detect.zig + `--lang` + En Piper voice | 64/64 tests, host 897 KB, multi-piper boot 313 ms (Pt only) | 2026-06-03 |
 | **v1.2** | Sentence chunking + pipelined synth/playback | long-input first-audio **41-52 ms** (down from ~3 s), gap median 0.02 ms | 2026-06-03 |
 | **v1.3** | Cross-platform — Linux espeak-ng + systemd + CI matrix | macOS green, Linux green on CI, Windows compile-only | 2026-06-03 |
-| **v1.4** | `voice clone` + `voice list` + XTTS-v2 Python sidecar | surface + dispatch + 40/40 tests; install/smoke deferred to v1.4.1 | 2026-06-03 |
+| **v1.4** | `voice clone` + XTTS-v2 Python sidecar (later removed — menubar stripped) | surface + dispatch + 40/40 tests | 2026-06-03 |
 | **v1.5** | MCP server: stdio JSON-RPC, 5 tools, native Claude Code voice | binary 993 KB (+115 KB), tools-only scope | 2026-06-03 |
 | **v1.6** | Voice cloning ship-it: setup-voice-clone.sh validated, real Gabriel voice, `voice list` shows duration + rate, bench script | clone 23.4s, cold synth 26.4s → 4.3s audio, 67/67 tests, 5 install blockers fixed | 2026-06-03 |
 | **v1.7** | Streaming text input: `ptah stream` + `say_stream` MCP tool + incremental chunker | 166/166 tests, end-to-end CLI + MCP green, latency bench wired | 2026-06-03 |

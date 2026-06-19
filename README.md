@@ -1,6 +1,6 @@
 # ptah
 
-> **Fast Pt-BR TTS CLI for macOS in Zig.** Single binary, persistent daemon, SQLite-backed queue, libpiper neural voice (Faber) by default with `say` Luciana as fallback. Bundled MCP server, menubar app, voice cloning, audio post-fx, tech-report mode, structured logging. Alternative to `say`, `espeak`, Piper Python sidecar, ElevenLabs — but built for the terminal AND for AI agents that shell out.
+> **Fast Pt-BR TTS CLI for macOS in Zig.** Single binary, persistent daemon, SQLite-backed queue, libpiper neural voice (Faber) by default with `say` Dora as fallback. Bundled MCP server, menubar app, voice cloning, audio post-fx, tech-report mode, structured logging. Alternative to `say`, `espeak`, Piper Python sidecar, ElevenLabs — but built for the terminal AND for AI agents that shell out.
 
 [![CI](https://github.com/biliboss/ptah/actions/workflows/ci.yml/badge.svg)](https://github.com/biliboss/ptah/actions/workflows/ci.yml)
 [![License: MIT OR Apache-2.0 (core) / GPL-3.0 (with piper)](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0%20%2F%20GPL--3.0-blue.svg)](#license)
@@ -34,7 +34,7 @@ Full timeline + measurements: [`src/content/docs/changelog.md`](./src/content/do
 | Skip / clear / list | ✅ `queue \| skip \| clear` | ❌ | ❌ | ❌ | n/a |
 | Pause / resume / replay / history | ✅ (v1.10.2+) | ❌ | ❌ | ❌ | ❌ |
 | Auto-start (launchd / systemd) | ✅ `daemon install` | n/a | manual | manual | n/a |
-| Pt-BR neural voice | ✅ Faber (Piper) | ✅ Luciana (Premium) | ✅ | ❌ | ✅ |
+| Pt-BR neural voice | ✅ Faber (Piper) | ✅ Dora (Premium) | ✅ | ❌ | ✅ |
 | Pt-BR text preprocessor | ✅ numbers + abrev + pauses | ❌ | ❌ | partial | ❌ |
 | Tech-report mode | ✅ acronym + unit + brand + CamelCase + URL/hash/version (v1.10.8 / v1.10.9) | ❌ | ❌ | ❌ | ❌ |
 | Per-call Piper knobs | ✅ `length_scale` / `noise_scale` / `noise_w` (v1.10.7) | ❌ | env-only | n/a | partial |
@@ -114,7 +114,7 @@ PTAH_PIPER=1 ptah daemon  # or patch the launchd plist (docs)
 
 ```bash
 ptah "Olá, build verde em doze segundos."        # piper Faber (default)
-ptah --engine say "Fallback via Luciana."        # macOS say
+ptah --engine say "Fallback via Dora."        # macOS say
 ptah "Sr. Silva pagou R$ 1578 em 2026."          # preprocessor expands
 
 # Tech-report mode + audio post-fx (v1.10.8 / v1.10.9 / v1.10.10)
@@ -166,7 +166,7 @@ ptah ttfa-bench --engine piper --warm 5          # measure first-sample latency
 - **IPC**: UNIX stream socket at `~/.cache/ptah/sock`, line protocol (`ENQUEUE\t<engine>\t<voice>\t<rate>\t<text>\n`).
 - **Queue**: SQLite WAL at `~/.cache/ptah/queue.db`. Survives daemon crash + reboot.
 - **Worker**: single thread, drains serially. Never two `say` / piper synths in parallel (UX choice).
-- **Pre-warm**: daemon boot runs `say -v Luciana " "` to force-load the voice model. PiperEngine stays resident.
+- **Pre-warm**: daemon boot runs `say -v Dora " "` to force-load the voice model. PiperEngine stays resident.
 - **Preprocessor**: cardinal numbers 0-9999, abbreviations (Sr./Av./R$/…), `[[slnc N]]` pauses on punctuation. Runs in ~2-5µs per message.
 
 Full architecture + decision rationale at the [docs site](https://biliboss.github.io/ptah/).

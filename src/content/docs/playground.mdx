@@ -29,7 +29,7 @@ The page is **unchanged from v1.10.1 through v1.10.13**. Today the Speak button 
     Voice
     <select data-role="voice">
       <option value="faber">Faber — Pt-BR neural (Piper default)</option>
-      <option value="luciana">Luciana — Pt-BR macOS `say` fallback</option>
+      <option value="luciana">Dora — Pt-BR macOS `say` fallback</option>
       <option value="felipe">Felipe — Pt-BR macOS `say` alternate</option>
       <option value="amy">Amy — En-US Piper</option>
     </select>
@@ -55,7 +55,7 @@ The page is **unchanged from v1.10.1 through v1.10.13**. Today the Speak button 
 | Stylesheet | External `public/playground/widget.css` referenced via `head` frontmatter `<link rel="stylesheet">` |
 | Script | External `public/playground/widget.js` referenced via `head` frontmatter `<script defer>` |
 | Endpoint | `public/api/synth.html` — static sentinel `{"status":501,"error":"not_implemented"}`; widget probes `/api/synth` first, falls back to `.html` on 404 |
-| Voice catalog | Hardcoded 4 entries (Faber, Luciana, Felipe, Amy) |
+| Voice catalog | Hardcoded 4 entries (Faber, Dora, Felipe, Amy) |
 | Playback | Web Audio API context created on first click; `<audio>` element shown for replay |
 | Cold latency | n/a (no synth) |
 
