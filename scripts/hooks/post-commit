@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Ptah local CI — Ring 0 (observability). OPTIMISTIC — NEVER blocks.
+# Appends a line to .git/ptah-ci.log so the commit timeline is auditable
+# without touching the working tree. Failure here must not break the turn.
+{
+  ts=$(date -u +%FT%TZ)
+  sha=$(git rev-parse --short HEAD 2>/dev/null)
+  sub=$(git log -1 --pretty=%s 2>/dev/null)
+  echo "$ts $sha $sub" >> "$(git rev-parse --git-dir)/ptah-ci.log"
+} 2>/dev/null || true
+exit 0

@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# Ptah local CI — Ring 1 (FAST, <5s). BLOCKS the commit on failure.
+# Format + cheap grep guards. No build here — speed tier.
+set -uo pipefail
+fail=0
+
+staged_zig=$(git diff --cached --name-only --diff-filter=ACM | grep '\.zig$' || true)
+if [ -n "$staged_zig" ]; then
+  if ! zig fmt --check $staged_zig >/dev/null 2>&1; then
+    echo "✗ zig fmt — run: zig fmt $staged_zig"; fail=1
+  fi
+fi
+
+added() { git diff --cached -- "$@" | grep -E '^\+' | grep -v '^\+\+\+'; }
+
+# Guard: dropped engines must not return (Kokoro Dora is the sole engine).
+if added src/ build.zig | grep -qE 'PiperEngine|@import\("zaudio"\)|@import\("piper'; then
+  echo "✗ dead engine ref (Piper/zaudio) reintroduced — Ptah is Kokoro-only"; fail=1
+fi
+
+# Guard: project is 'ptah', never 'agent-tts' (in code/config; docs/CHANGELOG ok).
+if added src/ build.zig package.json | grep -qE 'agent-tts'; then
+  echo "✗ 'agent-tts' in code — project renamed to 'ptah'"; fail=1
+fi
+
+# Guard: no leaked Google API key.
+if added . | grep -qE 'AIza[0-9A-Za-z_-]{30,}|AQ\.[A-Za-z0-9_-]{40,}'; then
+  echo "✗ looks like a leaked API key — keep secrets in envless"; fail=1
+fi
+
+[ $fail -eq 0 ] && echo "✓ pre-commit: fmt + guards"
+exit $fail

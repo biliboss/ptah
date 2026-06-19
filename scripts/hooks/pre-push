@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Ptah local CI — Ring 2 (SLOW, full). BLOCKS the push on failure.
+# The real gate: it must compile and the unit tests must pass before code
+# leaves the machine. Trunk-only — this is the merge gate.
+set -uo pipefail
+cd "$(git rev-parse --show-toplevel)"
+
+echo "→ pre-push [1/2] zig build…"
+if ! zig build 2>&1 | tail -4; then
+  echo "✗ build failed — push blocked"; exit 1
+fi
+
+echo "→ pre-push [2/2] zig build test…"
+if ! zig build test 2>&1 | tail -6; then
+  echo "✗ unit tests failed — push blocked"; exit 1
+fi
+
+echo "✓ pre-push: build + tests green"
+exit 0
