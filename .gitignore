@@ -27,3 +27,7 @@ ui/menubar/build/
 playwright-report/
 test-results/
 .playwright-cache/
+
+# Kokoro model (310M) — fetch via scripts/fetch-kokoro.sh, not committed
+assets/kokoro-v1.0.onnx
+.venv-kokoro/
