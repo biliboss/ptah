@@ -211,23 +211,23 @@ fn buildInitializeResponse(a: std.mem.Allocator, id: json.Value) ![]const u8 {
 
 fn buildToolsListResponse(a: std.mem.Allocator, id: json.Value) ![]const u8 {
     const tools = try arr(a, &.{
-        try toolDescriptor(a, "say", "Enqueue Pt-BR TTS on the running daemon. Returns the queue item id. v1.10.7: optional length_scale / noise_scale / noise_w override piper inference per call. v1.10.8: + tech mode (acronym/unit glossary), per-call pause overrides, multi-speaker selector.", try saySchema(a)),
+        try toolDescriptor(a, "say", "Enqueue Pt-BR TTS on the running daemon. Returns the queue item id. v1.10.7: optional length_scale / noise_scale / noise_w override Kokoro inference per call. v1.10.8: + tech mode (acronym/unit glossary), per-call pause overrides, multi-speaker selector.", try saySchema(a)),
         try toolDescriptor(a, "queue", "List items currently in the TTS queue (pending + playing).", try emptySchema(a)),
         try toolDescriptor(a, "skip", "Skip the currently playing TTS item. Returns the skipped id (0 = nothing playing).", try skipSchema(a)),
         try toolDescriptor(a, "clear", "Drop all pending TTS items. Returns the number dropped.", try emptySchema(a)),
-        try toolDescriptor(a, "voices", "List installed voices for `say` and any piper ONNX models in ~/.cache/ptah/voices/.", try emptySchema(a)),
+        try toolDescriptor(a, "voices", "List installed voices for `say` and any Kokoro voice packs in ~/.cache/ptah/voices/.", try emptySchema(a)),
         try toolDescriptor(a, "say_stream", "Stream-feed Pt-BR TTS chunk-by-chunk. The server buffers bytes per stream_id, emits sentences to the daemon as terminators arrive, and flushes any remainder when final=true. Returns the count of sentences enqueued by this call.", try sayStreamSchema(a)),
         // v1.10.2 — player ops.
-        try toolDescriptor(a, "pause", "Pause the active piper/cloned playback. Returns the paused item id (0 = nothing playing).", try emptySchema(a)),
+        try toolDescriptor(a, "pause", "Pause the active Kokoro playback. Returns the paused item id (0 = nothing playing).", try emptySchema(a)),
         try toolDescriptor(a, "resume", "Resume a paused item. Returns the resumed item id (0 = not paused).", try emptySchema(a)),
         try toolDescriptor(a, "replay", "Re-enqueue a past item by id (any state). Returns the new pending id (0 = item not found).", try replaySchema(a)),
         try toolDescriptor(a, "history", "List the last N items, including done/skipped. Default limit 20, max 100.", try historySchema(a)),
-        // v1.10.7 — A/B helper for piper inference knobs.
-        try toolDescriptor(a, "synth_voice_test", "Enqueue a one-shot piper synth with explicit length_scale / noise_scale / noise_w (v1.10.8: + tech / pause overrides / speaker_id). Returns the enqueue id plus the resolved knobs so an agent can A/B Faber profiles without daemon restart.", try synthVoiceTestSchema(a)),
+        // v1.10.7 — A/B helper for Kokoro Dora inference knobs.
+        try toolDescriptor(a, "synth_voice_test", "Enqueue a one-shot Kokoro Dora synth with explicit length_scale / noise_scale / noise_w (v1.10.8: + tech / pause overrides / speaker_id). Returns the enqueue id plus the resolved knobs so an agent can A/B Dora profiles without daemon restart.", try synthVoiceTestSchema(a)),
         // v1.10.8 — automate the discovery loop: one call, N variants enqueued.
         try toolDescriptor(a, "voice_knob_search", "Enqueue the same text once per `variants` entry, each with its own knob bundle (length_scale / noise_scale / noise_w / tech / *_pause_ms / speaker_id). Returns the list of `{id, knobs}` so the caller can compare A/B/.../N profiles in a single MCP round-trip. max_variants capped at 16.", try voiceKnobSearchSchema(a)),
         // v1.10.9 / v1.10.10 — curated 4-variant × 2-postfx matrix.
-        try toolDescriptor(a, "tech_profile_search", "v1.10.10: enqueue a curated 4×2=8 tech-narration matrix — each of the 4 knob bundles (tight-narrator/stock-tech/broadcast/expressive) is enqueued twice: once dry (postfx=off) and once with the research-anchored RNNoise+EQ+deesser+comp chain (postfx=tech). Each variant runs through Faber piper with tech=true. Returns 8 `{id, name, postfx, knobs}` so the caller can A/B both knob AND post-fx in one round-trip.", try techProfileSearchSchema(a)),
+        try toolDescriptor(a, "tech_profile_search", "v1.10.10: enqueue a curated 4×2=8 tech-narration matrix — each of the 4 knob bundles (tight-narrator/stock-tech/broadcast/expressive) is enqueued twice: once dry (postfx=off) and once with the research-anchored RNNoise+EQ+deesser+comp chain (postfx=tech). Each variant runs through Kokoro Dora with tech=true. Returns 8 `{id, name, postfx, knobs}` so the caller can A/B both knob AND post-fx in one round-trip.", try techProfileSearchSchema(a)),
     });
     const result = try obj(a, &.{
         .{ "tools", tools },
@@ -260,34 +260,34 @@ fn saySchema(a: std.mem.Allocator) !json.Value {
     });
     const engine_prop = try obj(a, &.{
         .{ "type", str("string") },
-        .{ "description", str("say (macOS voice) or piper (neural ONNX). Default: piper if available.") },
+        .{ "description", str("kokoro (Kokoro Dora, neural ONNX, default) or say (macOS system voice).") },
         .{ "enum", engine_enum },
     });
     const voice_prop = try obj(a, &.{
         .{ "type", str("string") },
-        .{ "description", str("Voice name. say defaults to Luciana, piper to faber.") },
+        .{ "description", str("Voice name. Kokoro default: pf_dora. say default: system voice.") },
     });
     const rate_prop = try obj(a, &.{
         .{ "type", str("integer") },
-        .{ "description", str("Words per minute (default 330, ignored by piper).") },
+        .{ "description", str("Words per minute (default 330, ignored by Kokoro).") },
     });
     const ssml_prop = try obj(a, &.{
         .{ "type", str("boolean") },
         .{ "description", str("v1.8+: treat text as W3C SSML 1.1 subset (<emphasis>, <break>, <prosody>, <say-as>). Default false.") },
     });
-    // v1.10.7 — per-call piper inference knobs. Omit to keep daemon
+    // v1.10.7 — per-call Kokoro inference knobs. Omit to keep daemon
     // env / voice defaults; valid ranges enforced in callSay.
     const length_scale_prop = try obj(a, &.{
         .{ "type", str("number") },
-        .{ "description", str("v1.10.7+: Piper length_scale (0.1..3.0). 1.0=default, <1=faster, >1=slower. Omit to keep voice/env default. Ignored for engine=say.") },
+        .{ "description", str("v1.10.7+: Kokoro speed/length_scale (0.1..3.0). 1.0=default, <1=faster, >1=slower. Omit to keep voice/env default. Ignored for engine=say.") },
     });
     const noise_scale_prop = try obj(a, &.{
         .{ "type", str("number") },
-        .{ "description", str("v1.10.7+: Piper noise_scale (0..2). Higher = more prosody variation. Omit to keep voice/env default. Faber sweet spot ~0.667. Ignored for engine=say.") },
+        .{ "description", str("v1.10.7+: Kokoro noise_scale (0..2). Higher = more prosody variation. Omit to keep voice/env default. Dora sweet spot ~0.667. Ignored for engine=say.") },
     });
     const noise_w_prop = try obj(a, &.{
         .{ "type", str("number") },
-        .{ "description", str("v1.10.7+: Piper noise_w (0..2). Higher = more pronunciation variation. Omit to keep voice/env default. Faber sweet spot ~0.8. Ignored for engine=say.") },
+        .{ "description", str("v1.10.7+: Kokoro noise_w (0..2). Higher = more pronunciation variation. Omit to keep voice/env default. Dora sweet spot ~0.8. Ignored for engine=say.") },
     });
     // v1.10.8 — tech mode + pause overrides + speaker selector.
     const tech_prop = try obj(a, &.{
@@ -315,7 +315,7 @@ fn saySchema(a: std.mem.Allocator) !json.Value {
     const postfx_prop = try obj(a, &.{
         .{ "type", str("string") },
         .{ "enum", postfx_enum },
-        .{ "description", str("v1.10.10+: audio post-processing profile applied to the synth PCM before zaudio playback. `off` (default) is the dry path. `clean` is highpass+light comp. `tech` is the research-anchored chain (RNNoise+EQ+deesser+2:1 comp) — needs ffmpeg on PATH and an RNNoise model at PTAH_POSTFX_RNNN_MODEL or ~/.cache/ptah/rnnoise/cb.rnnn. `broadcast` is EQ+deesser+3:1 comp. Pass-through when ffmpeg is missing.") },
+        .{ "description", str("v1.10.10+: audio post-processing profile applied to the synth PCM before afplay playback. `off` (default) is the dry path. `clean` is highpass+light comp. `tech` is the research-anchored chain (RNNoise+EQ+deesser+2:1 comp) — needs ffmpeg on PATH and an RNNoise model at PTAH_POSTFX_RNNN_MODEL or ~/.cache/ptah/rnnoise/cb.rnnn. `broadcast` is EQ+deesser+3:1 comp. Pass-through when ffmpeg is missing.") },
     });
 
     const props = try obj(a, &.{
@@ -346,7 +346,7 @@ fn saySchema(a: std.mem.Allocator) !json.Value {
 fn synthVoiceTestSchema(a: std.mem.Allocator) !json.Value {
     const text_prop = try obj(a, &.{
         .{ "type", str("string") },
-        .{ "description", str("Sentence to synthesize. Always routed to piper Faber (Pt) so the knob effect is comparable across runs.") },
+        .{ "description", str("Sentence to synthesize. Always routed to Kokoro Dora (Pt-BR) so the knob effect is comparable across runs.") },
     });
     const length_scale_prop = try obj(a, &.{
         .{ "type", str("number") },
@@ -395,7 +395,7 @@ fn synthVoiceTestSchema(a: std.mem.Allocator) !json.Value {
 }
 
 /// v1.10.8 — bulk knob search. Each variant is an object with the same
-/// schema as `say` (minus `engine`/`voice`/`rate` — fixed to piper Faber
+/// schema as `say` (minus `engine`/`voice`/`rate` — fixed to Kokoro Dora
 /// for comparability). The daemon enqueues each variant in order and the
 /// MCP response carries the matched ids.
 fn voiceKnobSearchSchema(a: std.mem.Allocator) !json.Value {
@@ -406,14 +406,14 @@ fn voiceKnobSearchSchema(a: std.mem.Allocator) !json.Value {
     // Sub-schema for each variant object. Pure documentation aid; the
     // dispatch reads fields case-by-case so it tolerates omissions.
     const variant_props = try obj(a, &.{
-        .{ "length_scale", try obj(a, &.{ .{ "type", str("number") } }) },
-        .{ "noise_scale", try obj(a, &.{ .{ "type", str("number") } }) },
-        .{ "noise_w", try obj(a, &.{ .{ "type", str("number") } }) },
-        .{ "tech", try obj(a, &.{ .{ "type", str("boolean") } }) },
-        .{ "comma_pause_ms", try obj(a, &.{ .{ "type", str("integer") } }) },
-        .{ "sentence_pause_ms", try obj(a, &.{ .{ "type", str("integer") } }) },
-        .{ "newline_pause_ms", try obj(a, &.{ .{ "type", str("integer") } }) },
-        .{ "speaker_id", try obj(a, &.{ .{ "type", str("integer") } }) },
+        .{ "length_scale", try obj(a, &.{.{ "type", str("number") }}) },
+        .{ "noise_scale", try obj(a, &.{.{ "type", str("number") }}) },
+        .{ "noise_w", try obj(a, &.{.{ "type", str("number") }}) },
+        .{ "tech", try obj(a, &.{.{ "type", str("boolean") }}) },
+        .{ "comma_pause_ms", try obj(a, &.{.{ "type", str("integer") }}) },
+        .{ "sentence_pause_ms", try obj(a, &.{.{ "type", str("integer") }}) },
+        .{ "newline_pause_ms", try obj(a, &.{.{ "type", str("integer") }}) },
+        .{ "speaker_id", try obj(a, &.{.{ "type", str("integer") }}) },
         .{ "comment", try obj(a, &.{ .{ "type", str("string") }, .{ "description", str("Free-form label echoed back so the caller knows which variant produced which id.") } }) },
     });
     const variant_item_schema = try obj(a, &.{
@@ -479,16 +479,16 @@ fn sayStreamSchema(a: std.mem.Allocator) !json.Value {
     });
     const engine_prop = try obj(a, &.{
         .{ "type", str("string") },
-        .{ "description", str("TTS backend for this stream's sentences. Set on the first call; subsequent calls keep the stream's initial choice. Default: piper if available.") },
+        .{ "description", str("TTS backend for this stream's sentences. Set on the first call; subsequent calls keep the stream's initial choice. Default: kokoro (Dora).") },
         .{ "enum", engine_enum },
     });
     const voice_prop = try obj(a, &.{
         .{ "type", str("string") },
-        .{ "description", str("Voice name. say defaults to Luciana, piper to faber.") },
+        .{ "description", str("Voice name. Kokoro default: pf_dora. say default: system voice.") },
     });
     const rate_prop = try obj(a, &.{
         .{ "type", str("integer") },
-        .{ "description", str("Words per minute (default 330, ignored by piper).") },
+        .{ "description", str("Words per minute (default 330, ignored by Kokoro).") },
     });
 
     const props = try obj(a, &.{
@@ -588,7 +588,7 @@ fn buildToolsCallResponse(
     if (std.mem.eql(u8, tool, "resume")) return callResume(a, io, home, id);
     if (std.mem.eql(u8, tool, "replay")) return callReplay(a, io, home, id, args_val);
     if (std.mem.eql(u8, tool, "history")) return callHistory(a, io, home, id, args_val);
-    // v1.10.7 — A/B Faber profiles inline.
+    // v1.10.7 — A/B Kokoro Dora profiles inline.
     if (std.mem.eql(u8, tool, "synth_voice_test")) return callSynthVoiceTest(a, io, home, id, args_val);
     // v1.10.8 — bulk N-way knob search.
     if (std.mem.eql(u8, tool, "voice_knob_search")) return callVoiceKnobSearch(a, io, home, id, args_val);
@@ -720,7 +720,7 @@ fn callSay(
         ssml_flag = s.bool;
     }
 
-    // v1.10.7 — per-call piper knobs. Each is optional; reject out-of-
+    // v1.10.7 — per-call Kokoro knobs. Each is optional; reject out-of-
     // range numerics here so the daemon doesn't have to.
     var length_scale: f32 = 0.0;
     if (ao.get("length_scale")) |v| {
@@ -850,7 +850,7 @@ fn callSkip(a: std.mem.Allocator, io: std.Io, home: []const u8, id: json.Value) 
 }
 
 // v1.10.7 — accept both integer (json.Value.integer) and float
-// (json.Value.float) for the piper knobs. Strings/other types return null
+// (json.Value.float) for the Kokoro knobs. Strings/other types return null
 // so callers can surface a typed error. Returns an optional because
 // `error` would require sloppy union returns; pure null is cleaner.
 fn jsonNumberToF32(v: json.Value) !?f32 {
@@ -973,7 +973,7 @@ fn callSynthVoiceTest(
 
 // v1.10.8 — voice_knob_search: enqueue one item per variant. Capped at 16
 // to keep the daemon socket healthy. Each variant inherits the call's
-// `text` and routes to piper Faber so the comparison is apples-to-apples.
+// `text` and routes to Kokoro Dora so the comparison is apples-to-apples.
 fn callVoiceKnobSearch(
     a: std.mem.Allocator,
     io: std.Io,
@@ -1389,7 +1389,7 @@ fn callVoices(a: std.mem.Allocator, io: std.Io, home: []const u8, id: json.Value
     try list.append(try voiceEntry(a, "say", "Luciana", "Pt-BR Premium voice (default for say)"));
     try list.append(try voiceEntry(a, "say", "Felipe", "Pt-BR Premium male voice"));
 
-    // Piper voices: ONNX files in ~/.cache/ptah/voices/.
+    // Kokoro voice packs: .bin files in ~/.cache/ptah/voices/.
     const voices_dir = try std.fmt.allocPrint(a, "{s}/.cache/ptah/voices", .{home});
     addPiperVoices(a, io, voices_dir, &list) catch {};
 

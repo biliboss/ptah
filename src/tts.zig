@@ -223,10 +223,10 @@ pub fn preWarm(arena: std.mem.Allocator, io: std.Io, voice: []const u8) !void {
 // voices stay valid client-side defaults; on Linux we translate.
 //
 // We pass through anything we don't recognise — espeak-ng accepts language
-// codes (`pt-br`), variant codes (`mb-br1`), and full names. A literal
-// "Luciana" simply prints a warning from espeak-ng and falls back to
-// the default voice; that's the best behaviour we can give without a
-// platform-aware client.
+// codes (`pt-br`), variant codes (`mb-br1`), and full names. A macOS voice
+// name like "Luciana" simply prints a warning from espeak-ng and falls
+// back to the default voice; that's the best behaviour we can give without
+// a platform-aware client.
 fn mapLinuxVoice(voice: []const u8) []const u8 {
     if (std.mem.eql(u8, voice, "Luciana") or
         std.mem.eql(u8, voice, "Luciana (Premium)") or

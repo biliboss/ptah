@@ -66,15 +66,15 @@ pub fn run(arena: std.mem.Allocator, io: std.Io, home: []const u8) !void {
         dlog.info("recovered {d} pending items from previous run", .{pend_on_boot});
     }
 
-    // Audio player (zaudio.Engine). Best-effort.
+    // Audio player (afplay wrapper). Best-effort.
     const t_audio0 = std.Io.Clock.now(.awake, io);
     var audio_player = audio.AudioPlayer.init(arena);
     const t_audio1 = std.Io.Clock.now(.awake, io);
     const audio_ms = @as(f64, @floatFromInt(t_audio1.nanoseconds - t_audio0.nanoseconds)) / 1_000_000.0;
     if (audio_player.ready) {
-        dlog.info("zaudio engine init in {d:.1}ms", .{audio_ms});
+        dlog.info("audio player init in {d:.1}ms", .{audio_ms});
     } else {
-        dlog.warn("zaudio engine init failed ({d:.1}ms) — will fall back to afplay", .{audio_ms});
+        dlog.warn("audio player init failed ({d:.1}ms) — will fall back to afplay", .{audio_ms});
     }
     defer audio_player.deinit();
 
@@ -91,7 +91,9 @@ pub fn run(arena: std.mem.Allocator, io: std.Io, home: []const u8) !void {
 
     // Speed from env (overridable per-call later via --speed flag when wired).
     const speed = blk: {
-        const c = @cImport({ @cInclude("stdlib.h"); });
+        const c = @cImport({
+            @cInclude("stdlib.h");
+        });
         const ptr = c.getenv("KOKORO_SPEED");
         if (ptr == null) break :blk DEFAULT_SPEED;
         const s = std.mem.span(ptr);
@@ -424,7 +426,9 @@ fn fileExists(path: []const u8) bool {
 /// Priority: env vars → ~/.cache/ptah/ → repo assets/ → brew share path.
 /// Returns null on failure (daemon runs degraded — enqueues silently drop).
 fn bootKokoro(arena: std.mem.Allocator, io: std.Io, home: []const u8) ?kokoro_mod.KokoroEngine {
-    const c = @cImport({ @cInclude("stdlib.h"); });
+    const c = @cImport({
+        @cInclude("stdlib.h");
+    });
 
     // Model path
     const model_path: [:0]const u8 = blk: {

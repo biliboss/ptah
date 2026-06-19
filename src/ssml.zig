@@ -2,7 +2,7 @@
 // SSML 1.1 subset parser + per-engine transpile. v1.8 (+v1.10.12).
 //
 // Scope. Accept a tiny subset of the W3C SSML 1.1 spec so agents can
-// inflect Pt-BR Faber + macOS `say`:
+// inflect Pt-BR Kokoro Dora + macOS `say`:
 //
 //   <emphasis level="strong|moderate|reduced|none">…</emphasis>
 //   <break time="500ms" />        — or strength="weak|medium|strong"
@@ -15,12 +15,12 @@
 // `.text` token carrying the raw bytes — we never crash on agent garbage.
 //
 // v1.10.12: `<phoneme>` lets agents force IPA pronunciation for brand
-// names (Anthropic, Mistral) by passing the raw IPA string in `ph`. Piper
-// path emits an espeak-ng `[[ipa]]` directive that the libpiper phonemizer
-// honours; `say` strips the tag (macOS has no IPA passthrough) and falls
-// back to the body text. `<sub>` rewrites the body text to the alias at
-// preproc time so code identifiers like `getConditioningLatents` can be
-// said as "get conditioning latents" without a glossary entry.
+// names (Anthropic, Mistral) by passing the raw IPA string in `ph`. Kokoro
+// path emits an espeak-ng `[[ipa]]` directive that the phonemizer honours;
+// `say` strips the tag (macOS has no IPA passthrough) and falls back to
+// the body text. `<sub>` rewrites the body text to the alias at preproc
+// time so code identifiers like `getConditioningLatents` can be said as
+// "get conditioning latents" without a glossary entry.
 //
 // Why this shape. The parser is a flat token stream, not a tree. The day
 // the daemon needs nested prosody it walks the stream and tracks a small
@@ -137,7 +137,7 @@ pub const Token = union(enum) {
     sayas_close,
     /// v1.10.12 — phoneme open carries alphabet + ph. The walker emits the
     /// IPA passthrough directive on open; body text between open/close is
-    /// suppressed for engines that honour the directive (piper) but used as
+    /// suppressed for engines that honour the directive (Kokoro) but used as
     /// fallback by engines that don't (say). Close has no payload.
     phoneme_open: Phoneme,
     phoneme_close,
@@ -542,7 +542,7 @@ pub fn transpileToSay(arena: std.mem.Allocator, tokens: []const Token) ![]u8 {
 }
 
 /// Strip SSML tags, leaving only plain text. Used by engines that don't
-/// support SSML at all (piper without per-chunk prosody, espeak-ng).
+/// support SSML at all (Kokoro without per-chunk prosody, espeak-ng).
 ///
 /// v1.10.12: `<sub alias="…">body</sub>` emits the alias (the spoken form),
 /// not the body. `<phoneme ph="ipa">body</phoneme>` emits the body text

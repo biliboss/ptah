@@ -87,7 +87,7 @@ pub const PoppedItem = struct {
     /// v1.8 — input contains W3C SSML 1.1 markup. Persisted on the row
     /// so daemon restarts don't lose the flag while items are pending.
     ssml: bool = false,
-    /// v1.10.7 — per-call piper inference knobs. Sentinels match
+    /// v1.10.7 — per-call Kokoro inference knobs. Sentinels match
     /// `ipc.Message`: length_scale=0.0 / noise_scale<0 / noise_w<0 means
     /// "use voice/env/built-in default".
     length_scale: f32 = 0.0,
@@ -101,10 +101,10 @@ pub const PoppedItem = struct {
     comma_pause_ms: u32 = 0,
     sentence_pause_ms: u32 = 0,
     newline_pause_ms: u32 = 0,
-    /// v1.10.8 — Piper multi-speaker id; -1 = use voice config default.
+    /// v1.10.8 — Kokoro speaker id; -1 = use voice config default.
     speaker_id: i32 = -1,
     /// v1.10.10 — audio post-fx profile. Daemon routes PCM through
-    /// `postfx.apply` before zaudio playback when non-`.off`.
+    /// `postfx.apply` before afplay playback when non-`.off`.
     postfx: ipc.Postfx = .off,
     text: []u8,
 };

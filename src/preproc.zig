@@ -956,7 +956,6 @@ const TechEntry = struct {
 const TECH_GLOSSARY = [_]TechEntry{
     // ── Multi-word phrases (longest first to win over single-word components)
     .{ .src = "Claude Code", .dst = "Claude Code" },
-    .{ .src = "XTTS v2", .dst = "X T T S vê dois" },
 
     // ── Brand names (mixed-case exact match, ordered longest-first)
     .{ .src = "PostgreSQL", .dst = "pós-ti-grês-quiu-el" },
@@ -964,7 +963,6 @@ const TECH_GLOSSARY = [_]TechEntry{
     .{ .src = "Homebrew", .dst = "home-briu" },
     .{ .src = "Pydantic", .dst = "paidântic" },
     .{ .src = "FastAPI", .dst = "fast A P I" },
-    .{ .src = "libpiper", .dst = "lib paiper" },
     .{ .src = "ChatGPT", .dst = "chate gê pê tê" },
     .{ .src = "SQLite", .dst = "es-quiu-lai-ti" },
     .{ .src = "SwiftUI", .dst = "swift U I" },
@@ -986,7 +984,6 @@ const TECH_GLOSSARY = [_]TechEntry{
     .{ .src = "yaml", .dst = "iêimel", .case_insensitive = true },
     .{ .src = "JSON", .dst = "jeisson", .case_insensitive = true },
     .{ .src = "HTML", .dst = "agá tê eme éle", .case_insensitive = true },
-    .{ .src = "XTTS", .dst = "X T T S" },
     .{ .src = "ONNX", .dst = "ônix" },
     .{ .src = "UUID", .dst = "U U I D", .case_insensitive = true },
     .{ .src = "CI-CD", .dst = "C I C D", .case_insensitive = true },
@@ -1095,14 +1092,14 @@ fn expandTechGlossary(
 // v1.10.9 — CamelCase splitter
 // ──────────────────────────────────────────────────────────────────────
 //
-// Inserts a space at camel boundaries so identifiers like `MultiPiperEngine`
-// reach espeak-ng (Piper's phonemizer) as separate tokens. Three rules,
+// Inserts a space at camel boundaries so identifiers like `MultiKokoroEngine`
+// reach espeak-ng (Kokoro's phonemizer) as separate tokens. Three rules,
 // applied in one pass:
 //
 //   1. Insert space before an uppercase letter that is preceded by a
 //      lowercase ASCII letter or an ASCII digit.
 //         `getConditioning` → `get Conditioning`
-//         `MultiPiperEngine` → `Multi Piper Engine`
+//         `MultiKokoroEngine` → `Multi Kokoro Engine`
 //         `ChatGPT5`        → matches t→G here (`Chat G…`).
 //   2. End of all-caps run: insert space before an uppercase letter when
 //      the previous byte is uppercase AND the next byte is lowercase.
@@ -1787,10 +1784,6 @@ test "tech: glossary + number + comma pause" {
     );
 }
 
-test "tech: XTTS v2 phrase (multi-word src)" {
-    try runTech("rodando XTTS v2 local", "rodando X T T S vê dois local");
-}
-
 test "tech: empty input" {
     try runTech("", "");
 }
@@ -1904,8 +1897,8 @@ test "camel: SwiftUI preserves UI run" {
     try runCamel("SwiftUI", "Swift UI");
 }
 
-test "camel: MultiPiperEngine splits all three" {
-    try runCamel("MultiPiperEngine", "Multi Piper Engine");
+test "camel: MultiKokoroEngine splits all three" {
+    try runCamel("MultiKokoroEngine", "Multi Kokoro Engine");
 }
 
 test "camel: getConditioningLatents lower→Upper transitions" {
@@ -1969,8 +1962,8 @@ test "normalize: commit hash bdd352e spelled" {
 
 test "normalize: URL strip protocol + replace . and /" {
     try runNorm(
-        "https://github.com/biliboss/agent-tts",
-        "github ponto com barra biliboss barra agent-tts",
+        "https://github.com/biliboss/ptah",
+        "github ponto com barra biliboss barra ptah",
     );
 }
 
@@ -2002,15 +1995,13 @@ test "techPipeline: version + hash + URL together" {
     const arena = arena_state.allocator();
     const got = try techPipeline(
         arena,
-        "v1.10.8 em CPU. Commit bdd352e. Veja https://github.com/biliboss/agent-tts",
+        "v1.10.8 em CPU. Commit bdd352e. Veja https://github.com/biliboss/ptah",
         .{},
     );
     // normalizeIdentifiers runs FIRST so the URL/version/commit-hash spans
-    // are protected from glossary-1 catching `HTTPS` substring. Glossary-2
-    // still fires on the URL tail (`ptah` → `agent-T T S`), which is
-    // ear-acceptable.
+    // are protected from glossary-1 catching `HTTPS` substring.
     try testing.expectEqualStrings(
-        "v um ponto dez ponto oito em C P U. Commit commit bê dê dê três cinco dois é. Veja github ponto com barra biliboss barra agent-T T S",
+        "v um ponto dez ponto oito em C P U. Commit commit bê dê dê três cinco dois é. Veja github ponto com barra biliboss barra ptah",
         got,
     );
 }
