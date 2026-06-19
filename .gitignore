@@ -31,3 +31,6 @@ test-results/
 # Kokoro model (310M) — fetch via scripts/fetch-kokoro.sh, not committed
 assets/kokoro-v1.0.onnx
 .venv-kokoro/
+
+# onnxruntime runtime dep (~30MB) — fetch via scripts/fetch-deps.sh
+vendor/onnxruntime/
