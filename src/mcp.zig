@@ -695,17 +695,13 @@ fn callSay(
     if (text_val != .string) return try toolErrorResponse(a, id, "text must be a string");
     const text = text_val.string;
 
-    var engine: ipc.Engine = .piper;
+    var engine: ipc.Engine = .kokoro;
     if (ao.get("engine")) |e| {
         if (e != .string) return try toolErrorResponse(a, id, "engine must be a string");
         engine = ipc.Engine.fromStr(e.string) orelse return try toolErrorResponse(a, id, "engine must be 'say' or 'piper'");
     }
 
-    var voice: []const u8 = switch (engine) {
-        .say => client.DEFAULT_VOICE,
-        .piper => "faber",
-        .cloned => "",
-    };
+    var voice: []const u8 = "pf_dora";
     if (ao.get("voice")) |v| {
         if (v != .string) return try toolErrorResponse(a, id, "voice must be a string");
         voice = v.string;
@@ -937,7 +933,7 @@ fn callSynthVoiceTest(
         a,
         io,
         home,
-        .piper,
+        .kokoro,
         "faber",
         client.DEFAULT_RATE,
         text,
@@ -1072,7 +1068,7 @@ fn callVoiceKnobSearch(
             a,
             io,
             home,
-            .piper,
+            .kokoro,
             "faber",
             client.DEFAULT_RATE,
             text,
@@ -1194,7 +1190,7 @@ fn callTechProfileSearch(
                 a,
                 io,
                 home,
-                .piper,
+                .kokoro,
                 "faber",
                 client.DEFAULT_RATE,
                 text,
@@ -1295,16 +1291,12 @@ fn callSayStream(
         final_flag = f.bool;
     }
 
-    var engine: ipc.Engine = .piper;
+    var engine: ipc.Engine = .kokoro;
     if (ao.get("engine")) |e| {
         if (e != .string) return try toolErrorResponse(a, id, "engine must be a string");
         engine = ipc.Engine.fromStr(e.string) orelse return try toolErrorResponse(a, id, "engine must be 'say' or 'piper'");
     }
-    var voice: []const u8 = switch (engine) {
-        .say => client.DEFAULT_VOICE,
-        .piper => "faber",
-        .cloned => "",
-    };
+    var voice: []const u8 = "pf_dora";
     if (ao.get("voice")) |v| {
         if (v != .string) return try toolErrorResponse(a, id, "voice must be a string");
         voice = v.string;

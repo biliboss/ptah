@@ -37,7 +37,7 @@ const READ_BUF = 4 * 1024;
 /// full argv slice (args[0] = binary name, args[1] = "stream", rest =
 /// optional flags).
 pub fn run(arena: std.mem.Allocator, io: std.Io, home: []const u8, args: []const []const u8) !void {
-    var engine: ipc.Engine = .piper;
+    const engine: ipc.Engine = .kokoro;
     var voice_arg: ?[]const u8 = null;
     var rate: u32 = client.DEFAULT_RATE;
 
@@ -45,15 +45,13 @@ pub fn run(arena: std.mem.Allocator, io: std.Io, home: []const u8, args: []const
     while (i < args.len) : (i += 1) {
         const a = args[i];
         if (std.mem.eql(u8, a, "--engine")) {
+            // Accepted for backward compat, ignored — Kokoro is the sole engine.
             i += 1;
             if (i >= args.len) {
-                std.debug.print("error: --engine needs value (say|piper)\n", .{});
+                std.debug.print("error: --engine needs value\n", .{});
                 std.process.exit(2);
             }
-            engine = ipc.Engine.fromStr(args[i]) orelse {
-                std.debug.print("error: --engine invalid (got '{s}')\n", .{args[i]});
-                std.process.exit(2);
-            };
+            _ = ipc.Engine.fromStr(args[i]);
         } else if (std.mem.eql(u8, a, "--voice")) {
             i += 1;
             if (i >= args.len) {
@@ -77,11 +75,7 @@ pub fn run(arena: std.mem.Allocator, io: std.Io, home: []const u8, args: []const
         }
     }
 
-    const voice: []const u8 = voice_arg orelse switch (engine) {
-        .say => client.DEFAULT_VOICE,
-        .piper => "faber",
-        .cloned => "",
-    };
+    const voice: []const u8 = voice_arg orelse "pf_dora";
 
     var chunker: preproc.IncrementalChunker = .{};
     defer chunker.deinit(arena);

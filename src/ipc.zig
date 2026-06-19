@@ -60,14 +60,14 @@ pub const Postfx = postfx_mod.Postfx;
 pub const Op = enum { enqueue, queue, skip, clear, pause, resume_play, replay, history };
 
 pub const Engine = enum {
-    say,
-    piper,
-    cloned,
+    kokoro,
 
     pub fn fromStr(s: []const u8) ?Engine {
-        if (std.mem.eql(u8, s, "say")) return .say;
-        if (std.mem.eql(u8, s, "piper")) return .piper;
-        if (std.mem.eql(u8, s, "cloned")) return .cloned;
+        if (std.mem.eql(u8, s, "kokoro")) return .kokoro;
+        // Legacy compat: old wire tokens map to kokoro (sole engine now).
+        if (std.mem.eql(u8, s, "say")) return .kokoro;
+        if (std.mem.eql(u8, s, "piper")) return .kokoro;
+        if (std.mem.eql(u8, s, "cloned")) return .kokoro;
         return null;
     }
 
@@ -99,7 +99,7 @@ pub const Lang = enum {
 };
 
 pub const Message = struct {
-    engine: Engine = .say,
+    engine: Engine = .kokoro,
     lang: Lang = .auto,
     voice: []const u8,
     rate: u32,
@@ -601,7 +601,7 @@ pub fn parseRequest(arena: std.mem.Allocator, line: []const u8) ParseError!Reque
             const voice_dup = arena.dupe(u8, first) catch return error.Malformed;
             const text_dup = arena.dupe(u8, text) catch return error.Malformed;
             return .{ .enqueue = .{
-                .engine = .say,
+                .engine = .kokoro,
                 .lang = .auto,
                 .voice = voice_dup,
                 .rate = rate,
@@ -633,59 +633,68 @@ pub fn parseRequest(arena: std.mem.Allocator, line: []const u8) ParseError!Reque
 
 // ---- tests (v0.7 + v1.1) ----
 
-test "parseRequest legacy v0.6 4-field ENQUEUE defaults engine=say lang=auto" {
+test "parseRequest legacy v0.6 4-field ENQUEUE defaults engine=kokoro lang=auto" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    const req = try parseRequest(arena.allocator(), "ENQUEUE\tLuciana\t330\tOlá mundo");
+    const req = try parseRequest(arena.allocator(), "ENQUEUE\tpf_dora\t330\tOlá mundo");
     try std.testing.expect(req == .enqueue);
-    try std.testing.expectEqual(Engine.say, req.enqueue.engine);
+    // v0.6: first token is voice (not engine); engine defaults to kokoro
     try std.testing.expectEqual(Lang.auto, req.enqueue.lang);
-    try std.testing.expectEqualStrings("Luciana", req.enqueue.voice);
+    try std.testing.expectEqualStrings("pf_dora", req.enqueue.voice);
     try std.testing.expectEqual(@as(u32, 330), req.enqueue.rate);
     try std.testing.expectEqualStrings("Olá mundo", req.enqueue.text);
 }
 
-test "parseRequest v0.7 5-field ENQUEUE with explicit say + default lang=auto" {
+test "parseRequest v0.7 5-field ENQUEUE with explicit kokoro + default lang=auto" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    const req = try parseRequest(arena.allocator(), "ENQUEUE\tsay\tLuciana\t330\tOlá");
-    try std.testing.expectEqual(Engine.say, req.enqueue.engine);
+    const req = try parseRequest(arena.allocator(), "ENQUEUE\tkokoro\tpf_dora\t330\tOlá");
+    try std.testing.expectEqual(Engine.kokoro, req.enqueue.engine);
     try std.testing.expectEqual(Lang.auto, req.enqueue.lang);
-    try std.testing.expectEqualStrings("Luciana", req.enqueue.voice);
+    try std.testing.expectEqualStrings("pf_dora", req.enqueue.voice);
     try std.testing.expectEqualStrings("Olá", req.enqueue.text);
 }
 
-test "parseRequest v0.7 5-field ENQUEUE with piper" {
+test "parseRequest v0.7 5-field legacy say token maps to kokoro" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    const req = try parseRequest(arena.allocator(), "ENQUEUE\tpiper\tfaber\t330\tOlá");
-    try std.testing.expectEqual(Engine.piper, req.enqueue.engine);
+    const req = try parseRequest(arena.allocator(), "ENQUEUE\tsay\tpf_dora\t330\tOlá");
+    try std.testing.expectEqual(Engine.kokoro, req.enqueue.engine);
     try std.testing.expectEqual(Lang.auto, req.enqueue.lang);
-    try std.testing.expectEqualStrings("faber", req.enqueue.voice);
+    try std.testing.expectEqualStrings("pf_dora", req.enqueue.voice);
+}
+
+test "parseRequest v0.7 5-field legacy piper token maps to kokoro" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const req = try parseRequest(arena.allocator(), "ENQUEUE\tpiper\tpf_dora\t330\tOlá");
+    try std.testing.expectEqual(Engine.kokoro, req.enqueue.engine);
+    try std.testing.expectEqual(Lang.auto, req.enqueue.lang);
+    try std.testing.expectEqualStrings("pf_dora", req.enqueue.voice);
 }
 
 test "parseRequest v1.1 6-field ENQUEUE with explicit lang=pt" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    const req = try parseRequest(arena.allocator(), "ENQUEUE\tpiper\tpt\tfaber\t330\tOlá mundo");
-    try std.testing.expectEqual(Engine.piper, req.enqueue.engine);
+    const req = try parseRequest(arena.allocator(), "ENQUEUE\tkokoro\tpt\tpf_dora\t330\tOlá mundo");
+    try std.testing.expectEqual(Engine.kokoro, req.enqueue.engine);
     try std.testing.expectEqual(Lang.pt, req.enqueue.lang);
-    try std.testing.expectEqualStrings("faber", req.enqueue.voice);
+    try std.testing.expectEqualStrings("pf_dora", req.enqueue.voice);
     try std.testing.expectEqualStrings("Olá mundo", req.enqueue.text);
 }
 
 test "parseRequest v1.1 6-field ENQUEUE with lang=en" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    const req = try parseRequest(arena.allocator(), "ENQUEUE\tpiper\ten\tamy\t330\tHello world");
+    const req = try parseRequest(arena.allocator(), "ENQUEUE\tkokoro\ten\tpf_dora\t330\tHello world");
     try std.testing.expectEqual(Lang.en, req.enqueue.lang);
-    try std.testing.expectEqualStrings("amy", req.enqueue.voice);
+    try std.testing.expectEqualStrings("pf_dora", req.enqueue.voice);
 }
 
 test "parseRequest v1.1 6-field ENQUEUE with lang=auto explicit" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    const req = try parseRequest(arena.allocator(), "ENQUEUE\tpiper\tauto\tfaber\t330\tOlá");
+    const req = try parseRequest(arena.allocator(), "ENQUEUE\tkokoro\tauto\tpf_dora\t330\tOlá");
     try std.testing.expectEqual(Lang.auto, req.enqueue.lang);
 }
 
@@ -694,26 +703,28 @@ test "encodeEnqueue v1.1 round-trips through parseRequest" {
     defer arena.deinit();
     const a = arena.allocator();
     const original: Message = .{
-        .engine = .piper,
+        .engine = .kokoro,
         .lang = .en,
-        .voice = "amy",
+        .voice = "pf_dora",
         .rate = 220,
         .text = "Hello, how are you?",
     };
     const wire = try encodeEnqueue(a, original);
     const line = wire[0 .. wire.len - 1];
     const req = try parseRequest(a, line);
-    try std.testing.expectEqual(Engine.piper, req.enqueue.engine);
+    try std.testing.expectEqual(Engine.kokoro, req.enqueue.engine);
     try std.testing.expectEqual(Lang.en, req.enqueue.lang);
-    try std.testing.expectEqualStrings("amy", req.enqueue.voice);
+    try std.testing.expectEqualStrings("pf_dora", req.enqueue.voice);
     try std.testing.expectEqual(@as(u32, 220), req.enqueue.rate);
     try std.testing.expectEqualStrings("Hello, how are you?", req.enqueue.text);
 }
 
-test "Engine.fromStr accepts known engines only" {
-    try std.testing.expectEqual(Engine.say, Engine.fromStr("say").?);
-    try std.testing.expectEqual(Engine.piper, Engine.fromStr("piper").?);
-    try std.testing.expectEqual(Engine.cloned, Engine.fromStr("cloned").?);
+test "Engine.fromStr accepts kokoro and legacy compat tokens" {
+    try std.testing.expectEqual(Engine.kokoro, Engine.fromStr("kokoro").?);
+    // Legacy compat — all old engine strings map to kokoro now.
+    try std.testing.expectEqual(Engine.kokoro, Engine.fromStr("say").?);
+    try std.testing.expectEqual(Engine.kokoro, Engine.fromStr("piper").?);
+    try std.testing.expectEqual(Engine.kokoro, Engine.fromStr("cloned").?);
     try std.testing.expect(Engine.fromStr("Luciana") == null);
     try std.testing.expect(Engine.fromStr("xtts") == null);
 }
@@ -731,9 +742,9 @@ test "parseRequest v1.8 7-field ENQUEUE with ssml=1" {
     defer arena.deinit();
     const req = try parseRequest(
         arena.allocator(),
-        "ENQUEUE\tsay\tpt\tLuciana\t330\t1\t<emphasis>Olá</emphasis>",
+        "ENQUEUE\tkokoro\tpt\tpf_dora\t330\t1\t<emphasis>Olá</emphasis>",
     );
-    try std.testing.expectEqual(Engine.say, req.enqueue.engine);
+    try std.testing.expectEqual(Engine.kokoro, req.enqueue.engine);
     try std.testing.expectEqual(Lang.pt, req.enqueue.lang);
     try std.testing.expectEqual(true, req.enqueue.ssml);
     try std.testing.expectEqualStrings("<emphasis>Olá</emphasis>", req.enqueue.text);
@@ -744,7 +755,7 @@ test "parseRequest v1.8 7-field ENQUEUE with ssml=0" {
     defer arena.deinit();
     const req = try parseRequest(
         arena.allocator(),
-        "ENQUEUE\tpiper\tauto\tfaber\t330\t0\tOlá mundo",
+        "ENQUEUE\tkokoro\tauto\tpf_dora\t330\t0\tOlá mundo",
     );
     try std.testing.expectEqual(false, req.enqueue.ssml);
     try std.testing.expectEqualStrings("Olá mundo", req.enqueue.text);
@@ -756,7 +767,7 @@ test "parseRequest v1.1 text starting with digit is not misread as ssml flag" {
     defer arena.deinit();
     const req = try parseRequest(
         arena.allocator(),
-        "ENQUEUE\tpiper\tpt\tfaber\t330\t1 dois 3",
+        "ENQUEUE\tkokoro\tpt\tpf_dora\t330\t1 dois 3",
     );
     try std.testing.expectEqual(false, req.enqueue.ssml);
     try std.testing.expectEqualStrings("1 dois 3", req.enqueue.text);
@@ -769,7 +780,7 @@ test "parseRequest v1.1 6-field still works (ssml defaults false)" {
     defer arena.deinit();
     const req = try parseRequest(
         arena.allocator(),
-        "ENQUEUE\tpiper\tpt\tfaber\t330\tOlá mundo",
+        "ENQUEUE\tkokoro\tpt\tpf_dora\t330\tOlá mundo",
     );
     try std.testing.expectEqual(false, req.enqueue.ssml);
     try std.testing.expectEqualStrings("Olá mundo", req.enqueue.text);
@@ -780,9 +791,9 @@ test "encodeEnqueue v1.8 round-trips ssml flag" {
     defer arena.deinit();
     const a = arena.allocator();
     const original: Message = .{
-        .engine = .say,
+        .engine = .kokoro,
         .lang = .pt,
-        .voice = "Luciana",
+        .voice = "pf_dora",
         .rate = 300,
         .ssml = true,
         .text = "<emphasis>Olá</emphasis>",
@@ -794,14 +805,13 @@ test "encodeEnqueue v1.8 round-trips ssml flag" {
     try std.testing.expectEqualStrings(original.text, req.enqueue.text);
 }
 
-test "parseRequest legacy 5-field ENQUEUE with cloned engine (no lang)" {
-    // v0.7 5-field form still parses for cloned engine — daemon defaults
-    // lang to .auto and detects per chunk.
+test "parseRequest legacy 5-field ENQUEUE with cloned engine maps to kokoro" {
+    // Legacy cloned token now maps to kokoro (sole engine).
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    const req = try parseRequest(arena.allocator(), "ENQUEUE\tcloned\tgabriel\t330\tOlá");
-    try std.testing.expectEqual(Engine.cloned, req.enqueue.engine);
-    try std.testing.expectEqualStrings("gabriel", req.enqueue.voice);
+    const req = try parseRequest(arena.allocator(), "ENQUEUE\tcloned\tpf_dora\t330\tOlá");
+    try std.testing.expectEqual(Engine.kokoro, req.enqueue.engine);
+    try std.testing.expectEqualStrings("pf_dora", req.enqueue.voice);
 }
 
 // v1.10.2 — pause / resume / replay / history parser tests.
@@ -883,9 +893,9 @@ test "v1.10.7 parseRequest 8-field ENQUEUE with all 3 knobs set" {
     defer arena.deinit();
     const req = try parseRequest(
         arena.allocator(),
-        "ENQUEUE\tpiper\tpt\tfaber\t330\t0\t1.05:0.8:1\tOlá warm Faber.",
+        "ENQUEUE\tkokoro\tpt\tpf_dora\t330\t0\t1.05:0.8:1\tOlá warm Faber.",
     );
-    try std.testing.expectEqual(Engine.piper, req.enqueue.engine);
+    try std.testing.expectEqual(Engine.kokoro, req.enqueue.engine);
     try std.testing.expectEqual(Lang.pt, req.enqueue.lang);
     try std.testing.expectEqualStrings("faber", req.enqueue.voice);
     try std.testing.expectEqual(@as(u32, 330), req.enqueue.rate);
@@ -926,7 +936,7 @@ test "v1.10.7 encodeEnqueue round-trips per-call knobs" {
     defer arena.deinit();
     const a = arena.allocator();
     const original: Message = .{
-        .engine = .piper,
+        .engine = .kokoro,
         .lang = .pt,
         .voice = "faber",
         .rate = 330,
@@ -950,7 +960,7 @@ test "v1.10.7 encodeEnqueue with all knobs unset emits empty tune slot" {
     defer arena.deinit();
     const a = arena.allocator();
     const original: Message = .{
-        .engine = .piper,
+        .engine = .kokoro,
         .lang = .pt,
         .voice = "faber",
         .rate = 330,
@@ -1031,7 +1041,7 @@ test "v1.10.8 encodeEnqueue round-trips extra quintuple" {
     defer arena.deinit();
     const a = arena.allocator();
     const original: Message = .{
-        .engine = .piper,
+        .engine = .kokoro,
         .lang = .pt,
         .voice = "faber",
         .rate = 330,
@@ -1063,7 +1073,7 @@ test "v1.10.8 encodeEnqueue all extras unset emits empty extra slot" {
     defer arena.deinit();
     const a = arena.allocator();
     const original: Message = .{
-        .engine = .piper,
+        .engine = .kokoro,
         .lang = .pt,
         .voice = "faber",
         .rate = 330,
@@ -1135,7 +1145,7 @@ test "v1.10.10 parseRequest 10-field ENQUEUE with postfx=tech" {
         arena.allocator(),
         "ENQUEUE\tpiper\tpt\tfaber\t330\t0\t1.05:0.35:0.45\t1:-:500:-:-\ttech\tAPI rodou.",
     );
-    try std.testing.expectEqual(Engine.piper, req.enqueue.engine);
+    try std.testing.expectEqual(Engine.kokoro, req.enqueue.engine);
     try std.testing.expectEqual(Postfx.tech, req.enqueue.postfx);
     try std.testing.expectEqual(true, req.enqueue.tech);
     try std.testing.expectApproxEqAbs(@as(f32, 1.05), req.enqueue.length_scale, 0.001);
@@ -1168,7 +1178,7 @@ test "v1.10.10 encodeEnqueue with postfx=tech round-trips" {
     defer arena.deinit();
     const a = arena.allocator();
     const original: Message = .{
-        .engine = .piper,
+        .engine = .kokoro,
         .lang = .pt,
         .voice = "faber",
         .rate = 330,
@@ -1197,7 +1207,7 @@ test "v1.10.10 encodeEnqueue with postfx=off omits the postfx field (9-field wir
     defer arena.deinit();
     const a = arena.allocator();
     const original: Message = .{
-        .engine = .piper,
+        .engine = .kokoro,
         .lang = .pt,
         .voice = "faber",
         .rate = 330,

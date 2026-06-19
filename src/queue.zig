@@ -363,7 +363,7 @@ pub const Queue = struct {
             return null;
         };
         defer gpa.free(engine_buf);
-        const engine = ipc.Engine.fromStr(engine_buf) orelse .say;
+        const engine = ipc.Engine.fromStr(engine_buf) orelse .kokoro;
         const ssml_flag: bool = c.sqlite3_column_int(stmt, 5) != 0;
 
         // v1.10.7 — read NULL-aware. column_type==NULL maps to the
@@ -495,7 +495,7 @@ pub const Queue = struct {
             try out.append(arena, .{
                 .id = id,
                 .state = State.fromStr(state_s) orelse .pending,
-                .engine = ipc.Engine.fromStr(engine_s) orelse .say,
+                .engine = ipc.Engine.fromStr(engine_s) orelse .kokoro,
                 .voice = voice,
                 .rate = rate,
                 .text = text,
@@ -580,7 +580,7 @@ pub const Queue = struct {
             try out.append(arena, .{
                 .id = id,
                 .state = State.fromStr(state_s) orelse .done,
-                .engine = ipc.Engine.fromStr(engine_s) orelse .say,
+                .engine = ipc.Engine.fromStr(engine_s) orelse .kokoro,
                 .voice = voice,
                 .rate = rate,
                 .finished_at = finished_at,
