@@ -16,10 +16,10 @@ zig build                  # debug
 zig build test --summary all
 ```
 
-To work on the piper engine, build the vendored libpiper.dylib once:
+To work on the Kokoro engine, build the vendored Kokoro.dylib once:
 
 ```bash
-./scripts/build-libpiper.sh        # clones + cmake build (~10 min cold)
+./scripts/build-Kokoro.sh        # clones + cmake build (~10 min cold)
 ./scripts/fetch-voice.sh           # downloads pt_BR-faber-medium.onnx
 zig build -Doptimize=ReleaseFast -Dwith-piper=true
 ```
@@ -47,14 +47,13 @@ src/
   queue.zig        # SQLite WAL queue
   ipc.zig          # wire protocol (line-delimited TSV)
   tts.zig          # spawn `say`
-  piper.zig        # libpiper FFI (GPL-3.0-or-later)
-  audio.zig        # zaudio.Engine wrapper for PCM streaming
+  piper.zig        # Kokoro FFI (GPL-3.0-or-later)
+  audio.zig        # afplay.Engine wrapper for PCM streaming
   preproc.zig      # Pt-BR abbreviations + cardinals + pauses
   launchd.zig      # LaunchAgent install/uninstall/status
   content/docs/    # Starlight docs site
 vendor/
-  piper1-gpl/      # (gitignored) libpiper build tree
-  zaudio/          # (gitignored) miniaudio C wrapper
+  afplay/          # (gitignored) afplay C wrapper
   README.md        # vendor build recipe
 _qa/               # baselines per version (v0.1 → v1.0)
 Formula/           # brew tap stub
@@ -83,7 +82,7 @@ Every `.zig` file starts with one of:
 
 ```zig
 // SPDX-License-Identifier: MIT OR Apache-2.0
-// SPDX-License-Identifier: GPL-3.0-or-later  // only for files that link libpiper
+// SPDX-License-Identifier: GPL-3.0-or-later  // only for files that link Kokoro
 ```
 
 New files must include the header. New deps must clear license review (no closed-source, no AGPL).
@@ -95,7 +94,7 @@ Conventional commits. Subject ≤72 chars. Body explains the "why" if not obviou
 ```
 feat(audio): pin source sample_rate so Faber 22050Hz plays at correct pitch
 
-zaudio AudioBuffer.Config defaulted to engine output rate (48000), which
+afplay AudioBuffer.Config defaulted to engine output rate (48000), which
 upsampled the buffer by ~2.18× — pitch shifted up.
 ```
 

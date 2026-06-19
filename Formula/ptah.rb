@@ -15,7 +15,7 @@
 #   brew audit --strict --new ptah
 #
 class Ptah < Formula
-  desc "Pt-BR TTS CLI for macOS — daemon + queue + libpiper"
+  desc "Pt-BR TTS CLI for macOS — Kokoro Dora, daemon + queue"
   homepage "https://github.com/biliboss/ptah"
   # placeholder until v1.0 release tarball lands — version 1.0.0 is in the URL.
   url "https://github.com/biliboss/ptah/releases/download/v1.0.0/ptah-1.0.0-universal.tar.gz"
@@ -25,7 +25,7 @@ class Ptah < Formula
 
   # The shipped binary is a universal Mach-O (arm64 + x86_64) built with
   # `zig build universal`. `lipo -info` should report two architectures.
-  depends_on macos: :ventura # libpiper / espeak-ng baseline; bump if needed.
+  depends_on macos: :ventura # Kokoro / espeak-ng baseline; bump if needed.
   depends_on "sqlite"
 
   def install
@@ -40,9 +40,6 @@ class Ptah < Formula
       To remove it:
         ptah daemon uninstall
 
-      Optional libpiper engine: build from source with
-        zig build -Doptimize=ReleaseFast -Dwith-piper=true
-      after building libpiper.dylib (see vendor/README.md in the repo).
     EOS
   end
 

@@ -8,10 +8,7 @@ dist/
 .DS_Store
 *.log
 
-# v0.6 libpiper FFI: cloned C source + build artifacts (~400MB).
-# Reproduce via vendor/README.md. Voice models live in ~/.cache/agent-tts/voices/.
 
-# v0.7 zaudio + miniaudio vendored sources (~100k LoC single-header lib).
 # Same dirs may exist as symlinks in scratch worktrees pointing at the
 # main checkout's vendor/ — keep them out of commits.
 
