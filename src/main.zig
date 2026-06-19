@@ -1,22 +1,22 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-// agent-tts — multilingual TTS via macOS `say` + libpiper (v1.1+).
+// ptah — multilingual TTS via macOS `say` + libpiper (v1.1+).
 //
 // Single binary, modes:
-//   agent-tts daemon                       → daemon (foreground)
-//   agent-tts daemon install               → write LaunchAgent plist + bootstrap
-//   agent-tts daemon uninstall             → bootout + delete plist
-//   agent-tts daemon status                → loaded?/last exit
-//   agent-tts queue                        → client: list pending+playing items
-//   agent-tts skip                         → client: skip current playing item
-//   agent-tts clear                        → client: drop all pending items
-//   agent-tts piper-test "<text>" <out>    → libpiper one-shot synth (cold init)
-//   agent-tts ttfa-bench --engine X --warm N → measure first-sample latency
-//   agent-tts -h | --help                  → help
-//   agent-tts -V | --version               → version
-//   agent-tts [--engine X] [--lang L] [--voice V] [--rate R] "..." → enqueue
+//   ptah daemon                       → daemon (foreground)
+//   ptah daemon install               → write LaunchAgent plist + bootstrap
+//   ptah daemon uninstall             → bootout + delete plist
+//   ptah daemon status                → loaded?/last exit
+//   ptah queue                        → client: list pending+playing items
+//   ptah skip                         → client: skip current playing item
+//   ptah clear                        → client: drop all pending items
+//   ptah piper-test "<text>" <out>    → libpiper one-shot synth (cold init)
+//   ptah ttfa-bench --engine X --warm N → measure first-sample latency
+//   ptah -h | --help                  → help
+//   ptah -V | --version               → version
+//   ptah [--engine X] [--lang L] [--voice V] [--rate R] "..." → enqueue
 //
-// v0.3: SQLite WAL queue at ~/.cache/agent-tts/queue.db.
-// v0.4: launchd LaunchAgent (~/Library/LaunchAgents/io.github.biliboss.agent-tts.plist).
+// v0.3: SQLite WAL queue at ~/.cache/ptah/queue.db.
+// v0.4: launchd LaunchAgent (~/Library/LaunchAgents/io.github.biliboss.ptah.plist).
 // v0.5: Pt-BR text preprocessor (abbreviations, cardinals 0..9999, [[slnc N]] pauses).
 // v0.6: libpiper FFI baseline (PiperEngine loaded but not routed yet).
 // v0.7: zaudio streaming PCM + --engine routing. Piper resident in daemon.
@@ -25,8 +25,8 @@
 // v1.2: sentence chunking + pipelined synth/audio (streaming long inputs).
 // v1.3: cross-platform — Linux espeak-ng + systemd, Windows best-effort.
 // v1.4: `voice clone` + `voice list` subcommands; XTTS-v2 Python sidecar.
-// v1.5: stdio JSON-RPC MCP server (`agent-tts mcp`) for Claude Code / Cursor / Cline.
-// v1.7: streaming text input — `agent-tts stream` (stdin) + `say_stream` MCP tool.
+// v1.5: stdio JSON-RPC MCP server (`ptah mcp`) for Claude Code / Cursor / Cline.
+// v1.7: streaming text input — `ptah stream` (stdin) + `say_stream` MCP tool.
 // v1.8: W3C SSML 1.1 subset (`<emphasis>`/`<break>`/`<prosody>`/`<say-as>`) for
 //       say (transpiled to `[[…]]` directives) and piper (length-scale + silence).
 //
@@ -51,8 +51,8 @@ pub const VERSION = "1.10.13";
 
 // v1.10.13 — point std.log at our custom sink so every `std.log.scoped(.X)`
 // call across the daemon writes to BOTH stderr (launchd captures it) AND a
-// rotating file at `~/.cache/agent-tts/daemon.log`. The runtime
-// `AGENT_TTS_LOG_LEVEL` / `_LOG_SCOPES` env knobs let the operator change
+// rotating file at `~/.cache/ptah/daemon.log`. The runtime
+// `PTAH_LOG_LEVEL` / `_LOG_SCOPES` env knobs let the operator change
 // verbosity without rebuilding. Compile-time `log_level` is set to `.debug`
 // so every scope is reachable; the runtime filter inside `log_mod.logFn`
 // drops messages below the configured level.
@@ -61,41 +61,41 @@ pub const std_options: std.Options = .{
     .log_level = .debug,
 };
 const HELP =
-    \\agent-tts v{s} — multilingual TTS via system voice or libpiper
+    \\ptah v{s} — multilingual TTS via system voice or libpiper
     \\
     \\Usage:
-    \\  agent-tts "texto"                send to running daemon
-    \\  agent-tts --engine piper "..."   route to libpiper instead of system voice
-    \\  agent-tts --lang en "Hello"      force English voice (Amy)
-    \\  agent-tts --lang pt "Olá"        force Portuguese voice (Faber)
-    \\  agent-tts queue                  list pending + playing items
-    \\  agent-tts skip                   skip current playing item
-    \\  agent-tts clear                  drop all pending items
-    \\  agent-tts pause                  pause active playback (v1.10.2)
-    \\  agent-tts resume                 resume paused playback (v1.10.2)
-    \\  agent-tts replay <id>            re-enqueue a past item (v1.10.2)
-    \\  agent-tts history [--limit N]    list last N items, any state (v1.10.2)
-    \\  agent-tts daemon                 run daemon (foreground)
-    \\  agent-tts daemon install         install auto-start unit
+    \\  ptah "texto"                send to running daemon
+    \\  ptah --engine piper "..."   route to libpiper instead of system voice
+    \\  ptah --lang en "Hello"      force English voice (Amy)
+    \\  ptah --lang pt "Olá"        force Portuguese voice (Faber)
+    \\  ptah queue                  list pending + playing items
+    \\  ptah skip                   skip current playing item
+    \\  ptah clear                  drop all pending items
+    \\  ptah pause                  pause active playback (v1.10.2)
+    \\  ptah resume                 resume paused playback (v1.10.2)
+    \\  ptah replay <id>            re-enqueue a past item (v1.10.2)
+    \\  ptah history [--limit N]    list last N items, any state (v1.10.2)
+    \\  ptah daemon                 run daemon (foreground)
+    \\  ptah daemon install         install auto-start unit
     \\                                   (launchd on macOS, systemd on Linux)
-    \\  agent-tts daemon uninstall       remove auto-start unit
-    \\  agent-tts daemon status          print auto-start load state
-    \\  agent-tts voice clone            clone a voice from a 20-120s WAV (v1.4+)
+    \\  ptah daemon uninstall       remove auto-start unit
+    \\  ptah daemon status          print auto-start load state
+    \\  ptah voice clone            clone a voice from a 20-120s WAV (v1.4+)
     \\    --sample <wav> --name <slug>
-    \\  agent-tts voice list             list installed voices (faber + cloned)
-    \\  agent-tts mcp                    speak over stdio MCP (Claude Code / Cursor / Cline) (v1.5+)
-    \\  agent-tts stream                 read stdin, enqueue each sentence as terminators arrive (v1.7+)
+    \\  ptah voice list             list installed voices (faber + cloned)
+    \\  ptah mcp                    speak over stdio MCP (Claude Code / Cursor / Cline) (v1.5+)
+    \\  ptah stream                 read stdin, enqueue each sentence as terminators arrive (v1.7+)
     \\    [--engine X] [--voice V] [--rate R]
-    \\  agent-tts --voice "Felipe" "texto"
-    \\  agent-tts --voice gabriel "..."  use a cloned voice (v1.4+)
-    \\  agent-tts --rate 220 "texto"
+    \\  ptah --voice "Felipe" "texto"
+    \\  ptah --voice gabriel "..."  use a cloned voice (v1.4+)
+    \\  ptah --rate 220 "texto"
     \\
     \\Piper backend (v0.7+):
-    \\  agent-tts --engine piper "texto"               route via libpiper
+    \\  ptah --engine piper "texto"               route via libpiper
     \\                                                 (requires -Dwith-piper=true
-    \\                                                  + AGENT_TTS_PIPER=1 on daemon)
-    \\  agent-tts piper-test "texto" out.wav           synth one WAV (cold init)
-    \\  agent-tts ttfa-bench --engine say|piper --warm N [--input short|long|stream]
+    \\                                                  + PTAH_PIPER=1 on daemon)
+    \\  ptah piper-test "texto" out.wav           synth one WAV (cold init)
+    \\  ptah ttfa-bench --engine say|piper --warm N [--input short|long|stream]
     \\                                                 measure first-sample latency
     \\                                                 (--input long enables v1.2 streaming bench;
     \\                                                  --input stream simulates token-by-token feed)
@@ -115,7 +115,7 @@ const HELP =
     \\  --newline-pause MS  v1.10.8+: pause ms after newline (default 600)
     \\  --speaker-id N      v1.10.8+: Piper multi-speaker id (-1 = voice default)
     \\  --profile P         v1.10.10: tech (default tight-narrator) / stock-tech /
-    \\                                broadcast / expressive. See `agent-tts -h`.
+    \\                                broadcast / expressive. See `ptah -h`.
     \\  --postfx P          v1.10.10: ffmpeg post-fx chain — off (default) / clean
     \\                                / tech (RNNoise+EQ+deesser+comp) / broadcast.
     \\  -h, --help          this help
@@ -133,20 +133,20 @@ const HELP =
     \\Install voices: scripts/fetch-voice.sh + scripts/fetch-voice-en.sh.
     \\
     \\Auto-start per platform:
-    \\  macOS    ~/Library/LaunchAgents/io.github.biliboss.agent-tts.plist
-    \\           (override label via AGENT_TTS_LAUNCHD_LABEL)
-    \\  Linux    ~/.config/systemd/user/agent-tts.service
-    \\           (override unit name via AGENT_TTS_SYSTEMD_UNIT)
+    \\  macOS    ~/Library/LaunchAgents/io.github.biliboss.ptah.plist
+    \\           (override label via PTAH_LAUNCHD_LABEL)
+    \\  Linux    ~/.config/systemd/user/ptah.service
+    \\           (override unit name via PTAH_SYSTEMD_UNIT)
     \\  Windows  not implemented — runs foreground only in v1.3
     \\
     \\Claude Code MCP wire-up (single line in ~/.claude.json):
-    \\  "mcpServers": {{ "agent-tts": {{ "command": "agent-tts", "args": ["mcp"] }} }}
+    \\  "mcpServers": {{ "ptah": {{ "command": "ptah", "args": ["mcp"] }} }}
     \\See ./scripts/install-mcp.sh for an idempotent installer.
     \\
     \\Quality knobs (v1.10.11+, daemon-wide env vars — restart daemon to apply):
-    \\  AGENT_TTS_AUDIO_DITHER       triangle (default) | none — output dither
-    \\  AGENT_TTS_AUDIO_LPF_ORDER    0..8 — linear resampler LPF order (default 8)
-    \\  AGENT_TTS_AUDIO_HEADROOM_DB  dB cut on engine master gain (default 3 → -3 dBFS)
+    \\  PTAH_AUDIO_DITHER       triangle (default) | none — output dither
+    \\  PTAH_AUDIO_LPF_ORDER    0..8 — linear resampler LPF order (default 8)
+    \\  PTAH_AUDIO_HEADROOM_DB  dB cut on engine master gain (default 3 → -3 dBFS)
     \\ONNX runtime (v1.10.11+, applied via env before Piper boot — single-threaded
     \\optimal on Apple Silicon for the 15M-param Faber VITS):
     \\  OMP_NUM_THREADS=1 ORT_NUM_THREADS=1 OMP_THREAD_LIMIT=1 (set by the daemon)
@@ -174,7 +174,7 @@ pub fn main(init: std.process.Init) !void {
                         .linux => systemd.install(arena, io, home, xdg_config, systemd_unit_override, null),
                         .windows => {
                             std.debug.print(
-                                "error: daemon install not implemented on Windows (v1.3 best-effort) — run `agent-tts daemon` from a Startup folder shortcut or schtasks /create\n",
+                                "error: daemon install not implemented on Windows (v1.3 best-effort) — run `ptah daemon` from a Startup folder shortcut or schtasks /create\n",
                                 .{},
                             );
                             std.process.exit(2);
@@ -226,7 +226,7 @@ pub fn main(init: std.process.Init) !void {
             return;
         }
         if (std.mem.eql(u8, cmd, "-V") or std.mem.eql(u8, cmd, "--version")) {
-            std.debug.print("agent-tts {s}\n", .{VERSION});
+            std.debug.print("ptah {s}\n", .{VERSION});
             return;
         }
     }
@@ -247,7 +247,7 @@ fn runPiperTest(
         std.process.exit(2);
     }
     if (args.len < 4) {
-        std.debug.print("usage: agent-tts piper-test \"<text>\" <out.wav>\n", .{});
+        std.debug.print("usage: ptah piper-test \"<text>\" <out.wav>\n", .{});
         std.process.exit(2);
     }
     const text = args[2];
@@ -257,7 +257,7 @@ fn runPiperTest(
 
     const voice_path = try std.fmt.allocPrint(
         arena,
-        "{s}/.cache/agent-tts/voices/pt_BR-faber-medium.onnx",
+        "{s}/.cache/ptah/voices/pt_BR-faber-medium.onnx",
         .{home},
     );
     const espeak_data = "vendor/piper1-gpl/libpiper/dist/share/espeak-ng-data";
@@ -375,7 +375,7 @@ fn runTtfaBench(
         .cloned => {
             std.debug.print(
                 "[ttfa-bench] engine=cloned not benchable from this path (sidecar startup dominates). " ++
-                    "Use `agent-tts --voice <slug> '...'` against a running daemon to measure end-to-end.\n",
+                    "Use `ptah --voice <slug> '...'` against a running daemon to measure end-to-end.\n",
                 .{},
             );
         },
@@ -450,7 +450,7 @@ fn benchPiper(
 
     const voice_path = try std.fmt.allocPrint(
         arena,
-        "{s}/.cache/agent-tts/voices/pt_BR-faber-medium.onnx",
+        "{s}/.cache/ptah/voices/pt_BR-faber-medium.onnx",
         .{home},
     );
     const espeak_data = "vendor/piper1-gpl/libpiper/dist/share/espeak-ng-data";
@@ -547,7 +547,7 @@ fn benchPiperLong(
 
     const voice_path = try std.fmt.allocPrint(
         arena,
-        "{s}/.cache/agent-tts/voices/pt_BR-faber-medium.onnx",
+        "{s}/.cache/ptah/voices/pt_BR-faber-medium.onnx",
         .{home},
     );
     const espeak_data = "vendor/piper1-gpl/libpiper/dist/share/espeak-ng-data";
@@ -807,7 +807,7 @@ fn benchPiperStream(
 
     const voice_path = try std.fmt.allocPrint(
         arena,
-        "{s}/.cache/agent-tts/voices/pt_BR-faber-medium.onnx",
+        "{s}/.cache/ptah/voices/pt_BR-faber-medium.onnx",
         .{home},
     );
     const espeak_data = "vendor/piper1-gpl/libpiper/dist/share/espeak-ng-data";

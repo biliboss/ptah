@@ -1,46 +1,46 @@
 ---
-title: agent-tts
+title: ptah
 description: Native voice channel for AI agents. Zig single-binary CLI + daemon + MCP server + menubar app. Neural Pt-BR + voice cloning + streaming, all offline.
 template: splash
 hero:
   image:
-    file: ../../../public/logos/agent-tts-logo.png
+    file: ../../../public/logos/ptah-logo.png
   tagline: "Native voice channel for your AI agents (v1.10.13). Zig single binary — Claude Code, Cursor, Cline talk through it. Neural Pt-BR by default. Tech-report mode + audio post-fx + structured logging. Clone your own voice. Offline, ~91 ms warm synth, $0 per message."
   actions:
     - text: Install
-      link: https://github.com/biliboss/agent-tts#install
+      link: https://github.com/biliboss/ptah#install
       icon: rocket
       variant: primary
     - text: Try the playground
-      link: /agent-tts/playground/
+      link: /ptah/playground/
       icon: right-arrow
       variant: secondary
     - text: GitHub
-      link: https://github.com/biliboss/agent-tts
+      link: https://github.com/biliboss/ptah
       icon: external
       variant: minimal
 ---
 
 import { Card, CardGrid } from '@astrojs/starlight/components';
 
-## Why agent-tts
+## Why ptah
 
 Your AI agents already write, build, deploy, and review. They should also **talk** — without stealing focus, without a Python venv, without paying ElevenLabs per token, without a shell-out from every tool.
 
 ```bash
 # CLI
-agent-tts "Build green in 12 seconds."
-agent-tts --voice gabriel "Deploy concluído."   # cloned voice
-agent-tts history --limit 10                    # persistent timeline
-agent-tts pause; agent-tts resume; agent-tts replay 42
+ptah "Build green in 12 seconds."
+ptah --voice gabriel "Deploy concluído."   # cloned voice
+ptah history --limit 10                    # persistent timeline
+ptah pause; ptah resume; ptah replay 42
 
 # MCP (Claude Code, Cursor, Cline) — 13 tools
-claude mcp add agent-tts /opt/homebrew/bin/agent-tts mcp
+claude mcp add ptah /opt/homebrew/bin/ptah mcp
 # say · queue · skip · clear · voices · say_stream · pause · resume · replay · history
 # synth_voice_test · voice_knob_search · tech_profile_search
 ```
 
-| | agent-tts | macOS `say` | Piper (Python) | ElevenLabs |
+| | ptah | macOS `say` | Piper (Python) | ElevenLabs |
 |---|---|---|---|---|
 | Warm synth latency | **~91 ms** | n/a | 200–300 ms | 200–800 ms + network |
 | Long-input first audio | **~50 ms** (v1.2 streaming) | n/a | full-input wait | full-input wait |
@@ -63,7 +63,7 @@ claude mcp add agent-tts /opt/homebrew/bin/agent-tts mcp
 
 ## One KPI: time-to-first-audio
 
-Everything is benchmarked against the gap between calling `agent-tts "text"` and the first audible sample.
+Everything is benchmarked against the gap between calling `ptah "text"` and the first audible sample.
 
 | Scenario | Target | Measured |
 |---|---|---|
@@ -77,10 +77,10 @@ Everything is benchmarked against the gap between calling `agent-tts "text"` and
 
 <CardGrid>
   <Card title="MCP server bundled" icon="puzzle">
-    `agent-tts mcp` — stdio JSON-RPC. **13 tools**: `say`, `queue`, `skip`, `clear`, `voices`, `say_stream`, `pause`, `resume`, `replay`, `history`, `synth_voice_test`, `voice_knob_search`, `tech_profile_search`. Drop-in for Claude Code / Cursor / Cline. [Read →](/agent-tts/mcp/)
+    `ptah mcp` — stdio JSON-RPC. **13 tools**: `say`, `queue`, `skip`, `clear`, `voices`, `say_stream`, `pause`, `resume`, `replay`, `history`, `synth_voice_test`, `voice_knob_search`, `tech_profile_search`. Drop-in for Claude Code / Cursor / Cline. [Read →](/ptah/mcp/)
   </Card>
   <Card title="Streaming input" icon="open-book">
-    `agent-tts stream` reads stdin and emits sentences as terminators arrive. MCP `say_stream(stream_id, chunk, final?)` matches the LLM delta shape. Hear the agent before it finishes thinking.
+    `ptah stream` reads stdin and emits sentences as terminators arrive. MCP `say_stream(stream_id, chunk, final?)` matches the LLM delta shape. Hear the agent before it finishes thinking.
   </Card>
   <Card title="Voice cloning" icon="rocket">
     Record 30–90 seconds via the menubar window with a guided Pt-BR script. XTTS-v2 sidecar produces an `embedding.npz`. Use it from any client via `--voice <slug>`.
@@ -89,10 +89,10 @@ Everything is benchmarked against the gap between calling `agent-tts "text"` and
     SQLite WAL keeps every utterance. Pause mid-playback, resume from the same cursor, replay any past item by id. CLI + MCP + menubar all hit the same ops.
   </Card>
   <Card title="Menubar floating player" icon="laptop">
-    macOS NSStatusItem + floating NSPanel. Skip / Replay / voice picker — without opening a terminal. [Read →](/agent-tts/menubar/)
+    macOS NSStatusItem + floating NSPanel. Skip / Replay / voice picker — without opening a terminal. [Read →](/ptah/menubar/)
   </Card>
   <Card title="SSML & prosody" icon="document">
-    W3C SSML 1.1 subset: `<emphasis>`, `<break>`, `<prosody>`, `<say-as>`, plus `<phoneme alphabet="ipa">` and `<sub alias="…">` (v1.10.12) for brand-name IPA and code-identifier substitution. Parse < 0.2 µs / 280 chars. [Read →](/agent-tts/motor/)
+    W3C SSML 1.1 subset: `<emphasis>`, `<break>`, `<prosody>`, `<say-as>`, plus `<phoneme alphabet="ipa">` and `<sub alias="…">` (v1.10.12) for brand-name IPA and code-identifier substitution. Parse < 0.2 µs / 280 chars. [Read →](/ptah/motor/)
   </Card>
   <Card title="Tech-report mode" icon="setting">
     `--profile tech` ships research-anchored Faber knobs (`length=1.05` / `noise=0.35` / `noise_w=0.45`) plus an ~80-entry acronym + unit + brand glossary, a CamelCase splitter and a version/commit-hash/URL/path/hex normalizer. `tech_profile_search` MCP tool A/Bs four bundles in one round-trip (v1.10.8 / v1.10.9).
@@ -104,24 +104,24 @@ Everything is benchmarked against the gap between calling `agent-tts "text"` and
     `--length-scale` / `--noise-scale` / `--noise-w` flags + matching MCP `say` params. No daemon restart for A/B. `synth_voice_test` and `voice_knob_search` MCP tools batch up to 16 variants in one call (v1.10.7 / v1.10.8).
   </Card>
   <Card title="Structured logging" icon="document">
-    `~/.cache/agent-tts/daemon.log` with ISO 8601 lines, rotating at 10 MiB × 3 backups. `AGENT_TTS_LOG_LEVEL` / `_SCOPES` / `_PATH` / `_MAX_BYTES` filter without rebuild. Worker watchdog kills hung ffmpeg, `defer finishPlaying` keeps the queue advancing (v1.10.13).
+    `~/.cache/ptah/daemon.log` with ISO 8601 lines, rotating at 10 MiB × 3 backups. `PTAH_LOG_LEVEL` / `_SCOPES` / `_PATH` / `_MAX_BYTES` filter without rebuild. Worker watchdog kills hung ffmpeg, `defer finishPlaying` keeps the queue advancing (v1.10.13).
   </Card>
 </CardGrid>
 
 ## Locked constraints
 
 - **Platform**: macOS Apple Silicon + Intel universal binary. Linux code paths compile on `ubuntu-latest` CI (espeak-ng + systemd); v1.3 ships structurally, runtime testing in flight.
-- **Footprint**: single ~1 MB binary (`zig build`). Piper voice ONNX (~63 MB) and XTTS-v2 (~1.8 GB) are opt-in downloads to `~/.cache/agent-tts/`.
+- **Footprint**: single ~1 MB binary (`zig build`). Piper voice ONNX (~63 MB) and XTTS-v2 (~1.8 GB) are opt-in downloads to `~/.cache/ptah/`.
 - **Architecture**: CLI + daemon + MCP + menubar all share the binary or the same UNIX socket protocol.
 - **Pt-BR human cadence**: cardinals, abbreviations, and punctuation pauses preprocessed in 2–5 µs.
 - **Offline by default**: no cloud, no telemetry, no quota. Voice models cached locally.
 
 ## License
 
-Dual **MIT OR Apache-2.0** for the agent-tts source. **GPL-3.0-or-later** inherits when you build with `-Dwith-piper=true` (libpiper is GPL). The XTTS sidecar runs out-of-process so MPL-2.0 (Coqui TTS) stays at the process line.
+Dual **MIT OR Apache-2.0** for the ptah source. **GPL-3.0-or-later** inherits when you build with `-Dwith-piper=true` (libpiper is GPL). The XTTS sidecar runs out-of-process so MPL-2.0 (Coqui TTS) stays at the process line.
 
 ## Stay in sync
 
-Living project. Eighteen base + thirteen patch milestones already shipped (current head **v1.10.13**) — see the [Roadmap](/agent-tts/roadmap/) and [Changelog](/agent-tts/changelog/) for the full timeline. The current state of every feature lives in [Architecture](/agent-tts/arquitetura/), [TTS engine](/agent-tts/motor/), [MCP server](/agent-tts/mcp/), [Menubar UI](/agent-tts/menubar/), and [Playground](/agent-tts/playground/).
+Living project. Eighteen base + thirteen patch milestones already shipped (current head **v1.10.13**) — see the [Roadmap](/ptah/roadmap/) and [Changelog](/ptah/changelog/) for the full timeline. The current state of every feature lives in [Architecture](/ptah/arquitetura/), [TTS engine](/ptah/motor/), [MCP server](/ptah/mcp/), [Menubar UI](/ptah/menubar/), and [Playground](/ptah/playground/).
 
-> PRs welcome at [biliboss/agent-tts](https://github.com/biliboss/agent-tts). Vote with stars + issues tagged `roadmap` to push priority.
+> PRs welcome at [biliboss/ptah](https://github.com/biliboss/ptah). Vote with stars + issues tagged `roadmap` to push priority.

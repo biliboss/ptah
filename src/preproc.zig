@@ -171,7 +171,7 @@ pub const TechOptions = struct {
 ///   (`- Label: detail`) in `<prosody pitch="+5%">…</prosody>`. On by
 ///   default; same rationale.
 /// * `enable_breathing` — emits a literal `[[breath]]` marker every 2-3
-///   sentences. The marker is no-op unless `AGENT_TTS_BREATH_WAV` is set
+///   sentences. The marker is no-op unless `PTAH_BREATH_WAV` is set
 ///   AND the daemon's breath splice path activates. Off by default to
 ///   avoid a silent failure when the user hasn't generated the WAV.
 pub const CadenceOptions = struct {
@@ -238,7 +238,7 @@ pub fn processWithPauses(
 /// substrings inside them (e.g. `HTTPS` inside `https://…` is not
 /// glossary-matched once the URL detector has already stripped the
 /// protocol). The trade-off: the glossary's second pass still fires on
-/// the rewritten output, so a URL tail like `agent-tts` will see `tts`
+/// the rewritten output, so a URL tail like `ptah` will see `tts`
 /// spelled letter-by-letter — accepted scope because the alternative
 /// (Piper saying "ts" as a Pt-BR diphthong) is worse.
 pub fn techPipeline(
@@ -294,7 +294,7 @@ pub fn processTech(
 //
 // 3. **Breathing simulation.** A state machine emits `[[breath]]` (a
 //    literal marker the daemon's audio path translates to an 80ms
-//    pink-noise splice IF `AGENT_TTS_BREATH_WAV` is set) every 2-3
+//    pink-noise splice IF `PTAH_BREATH_WAV` is set) every 2-3
 //    sentences. Also emits a `<break time="80ms"/>` SSML break so the
 //    silent fallback still slows the cadence audibly.
 //
@@ -1170,7 +1170,7 @@ fn isAsciiLower(c: u8) bool {
 //   * Versions  `1.10.8`                       → `1 ponto 10 ponto 8`
 //   * Commit    `bdd352e`                      → `commit bê dê dê três cinco dois é`
 //   * URLs      `https://github.com/foo/bar`   → `github ponto com barra foo barra bar`
-//   * Paths     `~/.cache/agent-tts/voices/`   → `pasta voices`
+//   * Paths     `~/.cache/ptah/voices/`   → `pasta voices`
 //   * Hex       `0xFF`                          → `zero-x F F`
 //
 // Each rule is independent. Detection priority (highest first): URL → hex
@@ -1976,7 +1976,7 @@ test "normalize: URL strip protocol + replace . and /" {
 
 test "normalize: file path final component only" {
     try runNorm(
-        "veja ~/.cache/agent-tts/voices/ aqui",
+        "veja ~/.cache/ptah/voices/ aqui",
         "veja pasta voices aqui",
     );
 }
@@ -2007,7 +2007,7 @@ test "techPipeline: version + hash + URL together" {
     );
     // normalizeIdentifiers runs FIRST so the URL/version/commit-hash spans
     // are protected from glossary-1 catching `HTTPS` substring. Glossary-2
-    // still fires on the URL tail (`agent-tts` → `agent-T T S`), which is
+    // still fires on the URL tail (`ptah` → `agent-T T S`), which is
     // ear-acceptable.
     try testing.expectEqualStrings(
         "v um ponto dez ponto oito em C P U. Commit commit bê dê dê três cinco dois é. Veja github ponto com barra biliboss barra agent-T T S",

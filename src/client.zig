@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // Client: connect to running daemon, dispatch one of:
-//   enqueue (default)     — `agent-tts "texto"`
-//   queue                 — `agent-tts queue` lists pending+playing items
-//   skip                  — `agent-tts skip` kills current playing item
-//   clear                 — `agent-tts clear` drops all pending items
+//   enqueue (default)     — `ptah "texto"`
+//   queue                 — `ptah queue` lists pending+playing items
+//   skip                  — `ptah skip` kills current playing item
+//   clear                 — `ptah clear` drops all pending items
 //
 // v0.3 does NOT auto-start the daemon — if connect fails, user is told to
-// start it manually with `agent-tts daemon`. Auto-start lands in v0.4.
+// start it manually with `ptah daemon`. Auto-start lands in v0.4.
 
 const std = @import("std");
 const ipc = @import("ipc.zig");
@@ -28,18 +28,18 @@ pub const QueueItem = struct {
 };
 
 const HELP =
-    \\agent-tts — multilingual TTS via macOS `say` or libpiper (v1.1+)
+    \\ptah — multilingual TTS via macOS `say` or libpiper (v1.1+)
     \\
     \\Usage:
-    \\  agent-tts "texto"                enqueue text on the running daemon
-    \\  agent-tts queue                  list pending + playing items
-    \\  agent-tts skip                   skip the current playing item
-    \\  agent-tts clear                  drop all pending items
-    \\  agent-tts pause                  pause active playback (v1.10.2)
-    \\  agent-tts resume                 resume paused playback (v1.10.2)
-    \\  agent-tts replay <id>            re-enqueue a past item (v1.10.2)
-    \\  agent-tts history [--limit N]    list last N items, any state (v1.10.2)
-    \\  agent-tts daemon                 run daemon (foreground)
+    \\  ptah "texto"                enqueue text on the running daemon
+    \\  ptah queue                  list pending + playing items
+    \\  ptah skip                   skip the current playing item
+    \\  ptah clear                  drop all pending items
+    \\  ptah pause                  pause active playback (v1.10.2)
+    \\  ptah resume                 resume paused playback (v1.10.2)
+    \\  ptah replay <id>            re-enqueue a past item (v1.10.2)
+    \\  ptah history [--limit N]    list last N items, any state (v1.10.2)
+    \\  ptah daemon                 run daemon (foreground)
     \\
     \\Options (for enqueue):
     \\  --engine say|piper  TTS backend (default: piper; say = fallback)
@@ -71,13 +71,13 @@ const HELP =
     \\                                    + noise_w=1.10 + sent=500 + comma=160.
     \\  --postfx P          v1.10.10: ffmpeg post-processing chain applied to
     \\                       the synth PCM before zaudio playback. Requires
-    \\                       ffmpeg on PATH (or AGENT_TTS_FFMPEG_PATH).
+    \\                       ffmpeg on PATH (or PTAH_FFMPEG_PATH).
     \\                       off          no-op (default).
     \\                       clean        highpass 80 Hz + 2:1 compressor.
     \\                       tech         RNNoise + 4-band EQ + de-esser + comp
     \\                                    (RNNoise model from
-    \\                                    AGENT_TTS_POSTFX_RNNN_MODEL or
-    \\                                    ~/.cache/agent-tts/rnnoise/cb.rnnn).
+    \\                                    PTAH_POSTFX_RNNN_MODEL or
+    \\                                    ~/.cache/ptah/rnnoise/cb.rnnn).
     \\                       broadcast    EQ + de-esser + 3:1 compressor.
     \\  -h, --help          this help
     \\  -V, --version       print version
@@ -333,7 +333,7 @@ fn cmdEnqueue(arena: std.mem.Allocator, io: std.Io, home: []const u8, args: []co
     // Implicit routing: if user passed `--voice <slug>` without an explicit
     // `--engine`, peek the slug to decide. faber → piper, Luciana/known say
     // voices keep the current default, anything else with a matching dir
-    // under ~/.cache/agent-tts/voices/<slug>/ routes to cloned.
+    // under ~/.cache/ptah/voices/<slug>/ routes to cloned.
     if (!engine_explicit and voice_arg != null) {
         engine = resolveEngineFromVoice(arena, io, home, voice_arg.?);
     }
@@ -378,12 +378,12 @@ fn cmdEnqueue(arena: std.mem.Allocator, io: std.Io, home: []const u8, args: []co
     const rt_ms = @as(f64, @floatFromInt(t_end.nanoseconds - t_start.nanoseconds)) / 1_000_000.0;
 
     if (std.mem.startsWith(u8, line, "OK\t")) {
-        std.debug.print("[agent-tts] enqueued id={s} round-trip={d:.1}ms\n", .{ line[3..], rt_ms });
+        std.debug.print("[ptah] enqueued id={s} round-trip={d:.1}ms\n", .{ line[3..], rt_ms });
     } else if (std.mem.startsWith(u8, line, "ERR\t")) {
-        std.debug.print("[agent-tts] daemon error: {s}\n", .{line[4..]});
+        std.debug.print("[ptah] daemon error: {s}\n", .{line[4..]});
         std.process.exit(1);
     } else {
-        std.debug.print("[agent-tts] unexpected response: {s}\n", .{line});
+        std.debug.print("[ptah] unexpected response: {s}\n", .{line});
         std.process.exit(1);
     }
 }
@@ -417,7 +417,7 @@ fn cmdQueue(arena: std.mem.Allocator, io: std.Io, home: []const u8) !void {
         const line = if (raw.len > 0 and raw[raw.len - 1] == '\n') raw[0 .. raw.len - 1] else raw;
         if (std.mem.eql(u8, line, "END")) break;
         if (std.mem.startsWith(u8, line, "ERR\t")) {
-            std.debug.print("[agent-tts] daemon error: {s}\n", .{line[4..]});
+            std.debug.print("[ptah] daemon error: {s}\n", .{line[4..]});
             std.process.exit(1);
         }
         if (std.mem.startsWith(u8, line, "ITEM\t")) {
@@ -464,12 +464,12 @@ fn cmdSkip(arena: std.mem.Allocator, io: std.Io, home: []const u8) !void {
         const id_str = line[3..];
         const id = std.fmt.parseInt(u64, id_str, 10) catch 0;
         if (id == 0) {
-            std.debug.print("[agent-tts] nothing playing\n", .{});
+            std.debug.print("[ptah] nothing playing\n", .{});
         } else {
-            std.debug.print("[agent-tts] skipped id={d}\n", .{id});
+            std.debug.print("[ptah] skipped id={d}\n", .{id});
         }
     } else {
-        std.debug.print("[agent-tts] unexpected: {s}\n", .{line});
+        std.debug.print("[ptah] unexpected: {s}\n", .{line});
         std.process.exit(1);
     }
 }
@@ -477,9 +477,9 @@ fn cmdSkip(arena: std.mem.Allocator, io: std.Io, home: []const u8) !void {
 fn cmdClear(arena: std.mem.Allocator, io: std.Io, home: []const u8) !void {
     const line = try simpleOp(arena, io, home, "CLEAR\n");
     if (std.mem.startsWith(u8, line, "OK\t")) {
-        std.debug.print("[agent-tts] cleared {s} pending\n", .{line[3..]});
+        std.debug.print("[ptah] cleared {s} pending\n", .{line[3..]});
     } else {
-        std.debug.print("[agent-tts] unexpected: {s}\n", .{line});
+        std.debug.print("[ptah] unexpected: {s}\n", .{line});
         std.process.exit(1);
     }
 }
@@ -490,12 +490,12 @@ fn cmdClear(arena: std.mem.Allocator, io: std.Io, home: []const u8) !void {
 fn cmdPause(arena: std.mem.Allocator, io: std.Io, home: []const u8) !void {
     const line = try simpleOp(arena, io, home, "PAUSE\n");
     if (std.mem.startsWith(u8, line, "OK\t")) {
-        std.debug.print("[agent-tts] paused id={s}\n", .{line[3..]});
+        std.debug.print("[ptah] paused id={s}\n", .{line[3..]});
     } else if (std.mem.startsWith(u8, line, "ERR\t")) {
-        std.debug.print("[agent-tts] {s}\n", .{line[4..]});
+        std.debug.print("[ptah] {s}\n", .{line[4..]});
         std.process.exit(1);
     } else {
-        std.debug.print("[agent-tts] unexpected: {s}\n", .{line});
+        std.debug.print("[ptah] unexpected: {s}\n", .{line});
         std.process.exit(1);
     }
 }
@@ -503,19 +503,19 @@ fn cmdPause(arena: std.mem.Allocator, io: std.Io, home: []const u8) !void {
 fn cmdResume(arena: std.mem.Allocator, io: std.Io, home: []const u8) !void {
     const line = try simpleOp(arena, io, home, "RESUME\n");
     if (std.mem.startsWith(u8, line, "OK\t")) {
-        std.debug.print("[agent-tts] resumed id={s}\n", .{line[3..]});
+        std.debug.print("[ptah] resumed id={s}\n", .{line[3..]});
     } else if (std.mem.startsWith(u8, line, "ERR\t")) {
-        std.debug.print("[agent-tts] {s}\n", .{line[4..]});
+        std.debug.print("[ptah] {s}\n", .{line[4..]});
         std.process.exit(1);
     } else {
-        std.debug.print("[agent-tts] unexpected: {s}\n", .{line});
+        std.debug.print("[ptah] unexpected: {s}\n", .{line});
         std.process.exit(1);
     }
 }
 
 fn cmdReplay(arena: std.mem.Allocator, io: std.Io, home: []const u8, args: []const []const u8) !void {
     if (args.len < 3) {
-        std.debug.print("usage: agent-tts replay <id>\n", .{});
+        std.debug.print("usage: ptah replay <id>\n", .{});
         std.process.exit(2);
     }
     const id = std.fmt.parseInt(u64, args[2], 10) catch {
@@ -525,12 +525,12 @@ fn cmdReplay(arena: std.mem.Allocator, io: std.Io, home: []const u8, args: []con
     const cmd = try std.fmt.allocPrint(arena, "REPLAY\t{d}\n", .{id});
     const line = try simpleOp(arena, io, home, cmd);
     if (std.mem.startsWith(u8, line, "OK\t")) {
-        std.debug.print("[agent-tts] replayed id={d} as new id={s}\n", .{ id, line[3..] });
+        std.debug.print("[ptah] replayed id={d} as new id={s}\n", .{ id, line[3..] });
     } else if (std.mem.startsWith(u8, line, "ERR\t")) {
-        std.debug.print("[agent-tts] {s}\n", .{line[4..]});
+        std.debug.print("[ptah] {s}\n", .{line[4..]});
         std.process.exit(1);
     } else {
-        std.debug.print("[agent-tts] unexpected: {s}\n", .{line});
+        std.debug.print("[ptah] unexpected: {s}\n", .{line});
         std.process.exit(1);
     }
 }
@@ -574,7 +574,7 @@ fn cmdHistory(arena: std.mem.Allocator, io: std.Io, home: []const u8, args: []co
         const line = if (raw.len > 0 and raw[raw.len - 1] == '\n') raw[0 .. raw.len - 1] else raw;
         if (std.mem.eql(u8, line, "END")) break;
         if (std.mem.startsWith(u8, line, "ERR\t")) {
-            std.debug.print("[agent-tts] daemon error: {s}\n", .{line[4..]});
+            std.debug.print("[ptah] daemon error: {s}\n", .{line[4..]});
             std.process.exit(1);
         }
         if (!std.mem.startsWith(u8, line, "ITEM\t")) continue;
@@ -617,7 +617,7 @@ fn simpleOp(arena: std.mem.Allocator, io: std.Io, home: []const u8, cmd: []const
 
     const line = try sr.interface.takeDelimiterExclusive('\n');
     if (std.mem.startsWith(u8, line, "ERR\t")) {
-        std.debug.print("[agent-tts] daemon error: {s}\n", .{line[4..]});
+        std.debug.print("[ptah] daemon error: {s}\n", .{line[4..]});
         std.process.exit(1);
     }
     return try arena.dupe(u8, line);
@@ -639,7 +639,7 @@ fn resolveEngineFromVoice(
     if (std.mem.eql(u8, voice, "faber")) return .piper;
     const meta_path = std.fmt.allocPrint(
         arena,
-        "{s}/.cache/agent-tts/voices/{s}/metadata.json",
+        "{s}/.cache/ptah/voices/{s}/metadata.json",
         .{ home, voice },
     ) catch return .say;
     var f = std.Io.Dir.cwd().openFile(io, meta_path, .{}) catch return .say;
@@ -652,7 +652,7 @@ fn openSocket(arena: std.mem.Allocator, io: std.Io, home: []const u8) !std.Io.ne
     var addr = try std.Io.net.UnixAddress.init(sock_path);
     const stream = addr.connect(io) catch |e| {
         std.debug.print(
-            "error: cannot reach daemon at {s} ({s}).\nstart with: agent-tts daemon\n",
+            "error: cannot reach daemon at {s} ({s}).\nstart with: ptah daemon\n",
             .{ sock_path, @errorName(e) },
         );
         std.process.exit(1);

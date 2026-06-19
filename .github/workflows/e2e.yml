@@ -36,12 +36,12 @@ jobs:
         run: npm run build
         env:
           SITE: http://localhost:4321
-          BASE: /agent-tts
+          BASE: /ptah
       - name: Run Playwright against preview
         run: |
           npx astro preview --port 4321 &
-          npx wait-on http://localhost:4321/agent-tts/ -t 30000
-          E2E_BASE_URL=http://localhost:4321/agent-tts/ npx playwright test
+          npx wait-on http://localhost:4321/ptah/ -t 30000
+          E2E_BASE_URL=http://localhost:4321/ptah/ npx playwright test
       - uses: actions/upload-artifact@v4
         if: failure()
         with:

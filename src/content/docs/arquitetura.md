@@ -13,7 +13,7 @@ Every component exists to cut **time-to-first-audio (TTFA)**.
 
 ```
 ┌─────────────┐    UNIX socket    ┌────────────────────┐
-│  agent-tts  │ ───ENQUEUE──────▶ │       daemon       │
+│  ptah  │ ───ENQUEUE──────▶ │       daemon       │
 │  (client)   │ ◀── OK + id ────  │  - accept loop     │
 └─────────────┘                   │  - SQLite WAL      │
                                   │  - worker thread   │
@@ -37,7 +37,7 @@ Every component exists to cut **time-to-first-audio (TTFA)**.
 Filesystem layout:
 
 ```
-~/.cache/agent-tts/
+~/.cache/ptah/
   queue.db          SQLite WAL (items + state machine)
   sock              UNIX stream socket
   voices/           Piper ONNX models (downloaded once)
@@ -47,12 +47,12 @@ Filesystem layout:
   daemon.log.1..3   rotated backups
 
 ~/Library/LaunchAgents/
-  io.github.biliboss.agent-tts.plist
+  io.github.biliboss.ptah.plist
 ```
 
 ## Logging & observability (v1.10.13+)
 
-The daemon uses `std.log.scoped(...)` instead of ad-hoc `std.debug.print`. Every call site picks a scope (`daemon`, `worker`, `audio`, `postfx`, `mcp`, …) and a level (`err` / `warn` / `info` / `debug`). The custom `logFn` (in `src/log.zig`) writes each line to BOTH stderr (launchd captures it in `daemon.err.log` — backwards-compatible) AND a rotating file at `~/.cache/agent-tts/daemon.log`.
+The daemon uses `std.log.scoped(...)` instead of ad-hoc `std.debug.print`. Every call site picks a scope (`daemon`, `worker`, `audio`, `postfx`, `mcp`, …) and a level (`err` / `warn` / `info` / `debug`). The custom `logFn` (in `src/log.zig`) writes each line to BOTH stderr (launchd captures it in `daemon.err.log` — backwards-compatible) AND a rotating file at `~/.cache/ptah/daemon.log`.
 
 Line format:
 
@@ -68,17 +68,17 @@ Operator knobs (read once on first log call, cached for daemon lifetime — rest
 
 | Env var | Default | Purpose |
 | --- | --- | --- |
-| `AGENT_TTS_LOG_PATH` | `~/.cache/agent-tts/daemon.log` | File sink path |
-| `AGENT_TTS_LOG_LEVEL` | `info` | Drops messages below this level. Use `debug` for verbose chain dumps. |
-| `AGENT_TTS_LOG_SCOPES` | (empty = all) | Comma-separated allow-list, e.g. `worker,postfx`. Up to 16 entries. |
-| `AGENT_TTS_LOG_MAX_BYTES` | `10485760` (10 MiB) | Rotation threshold. When the active file exceeds this, `daemon.log → .1`, `.1 → .2`, `.2 → .3`, oldest dropped. |
-| `AGENT_TTS_POSTFX_TIMEOUT_MS` | `5000` | Postfx ffmpeg watchdog deadline. On expiry the subprocess is `SIGTERM`'d (then `SIGKILL` after a 1 s grace) and the worker falls through to dry PCM. |
+| `PTAH_LOG_PATH` | `~/.cache/ptah/daemon.log` | File sink path |
+| `PTAH_LOG_LEVEL` | `info` | Drops messages below this level. Use `debug` for verbose chain dumps. |
+| `PTAH_LOG_SCOPES` | (empty = all) | Comma-separated allow-list, e.g. `worker,postfx`. Up to 16 entries. |
+| `PTAH_LOG_MAX_BYTES` | `10485760` (10 MiB) | Rotation threshold. When the active file exceeds this, `daemon.log → .1`, `.1 → .2`, `.2 → .3`, oldest dropped. |
+| `PTAH_POSTFX_TIMEOUT_MS` | `5000` | Postfx ffmpeg watchdog deadline. On expiry the subprocess is `SIGTERM`'d (then `SIGKILL` after a 1 s grace) and the worker falls through to dry PCM. |
 
-The `worker` thread also emits a `debug`-level heartbeat (`worker heartbeat queue=N current_playing_id=X`) every 10 s. Heartbeats are silent at default `info` level; set `AGENT_TTS_LOG_LEVEL=debug` to see them.
+The `worker` thread also emits a `debug`-level heartbeat (`worker heartbeat queue=N current_playing_id=X`) every 10 s. Heartbeats are silent at default `info` level; set `PTAH_LOG_LEVEL=debug` to see them.
 
 **Worker resilience (v1.10.13).** `workerLoop` now wraps `runOne` with `defer res.queue.finishPlaying(io, item.id)`. Every `runOne` path is supposed to call `finishPlaying` itself, but the v1.10.12 audit found error escapes (OutOfMemory on SSML cadence prep, panics inside the SSML walker, postfx returns to a closed pipe) that could leave the row stuck in `playing`. The `defer` is idempotent over `state='playing'`, so the well-behaved paths that already called it are unaffected — the defer only fires when the explicit call was skipped due to an error escape. Combined with the postfx watchdog, a single bad item can no longer wedge the queue.
 
-The synth side does NOT yet have a similar watchdog. The v1.10.13 spec asked for a 20 s soft-warn + 60 s hard-fail around piper inference, but libpiper exposes no `piper_cancel()` C ABI — a hard fail would leak the synth thread. The diagnosed v1.10.12 stall was postfx, not synth, so the defer + watchdog combo above closes the actual hole. An `AGENT_TTS_SYNTH_TIMEOUT_MS` knob is pencilled in for v1.10.14+ if a real synth hang ever shows up in production.
+The synth side does NOT yet have a similar watchdog. The v1.10.13 spec asked for a 20 s soft-warn + 60 s hard-fail around piper inference, but libpiper exposes no `piper_cancel()` C ABI — a hard fail would leak the synth thread. The diagnosed v1.10.12 stall was postfx, not synth, so the defer + watchdog combo above closes the actual hole. An `PTAH_SYNTH_TIMEOUT_MS` knob is pencilled in for v1.10.14+ if a real synth hang ever shows up in production.
 
 ## Components
 
@@ -93,13 +93,13 @@ Version pinned in `build.zig.zon` — Zig still breaks between minor releases.
 
 ### CLI + daemon + MCP share the binary
 
-Cuts install surface. `agent-tts` without args = client. `agent-tts daemon` = server. `agent-tts mcp` = stdio JSON-RPC bridge for MCP clients (v1.5+). Dispatch by `argv[1]`.
+Cuts install surface. `ptah` without args = client. `ptah daemon` = server. `ptah mcp` = stdio JSON-RPC bridge for MCP clients (v1.5+). Dispatch by `argv[1]`.
 
-The client does NOT fork the daemon. The daemon survives because of launchd (`agent-tts daemon install`), so the warm-path round-trip stays under a millisecond.
+The client does NOT fork the daemon. The daemon survives because of launchd (`ptah daemon install`), so the warm-path round-trip stays under a millisecond.
 
 ### Third client: SwiftUI menubar app (v1.10+)
 
-`ui/menubar/AgentTTSMenubar.app` is a Swift Package outside the Zig binary that talks the same UNIX-socket TSV protocol. NSStatusItem hosts a 320×420 SwiftUI popover with the live queue, Skip + Clear buttons, and a voice picker that discovers cloned voices under `~/.cache/agent-tts/voices/<slug>/metadata.json`. The daemon is unchanged — the menubar app is a third client on the wire, alongside the CLI and the MCP shim. See [Menubar UI](/agent-tts/menubar/).
+`ui/menubar/AgentTTSMenubar.app` is a Swift Package outside the Zig binary that talks the same UNIX-socket TSV protocol. NSStatusItem hosts a 320×420 SwiftUI popover with the live queue, Skip + Clear buttons, and a voice picker that discovers cloned voices under `~/.cache/ptah/voices/<slug>/metadata.json`. The daemon is unchanged — the menubar app is a third client on the wire, alongside the CLI and the MCP shim. See [Menubar UI](/ptah/menubar/).
 
 **v1.10.2 — floating player overlay.** AppDelegate runs a 750 ms `Timer` that polls `QUEUE` regardless of popover state. When a `state=="playing"` row appears AND the user toggled the floating widget on (`AgentTTSMenubar.floatingPlayerEnabled` in UserDefaults), an always-on-top `NSPanel` (`level = .floating`, `.hudWindow` style, `.canJoinAllSpaces`) shows the current item plus pause / resume / skip / replay buttons. The polling cadence matches the popover's so daemon load is constant; the toggle defaults OFF so v1.10.1 upgrades don't surface a new window unexpectedly.
 
@@ -111,7 +111,7 @@ REPLAY does a `SELECT … WHERE id=?` followed by `INSERT … VALUES (text,voice
 
 ### IPC: UNIX socket
 
-Path: `~/.cache/agent-tts/sock`. Faster than TCP loopback (no checksum, no TCP stack). Line-delimited TSV protocol.
+Path: `~/.cache/ptah/sock`. Faster than TCP loopback (no checksum, no TCP stack). Line-delimited TSV protocol.
 
 Current ENQUEUE shape (v1.10.10 — **10 fields**):
 
@@ -155,7 +155,7 @@ Cleanup: the daemon registers SIGTERM/SIGINT and unlinks the socket on exit. On 
 
 ### Queue: SQLite WAL
 
-`~/.cache/agent-tts/queue.db`. Survives daemon crash, reboot, and SKIP. WAL mode lets the worker drain without blocking `agent-tts queue` reads.
+`~/.cache/ptah/queue.db`. Survives daemon crash, reboot, and SKIP. WAL mode lets the worker drain without blocking `ptah queue` reads.
 
 Schema (current — v1.10.10 final form, source = `src/queue.zig::SCHEMA`):
 
@@ -205,7 +205,7 @@ Selected per item via the `engine` column. The worker picks the matching path:
 | `piper` (>1 chunk) | v1.2 pipeline: synth thread + audio thread + 2-slot bounded ring; per-chunk lang via `detect.detect` |
 | `cloned` (v1.4) | spawn `scripts/voice_synth.py` → drain s16le PCM on stdout → `AudioPlayer.streamS16le(samples, 22050)` |
 
-If `--engine piper` arrives but the engine is not loaded (binary built without `-Dwith-piper=true`, or `AGENT_TTS_PIPER=1` was not set), the worker logs a warning and falls back to `say`. For `cloned`, missing embedding OR sidecar failure falls back to piper Faber when available, else `say` Luciana.
+If `--engine piper` arrives but the engine is not loaded (binary built without `-Dwith-piper=true`, or `PTAH_PIPER=1` was not set), the worker logs a warning and falls back to `say`. For `cloned`, missing embedding OR sidecar failure falls back to piper Faber when available, else `say` Luciana.
 
 Every PCM-producing path (piper fast-lane, piper streaming, piper SSML, cloned sidecar) funnels through a single `playWithPostfx` helper before reaching `audio_player.streamS16leAppend`. That helper is where the v1.10.10 post-fx pipeline plugs in — see [Post-fx pipeline](#post-fx-pipeline-v11010) below. The `say` path bypasses it entirely (no PCM to filter; `say` owns its own playback).
 
@@ -222,7 +222,7 @@ Result on a 490-word Pt-BR monologue: first-audio drops from ~3 s (v0.7 serial) 
 
 ### Incremental chunker (v1.7)
 
-The v1.2 pipeline assumes the full text is available before chunking. v1.7 adds an `IncrementalChunker` state machine in `preproc.zig` for the streaming-input case (`agent-tts stream` over stdin and `say_stream` MCP tool):
+The v1.2 pipeline assumes the full text is available before chunking. v1.7 adds an `IncrementalChunker` state machine in `preproc.zig` for the streaming-input case (`ptah stream` over stdin and `say_stream` MCP tool):
 
 - **`buffer: ArrayList(u8)`** — bytes received but not yet emitted. The chunker compacts the buffer (drops the consumed prefix) after every emission.
 - **`scan_idx`** — cursor into `buffer` for the next byte to inspect. Reset to 0 on compaction so each byte is touched O(1) amortized across all `feed` calls.
@@ -251,9 +251,9 @@ Vendored from [zig-gamedev/zaudio](https://github.com/zig-gamedev/zaudio). Linke
 
 - **Linear resampler LPF order** — `pitch_resampling.linear.lpf_order = 8` (default 0 in miniaudio). Catches the 22050 → 48000 upsample edge for every Sound that mixes through the engine; eliminates sibilant aliasing without measurable CPU cost.
 - **Master gain stage** — `engine.setGainDb(-3.0)` drops the f32 mix by 3 dB before the device-format converter. Faber's stressed vowels can push peaks toward 0 dBFS; -3 dB margin avoids hard clipping at the s16 output.
-- **Dither intent** — `AGENT_TTS_AUDIO_DITHER` parsed and logged; the Engine doesn't expose `dither_mode` so today this is a no-op declaration. The env knob exists so a future custom `data_callback` over `ma_data_converter` can flip dither without breaking the operator contract.
+- **Dither intent** — `PTAH_AUDIO_DITHER` parsed and logged; the Engine doesn't expose `dither_mode` so today this is a no-op declaration. The env knob exists so a future custom `data_callback` over `ma_data_converter` can flip dither without breaking the operator contract.
 
-All three are env-overridable: `AGENT_TTS_AUDIO_LPF_ORDER`, `AGENT_TTS_AUDIO_HEADROOM_DB`, `AGENT_TTS_AUDIO_DITHER`. See [`motor.md`](/agent-tts/motor/#onnx-runtime--miniaudio-quality-v11011) for the research provenance.
+All three are env-overridable: `PTAH_AUDIO_LPF_ORDER`, `PTAH_AUDIO_HEADROOM_DB`, `PTAH_AUDIO_DITHER`. See [`motor.md`](/ptah/motor/#onnx-runtime--miniaudio-quality-v11011) for the research provenance.
 
 ### Post-fx pipeline (v1.10.10+)
 
@@ -286,15 +286,15 @@ v1.10.13 in `src/postfx.zig::apply` now spawns three threads around every ffmpeg
 
 1. **Main thread** — writes `samples` into ffmpeg's stdin in chunks, closes stdin when done.
 2. **Drainer thread** — reads ffmpeg's stdout into the result buffer concurrently. Neither pipe ever fills because they're being drained in parallel.
-3. **Watchdog thread** — sleeps in 50 ms slices for up to `AGENT_TTS_POSTFX_TIMEOUT_MS` (default 5000). On deadline expiry it `SIGTERM`s ffmpeg, waits 1 s, then `SIGKILL`s if still alive. A `done` atomic retires the watchdog cleanly on healthy completion.
+3. **Watchdog thread** — sleeps in 50 ms slices for up to `PTAH_POSTFX_TIMEOUT_MS` (default 5000). On deadline expiry it `SIGTERM`s ffmpeg, waits 1 s, then `SIGKILL`s if still alive. A `done` atomic retires the watchdog cleanly on healthy completion.
 
 All three threads join before `apply()` returns, so the per-call arena allocations stay valid. On watchdog fire the worker falls through to dry PCM (`was_processed=false`) and logs `[postfx] watchdog killed ffmpeg after 2000ms — fallthrough`. The queue advances either way — the worker's `defer res.queue.finishPlaying(...)` belt-and-braces line (see "Logging & observability" above) guarantees the row flips to `done` even if a downstream call escapes with an error.
 
-The watchdog was live-validated by setting `AGENT_TTS_FFMPEG_PATH=/tmp/fake-ffmpeg.sh` to a script that exec'd `sleep 999` — watchdog killed it after 2000 ms exactly, dry PCM played, queue continued.
+The watchdog was live-validated by setting `PTAH_FFMPEG_PATH=/tmp/fake-ffmpeg.sh` to a script that exec'd `sleep 999` — watchdog killed it after 2000 ms exactly, dry PCM played, queue continued.
 
 ### MCP server (v1.5+)
 
-`src/mcp.zig` adds a third entry point: `agent-tts mcp` runs a stdio JSON-RPC 2.0 loop. Newline-delimited JSON (NOT LSP-style `Content-Length` framing — that is the MCP convention for stdio transport). Methods landed in v1.5:
+`src/mcp.zig` adds a third entry point: `ptah mcp` runs a stdio JSON-RPC 2.0 loop. Newline-delimited JSON (NOT LSP-style `Content-Length` framing — that is the MCP convention for stdio transport). Methods landed in v1.5:
 
 - `initialize` → returns `protocolVersion: 2024-11-05`, `capabilities.tools.listChanged=false`, `serverInfo`
 - `notifications/initialized` → acked, no response
@@ -309,7 +309,7 @@ The 5 tools shim the existing UNIX socket protocol via `client.zig` helpers — 
 | `queue` | `QUEUE` | `{ items: [...] }` |
 | `skip` | `SKIP` | `{ skipped_id }` |
 | `clear` | `CLEAR` | `{ cleared_count }` |
-| `voices` | local file scan | `{ voices: [...] }` (hardcoded `say` + `~/.cache/agent-tts/voices/*.onnx` for piper) |
+| `voices` | local file scan | `{ voices: [...] }` (hardcoded `say` + `~/.cache/ptah/voices/*.onnx` for piper) |
 
 No new wire protocol, no daemon changes. The MCP server is a 500-line shim over the same socket the CLI uses. Errors from the daemon path become `isError: true` MCP responses with a human-readable `text` block; the JSON-RPC envelope itself only fails on parse errors (`-32700`) or unknown methods (`-32601`).
 
@@ -320,8 +320,8 @@ Install snippet (also see `scripts/install-mcp.sh`):
 ```json
 {
   "mcpServers": {
-    "agent-tts": {
-      "command": "/opt/homebrew/bin/agent-tts",
+    "ptah": {
+      "command": "/opt/homebrew/bin/ptah",
       "args": ["mcp"]
     }
   }
@@ -330,7 +330,7 @@ Install snippet (also see `scripts/install-mcp.sh`):
 
 ### Python sidecar (v1.4 — cloned engine only)
 
-`agent-tts voice clone --sample <wav> --name <slug>` spawns `scripts/voice_clone.py` via `std.process.Child` to extract the XTTS-v2 speaker conditioning latents from the reference WAV. Synthesis at request time spawns `scripts/voice_synth.py`, which reads text on stdin and writes raw s16le mono 22050Hz PCM to stdout. The daemon drains stdout into a buffer + feeds the same `AudioPlayer.streamS16le` path Faber uses.
+`ptah voice clone --sample <wav> --name <slug>` spawns `scripts/voice_clone.py` via `std.process.Child` to extract the XTTS-v2 speaker conditioning latents from the reference WAV. Synthesis at request time spawns `scripts/voice_synth.py`, which reads text on stdin and writes raw s16le mono 22050Hz PCM to stdout. The daemon drains stdout into a buffer + feeds the same `AudioPlayer.streamS16le` path Faber uses.
 
 Spawn convention: `uv run --with TTS <script>` when `uv` is on PATH, else plain `python3 <script>` (assumes the venv created by `scripts/setup-voice-clone.sh` is activated). The script files at `scripts/voice_clone.py` + `scripts/voice_synth.py` carry SPDX MIT/Apache headers; Coqui TTS itself is MPL-2.0 and runs out-of-process — no MPL code is linked into the Zig binary.
 
@@ -366,7 +366,7 @@ Total wall time: 2-5 µs per message. No TTFA risk.
 
 ### launchd auto-start
 
-`agent-tts daemon install` writes `~/Library/LaunchAgents/io.github.biliboss.agent-tts.plist` and bootstraps it into the `gui/<uid>` domain. KeepAlive uses the `SuccessfulExit=false` dict form — a clean `bootout` actually stays out.
+`ptah daemon install` writes `~/Library/LaunchAgents/io.github.biliboss.ptah.plist` and bootstraps it into the `gui/<uid>` domain. KeepAlive uses the `SuccessfulExit=false` dict form — a clean `bootout` actually stays out.
 
 Plist write is atomic (`createFileAtomic` + `replace`). The `HOME` env var is injected explicitly because launchd does not inherit it pre-login.
 
@@ -386,7 +386,7 @@ Three small surfaces, one comptime dispatcher, zero runtime branches in the hot 
 
 Pre-warm (the empty `say` utterance that loads Luciana into the Neural Engine) becomes a no-op on Linux/Windows — `espeak-ng` and `System.Speech` have no equivalent warm cache.
 
-`src/systemd.zig` parallels `launchd.zig`. Same surface: `install`, `uninstall`, `status`. Writes `$XDG_CONFIG_HOME/systemd/user/agent-tts.service` (falls back to `~/.config/systemd/user/`), drives `systemctl --user daemon-reload && enable --now`. Atomic write via `createFileAtomic` + `replace` like the plist. `Restart=on-failure` mirrors the launchd `KeepAlive { SuccessfulExit = false }` contract: clean exit stays down, crash recovers. Output goes to journald — `journalctl --user -u agent-tts` is the canonical Linux debug path.
+`src/systemd.zig` parallels `launchd.zig`. Same surface: `install`, `uninstall`, `status`. Writes `$XDG_CONFIG_HOME/systemd/user/ptah.service` (falls back to `~/.config/systemd/user/`), drives `systemctl --user daemon-reload && enable --now`. Atomic write via `createFileAtomic` + `replace` like the plist. `Restart=on-failure` mirrors the launchd `KeepAlive { SuccessfulExit = false }` contract: clean exit stays down, crash recovers. Output goes to journald — `journalctl --user -u ptah` is the canonical Linux debug path.
 
 `build.zig configureExe()` switches the audio backend per target:
 
@@ -418,7 +418,7 @@ src/
   ssml.zig         # v1.8 — SSML 1.1 subset parser + transpileToSay walker
                    # + v1.10.12 <phoneme alphabet="ipa"> + <sub alias="…">
   detect.zig       # v1.1 — Pt/En stopword-heuristic language detector
-  stream.zig       # v1.7 — `agent-tts stream` CLI (stdin streaming chunker)
+  stream.zig       # v1.7 — `ptah stream` CLI (stdin streaming chunker)
   postfx.zig       # v1.10.10 — ffmpeg subprocess pipeline (off/clean/tech/broadcast)
                    # v1.10.13 — concurrent drain thread + 5 s watchdog
   log.zig          # v1.10.13 — std.options.logFn sink + rotating file at daemon.log
@@ -443,5 +443,5 @@ Flat. No subdir until it hurts. Cross-check at any time with `ls src/*.zig` — 
 - Orphan socket after SIGKILL — startup checks the PID file before reusing it.
 - SQLite without WAL blocks `queue` during `playing`. Always WAL.
 - `AudioBuffer.Config.sample_rate` must be set explicitly; the default upsamples to engine rate and shifts pitch.
-- espeak-ng (under libpiper) caps phoneme source paths at 160 bytes. Build libpiper in a short path (`/tmp/agent-tts-piper-build`); the vendor script does this for you.
+- espeak-ng (under libpiper) caps phoneme source paths at 160 bytes. Build libpiper in a short path (`/tmp/ptah-piper-build`); the vendor script does this for you.
 - `char32_t` in `piper.h` fails Zig's `translate-c`. Shim with `@cDefine("char32_t", "uint32_t")` before `@cInclude`.

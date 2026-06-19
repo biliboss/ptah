@@ -64,7 +64,7 @@ pub fn spawnSayTuned(
             // SSML + tech: strip SSML first then run tech glossary +
             // tuned pauses. macOS `say` can't honour BOTH our
             // `[[…]]` SSML transpile AND the tech glossary in one go
-            // (the transpile already inserts pauses); the agent-tts
+            // (the transpile already inserts pauses); the ptah
             // contract is "tech wins" — we strip and re-transpile.
             break :blk preproc.processSsmlStrippedTech(arena, text, .{}, pauses) catch |e| {
                 std.debug.print("[tts] ssml+tech preproc failed ({s}); falling back to raw text\n", .{@errorName(e)});

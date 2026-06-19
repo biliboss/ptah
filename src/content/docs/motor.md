@@ -63,7 +63,7 @@ Primary criterion is **time-to-first-audio** (TTFA). Secondary criterion is disk
 
 ## System engine per platform (v1.3)
 
-`agent-tts --engine say` dispatches to the local system TTS via `platform.zig`. Each platform has a different engine behind the same flag — quality varies, Piper Faber stays the recommended default everywhere.
+`ptah --engine say` dispatches to the local system TTS via `platform.zig`. Each platform has a different engine behind the same flag — quality varies, Piper Faber stays the recommended default everywhere.
 
 | Platform | System engine | Pt-BR quality | Pre-warm | SSML cues |
 |---|---|---|---|---|
@@ -73,7 +73,7 @@ Primary criterion is **time-to-first-audio** (TTFA). Secondary criterion is disk
 
 The Linux and Windows system engines are **fallbacks** in the same sense `say` is on macOS — they exist so a no-piper build still talks. For quality on Linux, ship `-Dwith-piper=true` + the Faber ONNX voice (the libpiper build script supports both macOS and Linux; Windows untested).
 
-Voice mapping for Linux: `tts.zig` translates the four macOS Pt-BR voice names (`Luciana`, `Luciana (Premium)`, `Felipe`, `Felipe (Premium)`) to espeak-ng's `pt-br` language code so a stock `agent-tts "texto"` from a config written on a Mac still works on Linux without `--voice`. Unrecognised voices pass through verbatim — espeak-ng accepts language codes (`pt-br`), variant codes (`mb-br1`), and full names.
+Voice mapping for Linux: `tts.zig` translates the four macOS Pt-BR voice names (`Luciana`, `Luciana (Premium)`, `Felipe`, `Felipe (Premium)`) to espeak-ng's `pt-br` language code so a stock `ptah "texto"` from a config written on a Mac still works on Linux without `--voice`. Unrecognised voices pass through verbatim — espeak-ng accepts language codes (`pt-br`), variant codes (`mb-br1`), and full names.
 
 ## Why the others lose for v1.0
 
@@ -103,18 +103,18 @@ The daemon detects it on first run. If missing, it prints the exact path above a
 
 Masculine alternative: `Felipe (Premium)`. Same quality.
 
-Piper Faber model is downloaded once by `scripts/fetch-voice.sh` to `~/.cache/agent-tts/voices/pt_BR-faber-medium.onnx` (~63 MB).
+Piper Faber model is downloaded once by `scripts/fetch-voice.sh` to `~/.cache/ptah/voices/pt_BR-faber-medium.onnx` (~63 MB).
 
 ## Override per call
 
 ```bash
-agent-tts "Texto."                              # default piper Faber
-agent-tts --engine say "Texto."                 # macOS say (fallback)
-agent-tts --voice "Felipe (Premium)" "Texto."   # specific say voice
-agent-tts --rate 220 "Mais rápido."             # WPM (say only — piper ignores)
+ptah "Texto."                              # default piper Faber
+ptah --engine say "Texto."                 # macOS say (fallback)
+ptah --voice "Felipe (Premium)" "Texto."   # specific say voice
+ptah --rate 220 "Mais rápido."             # WPM (say only — piper ignores)
 ```
 
-Persistent config in `~/.config/agent-tts/config.json` planned for v1.1.
+Persistent config in `~/.config/ptah/config.json` planned for v1.1.
 
 ## SSML extensions + cadence tricks (v1.10.12+)
 
@@ -125,10 +125,10 @@ Three additions land in v1.10.12 to push *prosody* without retraining the voice.
 Pipe the brand name through piper's espeak-ng phonemizer using `[[ipa]]` Kirshenbaum brackets. `say` strips the tag silently (macOS has no IPA directive) and falls back to the body text.
 
 ```bash
-agent-tts --ssml '<phoneme alphabet="ipa" ph="ˌæn.θɹəˈpɪk">Anthropic</phoneme> lançou Claude.'
-agent-tts --ssml '<phoneme alphabet="ipa" ph="miˈstɾal">Mistral</phoneme> rodou.'
-agent-tts --ssml '<phoneme alphabet="ipa" ph="ɡɹɒk">Groq</phoneme> via API.'
-agent-tts --ssml '<phoneme alphabet="ipa" ph="oʊˈlɑːmə">Ollama</phoneme> local.'
+ptah --ssml '<phoneme alphabet="ipa" ph="ˌæn.θɹəˈpɪk">Anthropic</phoneme> lançou Claude.'
+ptah --ssml '<phoneme alphabet="ipa" ph="miˈstɾal">Mistral</phoneme> rodou.'
+ptah --ssml '<phoneme alphabet="ipa" ph="ɡɹɒk">Groq</phoneme> via API.'
+ptah --ssml '<phoneme alphabet="ipa" ph="oʊˈlɑːmə">Ollama</phoneme> local.'
 ```
 
 Quality is espeak-ng-bound — verify the brand sounds right before declaring it fixed. Body text inside `<phoneme>` is suppressed on piper (the IPA already represents the spoken form) but kept on `say` (it's the only fallback).
@@ -138,8 +138,8 @@ Quality is espeak-ng-bound — verify the brand sounds right before declaring it
 Rewrite a displayed identifier to the human-spoken form at preproc time. The alias text replaces the body verbatim on every engine.
 
 ```bash
-agent-tts --ssml 'Use <sub alias="get conditioning latents">getConditioningLatents</sub> aqui.'
-agent-tts --ssml 'Roda no <sub alias="emcêpê">MCP</sub> server.'
+ptah --ssml 'Use <sub alias="get conditioning latents">getConditioningLatents</sub> aqui.'
+ptah --ssml 'Roda no <sub alias="emcêpê">MCP</sub> server.'
 ```
 
 ### Cadence tricks (`--cadence`)
@@ -148,26 +148,26 @@ Three independent rules toggled by `CadenceOptions`. `--profile tech` enables al
 
 1. **List-end intonation drop.** Sentences with ≥2 commas wrap the last 3 word tokens in `<prosody pitch="-10%" rate="slow">…</prosody>`. Mimics the natural fall at the end of a list.
 2. **Bullet-point lift.** Lines starting with `-`, `*`, or `•` wrap the leading label (up to `:` or `—`) in `<prosody pitch="+5%">…</prosody>`. Crisper structure for outline-style speech.
-3. **Breathing simulation.** State machine emits `<break time="80ms"/>[[breath]]` every 2-3 sentences. The daemon swaps `[[breath]]` for a pre-loaded WAV when `AGENT_TTS_BREATH_WAV` is set; otherwise the silent break still slows the cadence audibly.
+3. **Breathing simulation.** State machine emits `<break time="80ms"/>[[breath]]` every 2-3 sentences. The daemon swaps `[[breath]]` for a pre-loaded WAV when `PTAH_BREATH_WAV` is set; otherwise the silent break still slows the cadence audibly.
 
 Sox one-liner for the breath WAV:
 
 ```bash
-sox -n -r 22050 -c 1 ~/.cache/agent-tts/breath.wav synth 0.08 pinknoise vol 0.006
-export AGENT_TTS_BREATH_WAV=$HOME/.cache/agent-tts/breath.wav
+sox -n -r 22050 -c 1 ~/.cache/ptah/breath.wav synth 0.08 pinknoise vol 0.006
+export PTAH_BREATH_WAV=$HOME/.cache/ptah/breath.wav
 ```
 
 Then:
 
 ```bash
-agent-tts --profile tech --cadence "A Anthropic, a Mistral, a Groq, quatro LLM labs. Cada uma com sua API."
+ptah --profile tech --cadence "A Anthropic, a Mistral, a Groq, quatro LLM labs. Cada uma com sua API."
 ```
 
 The daemon log will show the SSML walker took over (`piper-ssml id=… tokens=N`) and the resulting prosody/break tags rode into the synth. Cadence persists across daemon restarts via the new `cadence` SQLite column.
 
 ## Tuning Piper per call (v1.10.7+)
 
-Three Piper inference knobs are exposed per call. They override any daemon-wide `AGENT_TTS_PIPER_*` env var and the voice config defaults:
+Three Piper inference knobs are exposed per call. They override any daemon-wide `PTAH_PIPER_*` env var and the voice config defaults:
 
 | Flag | Range | Default | Effect |
 |---|---|---|---|
@@ -179,16 +179,16 @@ Sentinels: omitting a flag (or passing the sentinel `0` for `--length-scale`, ne
 
 ```bash
 # Default voice profile
-agent-tts "Olá."
+ptah "Olá."
 
 # Warm Faber — slightly slower + softer prosody
-agent-tts --length-scale 1.05 --noise-scale 0.7 --noise-w 0.9 "Olá calmamente."
+ptah --length-scale 1.05 --noise-scale 0.7 --noise-w 0.9 "Olá calmamente."
 
 # Expressive Faber — more pronunciation variety
-agent-tts --noise-w 1.1 "Olá com mais vida."
+ptah --noise-w 1.1 "Olá com mais vida."
 
 # Faster reading (matches macOS say rate ≈ 380 wpm)
-agent-tts --length-scale 0.9 "Resumo veloz."
+ptah --length-scale 0.9 "Resumo veloz."
 ```
 
 The daemon logs the resolved knobs on every override:
@@ -226,13 +226,13 @@ Engineering reports stress Piper's espeak-ng frontend in ways the conversational
 `--profile tech` (or `--tech`) bundles the empirical sweet spot:
 
 ```bash
-agent-tts --profile tech "API e MCP rodam em CPU. 250 ms warm synth, 64 MB ONNX."
+ptah --profile tech "API e MCP rodam em CPU. 250 ms warm synth, 64 MB ONNX."
 ```
 
 Equivalent to:
 
 ```bash
-agent-tts \
+ptah \
   --tech \
   --length-scale 0.95 \
   --noise-scale 0.667 \
@@ -289,7 +289,7 @@ The `voice_knob_search` tool replaces the 16-step "tools/call → wait → tools
 
 ## Faber tech-narration profile (v1.10.9)
 
-v1.10.9 replaces the v1.10.8 tech knobs with research-anchored defaults sourced from [`_qa/v1.10.9-research-prompt-output.md`](https://github.com/biliboss/agent-tts/blob/main/_qa/v1.10.9-research-prompt-output.md) — an external LLM distillation of Faber-medium / MCV / VITS-15M evidence:
+v1.10.9 replaces the v1.10.8 tech knobs with research-anchored defaults sourced from [`_qa/v1.10.9-research-prompt-output.md`](https://github.com/biliboss/ptah/blob/main/_qa/v1.10.9-research-prompt-output.md) — an external LLM distillation of Faber-medium / MCV / VITS-15M evidence:
 
 | Knob | v1.10.8 tech | v1.10.9 tech | Why |
 |---|---|---|---|
@@ -302,7 +302,7 @@ v1.10.9 replaces the v1.10.8 tech knobs with research-anchored defaults sourced 
 
 v1.10.9 also rewrites the tech preproc pipeline. The new order, exposed as `preproc.techPipeline(arena, raw, opts)`:
 
-1. **`normalizeIdentifiers`** — rewrites versions (`1.10.8` → `1 ponto 10 ponto 8`), commit hashes (`bdd352e` → `commit bê dê dê três cinco dois é`), URLs (`https://github.com/biliboss/agent-tts` → `github ponto com barra biliboss barra agent-tts`), file paths (`~/.cache/agent-tts/voices/` → `pasta voices`), and hex literals (`0xFF` → `zero-x F F`).
+1. **`normalizeIdentifiers`** — rewrites versions (`1.10.8` → `1 ponto 10 ponto 8`), commit hashes (`bdd352e` → `commit bê dê dê três cinco dois é`), URLs (`https://github.com/biliboss/ptah` → `github ponto com barra biliboss barra ptah`), file paths (`~/.cache/ptah/voices/` → `pasta voices`), and hex literals (`0xFF` → `zero-x F F`).
 2. **`expandTechGlossary` (pass 1)** — applies the expanded glossary on the normalized output.
 3. **`splitCamelCase`** — inserts spaces at camel boundaries with three rules: lower/digit → Upper, Upper → Upper-followed-by-lower (`SQLite` → `SQ Lite`), Upper → digit (`ChatGPT5` → `Chat GPT 5`). UTF-8 continuation bytes never trigger a split so accented Pt-BR words stay intact.
 4. **`expandTechGlossary` (pass 2)** — runs again so glossary entries inside the split output (`agentTTSMenubar` → `agent TTS Menubar` → glossary catches `TTS`) still resolve.
@@ -333,8 +333,8 @@ Glossary lookup is still longest-first (HTTPS before HTTP, Mbps before bps) so p
 | | `v2.4.1` | `v 2 ponto 4 ponto 1` |
 | **Commit hashes** (≥4 hex chars, ≥1 letter, truncated at 7) | `bdd352e` | `commit bê dê dê três cinco dois é` |
 | | `7c638b0` | `commit sete cê seis três oito bê zero` |
-| **URLs** (`http://` / `https://` only) | `https://github.com/biliboss/agent-tts` | `github ponto com barra biliboss barra agent-tts` |
-| **File paths** | `~/.cache/agent-tts/voices/pt_BR-faber-medium.onnx` | `pasta pt_BR-faber-medium.onnx` (final component + `pasta` prefix) |
+| **URLs** (`http://` / `https://` only) | `https://github.com/biliboss/ptah` | `github ponto com barra biliboss barra ptah` |
+| **File paths** | `~/.cache/ptah/voices/pt_BR-faber-medium.onnx` | `pasta pt_BR-faber-medium.onnx` (final component + `pasta` prefix) |
 | **Hex literals** | `0xFF` | `zero-x F F` |
 | | `0xCAFEBABE` | `zero-x C A F E B A B E` |
 
@@ -363,15 +363,15 @@ All rules are unit-tested (`tests "normalizeIdentifiers: …"` cover 39 cases in
 Each profile also implies `--postfx tech` is a safe pair (the research-anchored ffmpeg chain); the `--postfx` flag stays independent so an operator can mix-and-match (`--profile expressive --postfx clean` for music-bed VO, for example). See [Audio post-processing](#audio-post-processing-v11010) below for the postfx side.
 
 ```bash
-agent-tts --profile tech "API e MCP rodam em CPU."           # default tight-narrator
-agent-tts --profile stock-tech "API e MCP rodam em CPU."     # legacy v1.10.8 sound
-agent-tts --profile broadcast "Boletim das dezesseis horas." # podcast-style
-agent-tts --profile expressive "Vocês não vão acreditar…"    # max prosody variety
+ptah --profile tech "API e MCP rodam em CPU."           # default tight-narrator
+ptah --profile stock-tech "API e MCP rodam em CPU."     # legacy v1.10.8 sound
+ptah --profile broadcast "Boletim das dezesseis horas." # podcast-style
+ptah --profile expressive "Vocês não vão acreditar…"    # max prosody variety
 ```
 
 ## ONNX runtime + miniaudio quality (v1.10.11+)
 
-v1.10.11 closes the inference-layer half of the same research note that anchored v1.10.9's tech-profile knobs ([`_qa/v1.10.9-research-prompt-output.md`](https://github.com/biliboss/agent-tts/blob/main/_qa/v1.10.9-research-prompt-output.md), "Inference-layer knobs you're missing"). Two wins shipped + one honest gap documented.
+v1.10.11 closes the inference-layer half of the same research note that anchored v1.10.9's tech-profile knobs ([`_qa/v1.10.9-research-prompt-output.md`](https://github.com/biliboss/ptah/blob/main/_qa/v1.10.9-research-prompt-output.md), "Inference-layer knobs you're missing"). Two wins shipped + one honest gap documented.
 
 ### ONNX Runtime threading — single-threaded by default
 
@@ -399,9 +399,9 @@ OMP_THREAD_LIMIT=1
 
 v1.10.11 sets `lpf_order=8` on both `pitch_resampling` (per-Sound) and `resource_manager_resampling` (resource manager, used when sounds load from files — not our path, but kept in sync for consistency). The per-sound path is what catches our `AudioBuffer`-backed sounds (see `miniaudio.c:76587` where `config.resampling = pEngine->pitchResamplingConfig`).
 
-**Gotcha not triggered**: `miniaudio.c:77421` forces `lpfOrder=0` when `pitch != 1.0` because the biquad filter becomes unstable under pitch-shifting. agent-tts doesn't pitch-shift (we run at native rate after the engine upsample), so the LPF stays engaged.
+**Gotcha not triggered**: `miniaudio.c:77421` forces `lpfOrder=0` when `pitch != 1.0` because the biquad filter becomes unstable under pitch-shifting. ptah doesn't pitch-shift (we run at native rate after the engine upsample), so the LPF stays engaged.
 
-Override per-launch via `AGENT_TTS_AUDIO_LPF_ORDER` (0..8, default 8).
+Override per-launch via `PTAH_AUDIO_LPF_ORDER` (0..8, default 8).
 
 ### Gain staging — -3 dBFS headroom
 
@@ -409,13 +409,13 @@ Faber's stressed vowels at end-of-phrase can push peak amplitudes toward 0 dBFS.
 
 Side effect: perceived loudness drops ~3 dB. We don't apply auto-makeup-gain because that defeats the purpose (we'd just push the loud frames back to clipping). The right long-term fix is per-utterance peak normalisation — deferred to a v1.11 postfx track.
 
-Override per-launch via `AGENT_TTS_AUDIO_HEADROOM_DB` (default 3.0, expressed as positive dB cut).
+Override per-launch via `PTAH_AUDIO_HEADROOM_DB` (default 3.0, expressed as positive dB cut).
 
 ### Dither — env knob, no-op today
 
 The research note recommends `ma_dither_mode_triangle` on the s16 device output to spread quantization noise into white instead of correlated tones on quiet PCM tails. miniaudio's `ma_data_converter_config.dither_mode` exposes the value, but `ma_engine_config` does NOT — the engine builds its own converter graph internally and ignores any external dither setting.
 
-v1.10.11 parses `AGENT_TTS_AUDIO_DITHER` (`triangle` default | `none`) and logs the chosen value at boot:
+v1.10.11 parses `PTAH_AUDIO_DITHER` (`triangle` default | `none`) and logs the chosen value at boot:
 
 ```
 [audio] v1.10.11 quality knobs: lpf_order=8 headroom_db=-3.0 dither=triangle (engine cfg)
@@ -444,14 +444,14 @@ v1.10.10 lands the second half of the research note's "Acoustic post-processing"
 brew install ffmpeg
 
 # RNNoise model — optional but recommended for postfx=tech
-mkdir -p ~/.cache/agent-tts/rnnoise
+mkdir -p ~/.cache/ptah/rnnoise
 curl -sL https://github.com/GregorR/rnnoise-models/raw/master/conjoined-burgers-2018-08-28/cb.rnnn \
-  -o ~/.cache/agent-tts/rnnoise/cb.rnnn
+  -o ~/.cache/ptah/rnnoise/cb.rnnn
 ```
 
-`agent-tts` probes for ffmpeg at `$AGENT_TTS_FFMPEG_PATH`, then `/opt/homebrew/bin/ffmpeg`, then `/usr/local/bin/ffmpeg`, then bare `ffmpeg` on PATH. When none exist or the subprocess fails, `postfx=tech` silently falls back to dry PCM and the daemon logs `passthrough (ffmpeg/model unavailable)`. The pipeline is a quality lift, not a hard dependency.
+`ptah` probes for ffmpeg at `$PTAH_FFMPEG_PATH`, then `/opt/homebrew/bin/ffmpeg`, then `/usr/local/bin/ffmpeg`, then bare `ffmpeg` on PATH. When none exist or the subprocess fails, `postfx=tech` silently falls back to dry PCM and the daemon logs `passthrough (ffmpeg/model unavailable)`. The pipeline is a quality lift, not a hard dependency.
 
-RNNoise model path probes `$AGENT_TTS_POSTFX_RNNN_MODEL` first, then `~/.cache/agent-tts/rnnoise/cb.rnnn`.
+RNNoise model path probes `$PTAH_POSTFX_RNNN_MODEL` first, then `~/.cache/ptah/rnnoise/cb.rnnn`.
 
 ### Latency budget
 
@@ -479,19 +479,19 @@ v1.10.13 rewrites `postfx.apply` to spawn three threads around every ffmpeg invo
 
 1. **Main thread** writes `samples` into ffmpeg's stdin in chunks, then closes stdin.
 2. **Drainer thread** reads ffmpeg's stdout into the result buffer concurrently. Neither pipe ever fills because both are being drained in parallel.
-3. **Watchdog thread** sleeps in 50 ms slices for up to `AGENT_TTS_POSTFX_TIMEOUT_MS` (default **5000**). On deadline expiry it `SIGTERM`s ffmpeg, waits 1 s, then `SIGKILL`s if still alive. A `done` atomic retires the watchdog cleanly on healthy completion.
+3. **Watchdog thread** sleeps in 50 ms slices for up to `PTAH_POSTFX_TIMEOUT_MS` (default **5000**). On deadline expiry it `SIGTERM`s ffmpeg, waits 1 s, then `SIGKILL`s if still alive. A `done` atomic retires the watchdog cleanly on healthy completion.
 
 All three threads join before `apply()` returns. On watchdog fire the worker logs `[postfx] watchdog killed ffmpeg after Nms — fallthrough`, gets `was_processed=false`, and plays dry PCM. The queue advances either way because the worker now wraps `runOne` with `defer res.queue.finishPlaying(...)` (v1.10.13 belt-and-braces — see `arquitetura.md` "Logging & observability" for the worker resilience rule).
 
-Validated by setting `AGENT_TTS_FFMPEG_PATH=/tmp/fake-ffmpeg.sh` to a script that exec'd `sleep 999` — watchdog killed it after 2000 ms exactly, dry PCM played, queue continued. See `_qa/v1.10.13-leadtime.md` for the diagnosis.
+Validated by setting `PTAH_FFMPEG_PATH=/tmp/fake-ffmpeg.sh` to a script that exec'd `sleep 999` — watchdog killed it after 2000 ms exactly, dry PCM played, queue continued. See `_qa/v1.10.13-leadtime.md` for the diagnosis.
 
 ## Cloned voices (v1.4)
 
-v1.4 adds a **third engine**: `cloned`. Selected automatically when `--voice <slug>` resolves to a directory under `~/.cache/agent-tts/voices/<slug>/` produced by `agent-tts voice clone`.
+v1.4 adds a **third engine**: `cloned`. Selected automatically when `--voice <slug>` resolves to a directory under `~/.cache/ptah/voices/<slug>/` produced by `ptah voice clone`.
 
 ```bash
-agent-tts voice clone --sample me-reading.wav --name gabriel
-agent-tts --voice gabriel "Deploy concluído."
+ptah voice clone --sample me-reading.wav --name gabriel
+ptah --voice gabriel "Deploy concluído."
 ```
 
 **The cloned engine is not pure Zig.** Coqui XTTS-v2 (the only credible local Pt-BR cloner) is a 2 GB PyTorch model with no production-stable ONNX export today. Reimplementing XTTS in Zig is not on the table — and embedding the model in a Zig binary breaks the SSD goal anyway.
@@ -504,7 +504,7 @@ So v1.4 **relaxes the "only Zig" lifecycle constraint, but only for the cloned e
 | `piper` (Faber) | libpiper FFI (Zig binary) | no |
 | `cloned` (custom) | Python sidecar via `std.process.Child` | **yes** |
 
-**Process line is the licensing wall.** Coqui TTS is MPL-2.0. The sidecar runs as a separate process spawned from `daemon.zig::synthClonedViaSidecar`. The parent Zig binary stays dual MIT/Apache — no MPL code is linked or distributed inside `agent-tts`.
+**Process line is the licensing wall.** Coqui TTS is MPL-2.0. The sidecar runs as a separate process spawned from `daemon.zig::synthClonedViaSidecar`. The parent Zig binary stays dual MIT/Apache — no MPL code is linked or distributed inside `ptah`.
 
 **Sidecar protocol** (kept boring):
 
@@ -518,7 +518,7 @@ The daemon drains stdout into a buffer, feeds it to the same `AudioPlayer.stream
 
 **Why this isn't the default.** Cold startup of XTTS-v2 on Apple Silicon CPU is ~6-10s and warm first-sample is ~500-900ms — pessimistic vs Faber's 91ms. Cloned is opt-in for personal voice, not the snappy default.
 
-See [Changelog v1.4](/agent-tts/changelog/#v14--voice-cloning--2026-06-03) for the install + measurement story.
+See [Changelog v1.4](/ptah/changelog/#v14--voice-cloning--2026-06-03) for the install + measurement story.
 
 ## Code-switching EN — closed in v1.1
 
@@ -526,13 +526,13 @@ v1.0 mispronounced `GitHub Actions` as Portuguese phonemes. v1.1 closes that gap
 
 Cost: ~340 ms additional cold boot when both voices load (~680 ms total piper init). Per-message TTFA stays in the v0.7 envelope when the input is single-language (one synth call). Mixed messages pay one extra synth per language flip — still under the v1.1 < 150 ms warm budget for typical agent output.
 
-Install the En voice with `./scripts/fetch-voice-en.sh`. The daemon logs `en=off` and falls back to single-voice Pt synth when the file is missing — no crash, no degraded prompt. Force a single voice end-to-end with `agent-tts --lang pt|en "..."`; `auto` (the default) runs the detector per sentence.
+Install the En voice with `./scripts/fetch-voice-en.sh`. The daemon logs `en=off` and falls back to single-voice Pt synth when the file is missing — no crash, no degraded prompt. Force a single voice end-to-end with `ptah --lang pt|en "..."`; `auto` (the default) runs the detector per sentence.
 
-The remaining ambition — XTTS-v2-grade multilingual quality from a single ONNX checkpoint — is parked. Piper's per-voice models ship today, work offline, and stay under the disk budget. Single-checkpoint multilingual returns to the table when Coqui's ONNX export stabilizes (see [Coqui discussion #4014](https://github.com/coqui-ai/TTS/discussions/4014)) or a Piper community checkpoint matches Faber/Amy quality. Tracked in [What's next](/agent-tts/whats-next/).
+The remaining ambition — XTTS-v2-grade multilingual quality from a single ONNX checkpoint — is parked. Piper's per-voice models ship today, work offline, and stay under the disk budget. Single-checkpoint multilingual returns to the table when Coqui's ONNX export stabilizes (see [Coqui discussion #4014](https://github.com/coqui-ai/TTS/discussions/4014)) or a Piper community checkpoint matches Faber/Amy quality. Tracked in [What's next](/ptah/whats-next/).
 
 ## SSML support per engine — v1.8
 
-agent-tts accepts a W3C SSML 1.1 subset on every engine. Pass `--ssml` on the CLI, or set the `ssml: true` argument on the MCP `say` tool, and the daemon parses the input via `src/ssml.zig` before dispatching. Engine support varies — honest table:
+ptah accepts a W3C SSML 1.1 subset on every engine. Pass `--ssml` on the CLI, or set the `ssml: true` argument on the MCP `say` tool, and the daemon parses the input via `src/ssml.zig` before dispatching. Engine support varies — honest table:
 
 | Element | macOS `say` | Piper Faber / Amy | Cloned (XTTS-v2) |
 |---|---|---|---|
@@ -556,7 +556,7 @@ Example:
 
 ```bash
 # Slow opening with an emphatic close
-agent-tts --ssml \
+ptah --ssml \
   '<prosody rate="slow">Atenção,</prosody> a entrega <emphasis level="strong">acabou</emphasis>.<break time="500ms"/> Próximos passos.'
 ```
 

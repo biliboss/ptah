@@ -1,14 +1,14 @@
 ---
 title: Playground
-description: Browser-based voice picker scaffold for agent-tts. Shipped in v1.10.1; WASM Piper synth deferred indefinitely while the production discovery loop lives in MCP.
+description: Browser-based voice picker scaffold for ptah. Shipped in v1.10.1; WASM Piper synth deferred indefinitely while the production discovery loop lives in MCP.
 head:
   - tag: link
     attrs:
       rel: stylesheet
-      href: /agent-tts/playground/widget.css
+      href: /ptah/playground/widget.css
   - tag: script
     attrs:
-      src: /agent-tts/playground/widget.js
+      src: /ptah/playground/widget.js
       defer: true
 ---
 
@@ -20,11 +20,11 @@ Press a button, hear a voice — no install. v1.10.1 ships the **playground UI s
 
 The page is **unchanged from v1.10.1 through v1.10.13**. Today the Speak button POSTs to a stub endpoint that returns a sentinel marker the widget reads as "WASM build pending". The UX is real; the audio is not. The point is to lock the interaction shape so the heavy lift is a pure backend swap **if and when** the runtime needs a web surface.
 
-> **For real audio comparison, use `tech_profile_search`.** The production A/B loop is the MCP `tech_profile_search` tool — one MCP round-trip enqueues the curated 4-knob × 2-postfx matrix through the local daemon's actual Faber piper + ffmpeg post-fx, on your real audio hardware. See [MCP server → `tech_profile_search`](/agent-tts/mcp/#v1109--v11010--tech_profile_search-42-matrix). The playground exists to lock the eventual browser-surface UX, not to replace the production discovery loop.
+> **For real audio comparison, use `tech_profile_search`.** The production A/B loop is the MCP `tech_profile_search` tool — one MCP round-trip enqueues the curated 4-knob × 2-postfx matrix through the local daemon's actual Faber piper + ffmpeg post-fx, on your real audio hardware. See [MCP server → `tech_profile_search`](/ptah/mcp/#v1109--v11010--tech_profile_search-42-matrix). The playground exists to lock the eventual browser-surface UX, not to replace the production discovery loop.
 
 ## Try it
 
-<div class="agent-tts-playground" data-base="/agent-tts/">
+<div class="ptah-playground" data-base="/ptah/">
   <label>
     Voice
     <select data-role="voice">
@@ -37,7 +37,7 @@ The page is **unchanged from v1.10.1 through v1.10.13**. Today the Speak button 
 
   <label>
     Text
-    <textarea data-role="text" rows="3" placeholder="Digite ou cole o texto a sintetizar.">Olá mundo. Esta é uma demonstração do agent-tts no navegador.</textarea>
+    <textarea data-role="text" rows="3" placeholder="Digite ou cole o texto a sintetizar.">Olá mundo. Esta é uma demonstração do ptah no navegador.</textarea>
   </label>
 
   <button type="button" data-role="speak">Speak</button>
@@ -79,7 +79,7 @@ The widget treats the static HTML body as a 501 sentinel so the page builds clea
 1. Build libpiper for `wasm32-emscripten` via Emscripten SDK (`emcmake cmake … && emmake make`).
 2. Ship the ONNX Runtime Web variant (`onnxruntime-web`) — the JS package, not the native `.dylib`.
 3. Link the bundle via `zig build -Dtarget=wasm32-emscripten -Dwith-piper-wasm=true`.
-4. Copy `zig-out/bin/agent-tts.wasm` + the ONNX runtime JS shim into `public/wasm/`.
+4. Copy `zig-out/bin/ptah.wasm` + the ONNX runtime JS shim into `public/wasm/`.
 
 Run it to see the steps:
 
@@ -91,6 +91,6 @@ Today the script exits cleanly with the plan printed; no v1.10.x release wires t
 
 ## Related
 
-- [MCP server → `tech_profile_search`](/agent-tts/mcp/#v1109--v11010--tech_profile_search-42-matrix) — the actual production A/B audio comparison loop, against your local daemon + real audio hardware
-- [TTS engine](/agent-tts/motor/) — the native (non-WASM) synth path that does ship today
-- [Changelog](/agent-tts/changelog/) — v1.10.1 entry has the externalization fix story
+- [MCP server → `tech_profile_search`](/ptah/mcp/#v1109--v11010--tech_profile_search-42-matrix) — the actual production A/B audio comparison loop, against your local daemon + real audio hardware
+- [TTS engine](/ptah/motor/) — the native (non-WASM) synth path that does ship today
+- [Changelog](/ptah/changelog/) — v1.10.1 entry has the externalization fix story

@@ -67,7 +67,7 @@ pub const AudioPlayer = struct {
     /// surfaced by the research note at `_qa/v1.10.9-research-prompt-output.md`
     /// ("Inference-layer knobs you're missing"):
     ///
-    /// * `AGENT_TTS_AUDIO_LPF_ORDER` (default 8) — linear resampler
+    /// * `PTAH_AUDIO_LPF_ORDER` (default 8) — linear resampler
     ///   `lpf_order` on the engine's `pitch_resampling` config. Default in
     ///   miniaudio is 0 (no LPF; aliasing on the resample edge). 8 is the
     ///   per-resampler max and removes sibilant aliasing on the 22050 → 48000
@@ -75,12 +75,12 @@ pub const AudioPlayer = struct {
     ///   touch `pitch` itself, so the documented biquad-instability gotcha
     ///   from miniaudio.c:77421 ("disable LPF for pitch shifting") does not
     ///   apply.
-    /// * `AGENT_TTS_AUDIO_HEADROOM_DB` (default 3) — dB cut applied to the
+    /// * `PTAH_AUDIO_HEADROOM_DB` (default 3) — dB cut applied to the
     ///   engine master via `setGainDb(-headroom)`. Faber's stressed vowels
     ///   can push toward 0 dBFS at the end of long phrases; -3 dB gives the
     ///   miniaudio output-converter clipping margin and keeps the perceived
     ///   loudness identical-or-quieter (no auto-makeup-gain pass).
-    /// * `AGENT_TTS_AUDIO_DITHER` (default `triangle`) — declares intent.
+    /// * `PTAH_AUDIO_DITHER` (default `triangle`) — declares intent.
     ///   The miniaudio Engine config does NOT expose `dither_mode` for the
     ///   internal f32 → device-format converter, so we accept the env value
     ///   and log it but cannot wire it through without a custom data_callback
@@ -95,13 +95,13 @@ pub const AudioPlayer = struct {
         // Resolve env knobs once at boot. Daemon-wide; no per-utterance
         // override (audio engine config is immutable after create).
         const lpf_order: u32 = blk: {
-            const v = envU32("AGENT_TTS_AUDIO_LPF_ORDER") orelse break :blk 8;
+            const v = envU32("PTAH_AUDIO_LPF_ORDER") orelse break :blk 8;
             // miniaudio caps lpf_order at 8 (MA_MAX_RESAMPLER_LPF_ORDER).
             if (v > 8) break :blk 8;
             break :blk v;
         };
-        const headroom_db: f32 = envFloatLocal("AGENT_TTS_AUDIO_HEADROOM_DB") orelse 3.0;
-        const dither_str = envStrLocal("AGENT_TTS_AUDIO_DITHER") orelse "triangle";
+        const headroom_db: f32 = envFloatLocal("PTAH_AUDIO_HEADROOM_DB") orelse 3.0;
+        const dither_str = envStrLocal("PTAH_AUDIO_DITHER") orelse "triangle";
 
         var engine_cfg = zaudio.Engine.Config.init();
         // Linear resampler LPF order — affects every Sound that mixes

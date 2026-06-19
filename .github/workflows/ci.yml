@@ -32,13 +32,13 @@ jobs:
 
       - name: smoke daemon + enqueue
         run: |
-          ./zig-out/bin/agent-tts --version
-          ./zig-out/bin/agent-tts daemon > /tmp/daemon.log 2>&1 &
+          ./zig-out/bin/ptah --version
+          ./zig-out/bin/ptah daemon > /tmp/daemon.log 2>&1 &
           sleep 3
-          ./zig-out/bin/agent-tts --engine say "CI smoke test"
+          ./zig-out/bin/ptah --engine say "CI smoke test"
           sleep 1
-          ./zig-out/bin/agent-tts queue
-          pkill -f "agent-tts daemon" || true
+          ./zig-out/bin/ptah queue
+          pkill -f "ptah daemon" || true
           cat /tmp/daemon.log
 
   # v1.3 — Linux build proves the cross-platform refactor compiles and
@@ -75,13 +75,13 @@ jobs:
 
       - name: smoke daemon + enqueue (espeak-ng)
         run: |
-          ./zig-out/bin/agent-tts --version
-          ./zig-out/bin/agent-tts daemon > /tmp/daemon.log 2>&1 &
+          ./zig-out/bin/ptah --version
+          ./zig-out/bin/ptah daemon > /tmp/daemon.log 2>&1 &
           sleep 3
-          ./zig-out/bin/agent-tts --engine say "CI smoke test"
+          ./zig-out/bin/ptah --engine say "CI smoke test"
           sleep 1
-          ./zig-out/bin/agent-tts queue
-          pkill -f "agent-tts daemon" || true
+          ./zig-out/bin/ptah queue
+          pkill -f "ptah daemon" || true
           cat /tmp/daemon.log
 
   # v1.3 — Windows is best-effort. Marked continue-on-error: tts.zig
@@ -115,9 +115,9 @@ jobs:
         run: zig build universal
       - name: lipo verify
         run: |
-          file zig-out/bin/agent-tts-universal
-          lipo -info zig-out/bin/agent-tts-universal
+          file zig-out/bin/ptah-universal
+          lipo -info zig-out/bin/ptah-universal
       - uses: actions/upload-artifact@v4
         with:
-          name: agent-tts-universal
-          path: zig-out/bin/agent-tts-universal
+          name: ptah-universal
+          path: zig-out/bin/ptah-universal

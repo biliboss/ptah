@@ -2,15 +2,15 @@
 # SPDX-License-Identifier: MIT OR Apache-2.0
 #
 # Downloads the en_US Amy medium voice from rhasspy/piper-voices into
-# ~/.cache/agent-tts/voices/. v1.1 wires this voice into MultiPiperEngine for
+# ~/.cache/ptah/voices/. v1.1 wires this voice into MultiPiperEngine for
 # code-switch routing (Pt sentences → Faber, En sentences → Amy).
 #
 # Voice license: see https://github.com/rhasspy/piper-voices (typically CC-BY-NC).
-# agent-tts does NOT redistribute this model.
+# ptah does NOT redistribute this model.
 
 set -euo pipefail
 
-VOICES_DIR="$HOME/.cache/agent-tts/voices"
+VOICES_DIR="$HOME/.cache/ptah/voices"
 VOICE_NAME="en_US-amy-medium"
 BASE_URL="https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/amy/medium"
 
@@ -28,5 +28,5 @@ done
 
 echo "[fetch-voice-en] DONE"
 echo "  voice: $VOICES_DIR/$VOICE_NAME.onnx"
-echo "  next: zig build -Dwith-piper=true && AGENT_TTS_PIPER=1 agent-tts daemon"
-echo "  test: agent-tts --lang en \"Hello, world\""
+echo "  next: zig build -Dwith-piper=true && PTAH_PIPER=1 ptah daemon"
+echo "  test: ptah --lang en \"Hello, world\""

@@ -198,7 +198,7 @@ pub fn build(b: *std.Build) void {
     const piper_opts = b.addOptions();
     piper_opts.addOption(bool, "enabled", with_piper);
 
-    const mod = b.addModule("agent_tts", .{
+    const mod = b.addModule("ptah", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
     });
@@ -210,18 +210,18 @@ pub fn build(b: *std.Build) void {
     });
 
     const exe = b.addExecutable(.{
-        .name = "agent-tts",
+        .name = "ptah",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),
             .target = target,
             .optimize = optimize,
-            // v0.3: SQLite WAL queue persists in ~/.cache/agent-tts/queue.db.
+            // v0.3: SQLite WAL queue persists in ~/.cache/ptah/queue.db.
             // macOS ships libsqlite3 in the SDK sysroot; @cImport in queue.zig
             // pulls sqlite3.h from the same place. link_libc required for the
             // C header to resolve typedefs (size_t, etc).
             .link_libc = true,
             .imports = &.{
-                .{ .name = "agent_tts", .module = mod },
+                .{ .name = "ptah", .module = mod },
                 .{ .name = "build_options", .module = piper_opts.createModule() },
                 .{ .name = "zaudio", .module = zaudio_mod },
             },
@@ -238,7 +238,7 @@ pub fn build(b: *std.Build) void {
     // piper OFF — we don't ship libpiper in the universal binary; users
     // who want it build from source). Then run `lipo -create -output ...`.
     //
-    // Output: zig-out/bin/agent-tts-universal
+    // Output: zig-out/bin/ptah-universal
     const universal_optimize: std.builtin.OptimizeMode = .ReleaseFast;
     const universal_piper_opts = b.addOptions();
     universal_piper_opts.addOption(bool, "enabled", false);
@@ -251,7 +251,7 @@ pub fn build(b: *std.Build) void {
     for (arches, 0..) |q, i| {
         const t = b.resolveTargetQuery(q);
         const slice_mod = b.addModule(
-            b.fmt("agent_tts_{s}", .{@tagName(q.cpu_arch.?)}),
+            b.fmt("ptah_{s}", .{@tagName(q.cpu_arch.?)}),
             .{ .root_source_file = b.path("src/root.zig"), .target = t },
         );
         const slice_zaudio = b.addModule(
@@ -259,14 +259,14 @@ pub fn build(b: *std.Build) void {
             .{ .root_source_file = b.path("vendor/zaudio/src/zaudio.zig"), .target = t },
         );
         const slice_exe = b.addExecutable(.{
-            .name = b.fmt("agent-tts-{s}", .{@tagName(q.cpu_arch.?)}),
+            .name = b.fmt("ptah-{s}", .{@tagName(q.cpu_arch.?)}),
             .root_module = b.createModule(.{
                 .root_source_file = b.path("src/main.zig"),
                 .target = t,
                 .optimize = universal_optimize,
                 .link_libc = true,
                 .imports = &.{
-                    .{ .name = "agent_tts", .module = slice_mod },
+                    .{ .name = "ptah", .module = slice_mod },
                     .{ .name = "build_options", .module = universal_piper_opts.createModule() },
                     .{ .name = "zaudio", .module = slice_zaudio },
                 },
@@ -277,12 +277,12 @@ pub fn build(b: *std.Build) void {
     }
 
     const lipo = b.addSystemCommand(&.{ "lipo", "-create", "-output" });
-    const universal_out = lipo.addOutputFileArg("agent-tts-universal");
+    const universal_out = lipo.addOutputFileArg("ptah-universal");
     for (slice_artifacts) |slice_exe| {
         lipo.addFileArg(slice_exe.getEmittedBin());
     }
 
-    const universal_install = b.addInstallBinFile(universal_out, "agent-tts-universal");
+    const universal_install = b.addInstallBinFile(universal_out, "ptah-universal");
     const universal_step = b.step("universal", "Build universal (arm64+x86_64) macOS binary via lipo");
     universal_step.dependOn(&universal_install.step);
 

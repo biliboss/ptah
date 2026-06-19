@@ -1,10 +1,10 @@
 import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
 
-// GitHub Pages deployment lives at https://biliboss.github.io/agent-tts/
+// GitHub Pages deployment lives at https://biliboss.github.io/ptah/
 // Override with the SITE / BASE env vars for staging or custom domains.
 const SITE = process.env.SITE || 'https://biliboss.github.io';
-const BASE = process.env.BASE || '/agent-tts';
+const BASE = process.env.BASE || '/ptah';
 
 export default defineConfig({
   site: SITE,
@@ -12,19 +12,19 @@ export default defineConfig({
   trailingSlash: 'always',
   integrations: [
     starlight({
-      title: 'agent-tts',
-      description: 'Global Zig CLI for Pt-BR TTS on macOS. KPI: time-to-first-audio.',
+      title: 'ptah',
+      description: 'Ptah — Zig CLI for Pt-BR TTS on macOS. KPI: time-to-first-audio.',
       logo: {
-        src: './public/logos/agent-tts-logo.png',
+        src: './public/logos/ptah-logo.png',
         replacesTitle: false,
       },
       favicon: '/favicon.ico',
       customCss: ['./src/styles/custom.css'],
       social: {
-        github: 'https://github.com/biliboss/agent-tts',
+        github: 'https://github.com/biliboss/ptah',
       },
       editLink: {
-        baseUrl: 'https://github.com/biliboss/agent-tts/edit/main/',
+        baseUrl: 'https://github.com/biliboss/ptah/edit/main/',
       },
       sidebar: [
         { label: 'Overview', link: '/' },

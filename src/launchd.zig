@@ -6,14 +6,14 @@
 // voice (KPI = TTFA).
 //
 // Plist path: $HOME/Library/LaunchAgents/<label>.plist
-// Label:      io.github.biliboss.agent-tts  (override via env AGENT_TTS_LAUNCHD_LABEL
+// Label:      io.github.biliboss.ptah  (override via env PTAH_LAUNCHD_LABEL
 //             — used by the dry-run test in _qa/v0.4-baseline.md to avoid
 //             clobbering a real install).
 //
 // Three subcommands wire in from main.zig:
-//   agent-tts daemon install    → write plist + launchctl bootstrap gui/<uid>
-//   agent-tts daemon uninstall  → launchctl bootout + delete plist
-//   agent-tts daemon status     → loaded? + last exit reason
+//   ptah daemon install    → write plist + launchctl bootstrap gui/<uid>
+//   ptah daemon uninstall  → launchctl bootout + delete plist
+//   ptah daemon status     → loaded? + last exit reason
 //
 // Constraints:
 //   - Plist write is atomic: createFileAtomic into the LaunchAgents dir then
@@ -31,8 +31,8 @@
 
 const std = @import("std");
 
-pub const DEFAULT_LABEL = "io.github.biliboss.agent-tts";
-pub const LABEL_ENV = "AGENT_TTS_LAUNCHD_LABEL";
+pub const DEFAULT_LABEL = "io.github.biliboss.ptah";
+pub const LABEL_ENV = "PTAH_LAUNCHD_LABEL";
 
 // Resolved set of paths derived from $HOME + label. Computed once, reused.
 const Paths = struct {
@@ -50,7 +50,7 @@ fn computePaths(arena: std.mem.Allocator, home: []const u8, label: []const u8) !
     const plist_dir = try std.fmt.allocPrint(arena, "{s}/Library/LaunchAgents", .{home});
     const plist_basename = try std.fmt.allocPrint(arena, "{s}.plist", .{label});
     const plist_abs = try std.fmt.allocPrint(arena, "{s}/{s}", .{ plist_dir, plist_basename });
-    const cache_dir = try std.fmt.allocPrint(arena, "{s}/.cache/agent-tts", .{home});
+    const cache_dir = try std.fmt.allocPrint(arena, "{s}/.cache/ptah", .{home});
     const stdout_log = try std.fmt.allocPrint(arena, "{s}/daemon.out.log", .{cache_dir});
     const stderr_log = try std.fmt.allocPrint(arena, "{s}/daemon.err.log", .{cache_dir});
     return .{
@@ -74,7 +74,7 @@ fn pickLabel(env: ?[]const u8) []const u8 {
 
 // Resolve the absolute path of the running binary. Required because launchd
 // rejects relative paths in ProgramArguments — and argv[0] from a login shell
-// is often "agent-tts" without a directory. Darwin path uses
+// is often "ptah" without a directory. Darwin path uses
 // _NSGetExecutablePath under the hood (see Threaded.processExecutablePath).
 fn resolveExePath(arena: std.mem.Allocator, io: std.Io) ![]u8 {
     var buf: [std.fs.max_path_bytes]u8 = undefined;
@@ -371,7 +371,7 @@ pub fn renderPlistForTest(
     exe_path: []const u8,
     home: []const u8,
 ) ![]u8 {
-    const cache_dir = try std.fmt.allocPrint(arena, "{s}/.cache/agent-tts", .{home});
+    const cache_dir = try std.fmt.allocPrint(arena, "{s}/.cache/ptah", .{home});
     const stdout_log = try std.fmt.allocPrint(arena, "{s}/daemon.out.log", .{cache_dir});
     const stderr_log = try std.fmt.allocPrint(arena, "{s}/daemon.err.log", .{cache_dir});
     return renderPlist(arena, label, exe_path, home, cache_dir, stdout_log, stderr_log);
@@ -385,13 +385,13 @@ test "renderPlist contains required keys and escapes home" {
 
     const xml = try renderPlistForTest(
         arena,
-        "io.github.biliboss.agent-tts.test",
-        "/Users/test & co/bin/agent-tts",
+        "io.github.biliboss.ptah.test",
+        "/Users/test & co/bin/ptah",
         "/Users/test & co",
     );
 
     try std.testing.expect(std.mem.indexOf(u8, xml, "<key>Label</key>") != null);
-    try std.testing.expect(std.mem.indexOf(u8, xml, "io.github.biliboss.agent-tts.test") != null);
+    try std.testing.expect(std.mem.indexOf(u8, xml, "io.github.biliboss.ptah.test") != null);
     try std.testing.expect(std.mem.indexOf(u8, xml, "<key>RunAtLoad</key>") != null);
     try std.testing.expect(std.mem.indexOf(u8, xml, "<key>KeepAlive</key>") != null);
     try std.testing.expect(std.mem.indexOf(u8, xml, "<key>SuccessfulExit</key>") != null);

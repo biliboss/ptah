@@ -1,6 +1,6 @@
-# AGENTS.md — agent-tts docs
+# AGENTS.md — ptah docs
 
-Astro Starlight site documenting the **agent-tts** project (global Zig CLI for Pt-BR TTS on macOS).
+Astro Starlight site documenting the **ptah** project (global Zig CLI for Pt-BR TTS on macOS).
 
 ## Purpose
 
@@ -8,7 +8,7 @@ Source of truth for decisions, architecture, and roadmap. Audience: maintainers 
 
 ## Single KPI
 
-**Time-to-first-audio (TTFA)**: latency between `agent-tts "x"` and the first audible sample. Every decision is justified against this metric. v1.0 target: < 300ms warm, < 800ms cold.
+**Time-to-first-audio (TTFA)**: latency between `ptah "x"` and the first audible sample. Every decision is justified against this metric. v1.0 target: < 300ms warm, < 800ms cold.
 
 ## Structure (flat, 4 pages)
 
@@ -33,11 +33,11 @@ npm run dev:fixed    # fixed port 4321 (debug)
 `npm run dev` (defined in `scripts/dev.mjs`):
 
 1. Asks the kernel for a free port (`net.createServer().listen(0)` → close → inherit the number)
-2. Writes `~/.puma-dev/agent-tts` with the drawn port (if puma-dev exists)
+2. Writes `~/.puma-dev/ptah` with the drawn port (if puma-dev exists)
 3. `spawn('astro', ['dev', '--port', port])`
 4. SIGINT/SIGTERM → cleans the puma-dev file before exiting
 
-Zero port conflicts. Stable public URL (`http://agent-tts.test`), with the port behind it changing every run.
+Zero port conflicts. Stable public URL (`http://ptah.test`), with the port behind it changing every run.
 
 Static build:
 
@@ -48,7 +48,7 @@ npm run preview
 
 ## Local DNS access (puma-dev)
 
-Project standard for local dev servers: **puma-dev** (~10MB Go binary, launchd, `/etc/resolver/test`). Maps `agent-tts.test:80 → localhost:<random-port>` automatically.
+Project standard for local dev servers: **puma-dev** (~10MB Go binary, launchd, `/etc/resolver/test`). Maps `ptah.test:80 → localhost:<random-port>` automatically.
 
 One-time setup per machine:
 
@@ -58,13 +58,13 @@ sudo puma-dev -setup       # creates /etc/resolver/test
 puma-dev -install          # registers launchd
 ```
 
-No manual per-project command — `npm run dev` writes `~/.puma-dev/agent-tts` with the right port every time.
+No manual per-project command — `npm run dev` writes `~/.puma-dev/ptah` with the right port every time.
 
 Stop/remove:
 
 ```bash
 puma-dev -uninstall                  # removes launchd globally
-rm ~/.puma-dev/agent-tts             # removes just this project (npm run dev cleans up on SIGINT)
+rm ~/.puma-dev/ptah             # removes just this project (npm run dev cleans up on SIGINT)
 ```
 
 Why random port + puma-dev:
@@ -96,10 +96,10 @@ Locked summary (details on the pages):
 - **Language**: Zig 0.14+ (binary < 2MB, native Apple Silicon)
 - **TTS engine**: macOS `say` with the "Luciana (Premium)" voice
 - **Architecture**: single binary, client mode + daemon mode
-- **IPC**: UNIX socket at `~/.cache/agent-tts/sock`
-- **Queue**: SQLite WAL at `~/.cache/agent-tts/queue.db`
-- **Install path**: `/usr/local/bin/agent-tts`
-- **Auto-start**: `launchd` plist `~/Library/LaunchAgents/io.github.biliboss.agent-tts.plist`
+- **IPC**: UNIX socket at `~/.cache/ptah/sock`
+- **Queue**: SQLite WAL at `~/.cache/ptah/queue.db`
+- **Install path**: `/usr/local/bin/ptah`
+- **Auto-start**: `launchd` plist `~/Library/LaunchAgents/io.github.biliboss.ptah.plist`
 
 ## Don't do (docs)
 
@@ -110,7 +110,7 @@ Locked summary (details on the pages):
 
 ## Related
 
-- Live docs: https://biliboss.github.io/agent-tts/
+- Live docs: https://biliboss.github.io/ptah/
 - Repo README: [`README.md`](./README.md)
 - Changelog: [`src/content/docs/changelog.md`](./src/content/docs/changelog.md)
 

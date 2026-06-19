@@ -1,13 +1,13 @@
 # AgentTTSMenubar
 
-macOS menubar UI for the agent-tts daemon. Third client on the same UNIX-socket TSV protocol that powers the CLI (`src/client.zig`) and the MCP shim (`src/mcp.zig`).
+macOS menubar UI for the ptah daemon. Third client on the same UNIX-socket TSV protocol that powers the CLI (`src/client.zig`) and the MCP shim (`src/mcp.zig`).
 
 ## What it does
 
 - Status item icon (speaker glyph) in the menubar.
 - Popover (320×420) with:
   - Live queue showing `pending` / `playing` rows. Polls every 750 ms while open.
-  - Voice picker — Luciana, Felipe, Faber, Amy, plus any cloned voices under `~/.cache/agent-tts/voices/<slug>/metadata.json`. Selection persists to UserDefaults.
+  - Voice picker — Luciana, Felipe, Faber, Amy, plus any cloned voices under `~/.cache/ptah/voices/<slug>/metadata.json`. Selection persists to UserDefaults.
   - Skip + Clear buttons backed by `SKIP\n` / `CLEAR\n`.
   - Round-trip latency readout (last poll, milliseconds).
 - No daemon modifications. The Swift app is a thin client.

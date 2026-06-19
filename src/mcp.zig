@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // Model Context Protocol (MCP) server — v1.5.
 //
-// Single subcommand: `agent-tts mcp` opens a JSON-RPC 2.0 loop over
+// Single subcommand: `ptah mcp` opens a JSON-RPC 2.0 loop over
 // stdin/stdout. Newline-delimited JSON, NOT LSP-style Content-Length
 // headers — that's the MCP stdio transport convention.
 //
@@ -48,7 +48,7 @@ const WRITE_BUF = 64 * 1024;
 // lived arena to back the chunker's buffer + dup'd chunk slices. When
 // `final=true` arrives the session flushes and is dropped from the map.
 //
-// Scope: process-local. A new `agent-tts mcp` process starts with an
+// Scope: process-local. A new `ptah mcp` process starts with an
 // empty map. Multiple clients sharing one MCP process see each other's
 // stream_ids — collisions are caller's responsibility (treat stream_id
 // like a UUID).
@@ -192,7 +192,7 @@ fn boolean(b: bool) json.Value {
 
 fn buildInitializeResponse(a: std.mem.Allocator, id: json.Value) ![]const u8 {
     const server_info = try obj(a, &.{
-        .{ "name", str("agent-tts") },
+        .{ "name", str("ptah") },
         .{ "version", str(VERSION) },
     });
     const tools_cap = try obj(a, &.{
@@ -215,7 +215,7 @@ fn buildToolsListResponse(a: std.mem.Allocator, id: json.Value) ![]const u8 {
         try toolDescriptor(a, "queue", "List items currently in the TTS queue (pending + playing).", try emptySchema(a)),
         try toolDescriptor(a, "skip", "Skip the currently playing TTS item. Returns the skipped id (0 = nothing playing).", try skipSchema(a)),
         try toolDescriptor(a, "clear", "Drop all pending TTS items. Returns the number dropped.", try emptySchema(a)),
-        try toolDescriptor(a, "voices", "List installed voices for `say` and any piper ONNX models in ~/.cache/agent-tts/voices/.", try emptySchema(a)),
+        try toolDescriptor(a, "voices", "List installed voices for `say` and any piper ONNX models in ~/.cache/ptah/voices/.", try emptySchema(a)),
         try toolDescriptor(a, "say_stream", "Stream-feed Pt-BR TTS chunk-by-chunk. The server buffers bytes per stream_id, emits sentences to the daemon as terminators arrive, and flushes any remainder when final=true. Returns the count of sentences enqueued by this call.", try sayStreamSchema(a)),
         // v1.10.2 — player ops.
         try toolDescriptor(a, "pause", "Pause the active piper/cloned playback. Returns the paused item id (0 = nothing playing).", try emptySchema(a)),
@@ -315,7 +315,7 @@ fn saySchema(a: std.mem.Allocator) !json.Value {
     const postfx_prop = try obj(a, &.{
         .{ "type", str("string") },
         .{ "enum", postfx_enum },
-        .{ "description", str("v1.10.10+: audio post-processing profile applied to the synth PCM before zaudio playback. `off` (default) is the dry path. `clean` is highpass+light comp. `tech` is the research-anchored chain (RNNoise+EQ+deesser+2:1 comp) — needs ffmpeg on PATH and an RNNoise model at AGENT_TTS_POSTFX_RNNN_MODEL or ~/.cache/agent-tts/rnnoise/cb.rnnn. `broadcast` is EQ+deesser+3:1 comp. Pass-through when ffmpeg is missing.") },
+        .{ "description", str("v1.10.10+: audio post-processing profile applied to the synth PCM before zaudio playback. `off` (default) is the dry path. `clean` is highpass+light comp. `tech` is the research-anchored chain (RNNoise+EQ+deesser+2:1 comp) — needs ffmpeg on PATH and an RNNoise model at PTAH_POSTFX_RNNN_MODEL or ~/.cache/ptah/rnnoise/cb.rnnn. `broadcast` is EQ+deesser+3:1 comp. Pass-through when ffmpeg is missing.") },
     });
 
     const props = try obj(a, &.{
@@ -511,7 +511,7 @@ fn sayStreamSchema(a: std.mem.Allocator) !json.Value {
 fn replaySchema(a: std.mem.Allocator) !json.Value {
     const id_prop = try obj(a, &.{
         .{ "type", str("integer") },
-        .{ "description", str("Id of the past item to replay. Look it up via the `history` tool or `agent-tts queue`/`history`.") },
+        .{ "description", str("Id of the past item to replay. Look it up via the `history` tool or `ptah queue`/`history`.") },
     });
     const props = try obj(a, &.{
         .{ "id", id_prop },
@@ -800,7 +800,7 @@ fn callSay(
         speaker_id,
         postfx_profile,
     ) catch |e| switch (e) {
-        error.DaemonUnreachable => return try toolErrorResponse(a, id, "daemon not running — start with `agent-tts daemon` or `agent-tts daemon install`"),
+        error.DaemonUnreachable => return try toolErrorResponse(a, id, "daemon not running — start with `ptah daemon` or `ptah daemon install`"),
         error.DaemonError => return try toolErrorResponse(a, id, "daemon returned an error"),
         error.UnexpectedResponse => return try toolErrorResponse(a, id, "daemon returned an unexpected response"),
         else => return e,
@@ -1351,7 +1351,7 @@ fn callSayStream(
         };
         for (emitted) |c| {
             _ = client.enqueueLine(a, io, home, engine, voice, rate, c.text) catch |e| switch (e) {
-                error.DaemonUnreachable => return try toolErrorResponse(a, id, "daemon not running — start with `agent-tts daemon` or `agent-tts daemon install`"),
+                error.DaemonUnreachable => return try toolErrorResponse(a, id, "daemon not running — start with `ptah daemon` or `ptah daemon install`"),
                 error.DaemonError => return try toolErrorResponse(a, id, "daemon returned an error mid-stream"),
                 error.UnexpectedResponse => return try toolErrorResponse(a, id, "daemon returned an unexpected response mid-stream"),
                 else => return e,
@@ -1397,8 +1397,8 @@ fn callVoices(a: std.mem.Allocator, io: std.Io, home: []const u8, id: json.Value
     try list.append(try voiceEntry(a, "say", "Luciana", "Pt-BR Premium voice (default for say)"));
     try list.append(try voiceEntry(a, "say", "Felipe", "Pt-BR Premium male voice"));
 
-    // Piper voices: ONNX files in ~/.cache/agent-tts/voices/.
-    const voices_dir = try std.fmt.allocPrint(a, "{s}/.cache/agent-tts/voices", .{home});
+    // Piper voices: ONNX files in ~/.cache/ptah/voices/.
+    const voices_dir = try std.fmt.allocPrint(a, "{s}/.cache/ptah/voices", .{home});
     addPiperVoices(a, io, voices_dir, &list) catch {};
 
     const payload = try obj(a, &.{

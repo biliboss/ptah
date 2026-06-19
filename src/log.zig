@@ -5,12 +5,12 @@
 // daemon with a `std.log.scoped(...)` interface that writes:
 //
 //   1. stderr (for launchd capture — the existing user habit), AND
-//   2. a rotating file at `~/.cache/agent-tts/daemon.log`.
+//   2. a rotating file at `~/.cache/ptah/daemon.log`.
 //
 // Each line is prefixed with an ISO 8601 UTC timestamp, the level, and
 // the scope name. Filtering by level + scope happens at runtime so an
-// operator can flip `AGENT_TTS_LOG_LEVEL=debug` (or scope it down with
-// `AGENT_TTS_LOG_SCOPES=worker,postfx`) without rebuilding the daemon.
+// operator can flip `PTAH_LOG_LEVEL=debug` (or scope it down with
+// `PTAH_LOG_SCOPES=worker,postfx`) without rebuilding the daemon.
 //
 // Threading: the file sink is shared between the worker thread, the
 // accept thread, and any auxiliary threads (synth pipeline, postfx
@@ -18,7 +18,7 @@
 // so each `log.info(...)` call appends one complete line atomically.
 // The stderr write is guarded by `std.debug.lockStderr` separately.
 //
-// Rotation: when the active file exceeds `AGENT_TTS_LOG_MAX_BYTES`
+// Rotation: when the active file exceeds `PTAH_LOG_MAX_BYTES`
 // (default 10 MiB), we rename `daemon.log → daemon.log.1`, shifting
 // any older rotations down (.1 → .2, .2 → .3) and dropping `.3`. The
 // rotation runs inside the same mutex so a concurrent writer can't see
@@ -164,7 +164,7 @@ fn initConfig() void {
 }
 
 fn parseLevelEnv() std.log.Level {
-    const s = envStr("AGENT_TTS_LOG_LEVEL") orelse return .info;
+    const s = envStr("PTAH_LOG_LEVEL") orelse return .info;
     if (eqi(s, "err") or eqi(s, "error")) return .err;
     if (eqi(s, "warn") or eqi(s, "warning")) return .warn;
     if (eqi(s, "info")) return .info;
@@ -173,12 +173,12 @@ fn parseLevelEnv() std.log.Level {
 }
 
 fn parseMaxBytesEnv() u64 {
-    const s = envStr("AGENT_TTS_LOG_MAX_BYTES") orelse return 10 * 1024 * 1024;
+    const s = envStr("PTAH_LOG_MAX_BYTES") orelse return 10 * 1024 * 1024;
     return std.fmt.parseInt(u64, s, 10) catch (10 * 1024 * 1024);
 }
 
 fn parseScopesEnv(c: *Config) void {
-    const s = envStr("AGENT_TTS_LOG_SCOPES") orelse return;
+    const s = envStr("PTAH_LOG_SCOPES") orelse return;
     if (s.len == 0) return;
     var it = std.mem.splitScalar(u8, s, ',');
     while (it.next()) |raw| {
@@ -194,7 +194,7 @@ fn parseScopesEnv(c: *Config) void {
 }
 
 fn resolvePath(c: *Config) void {
-    if (envStr("AGENT_TTS_LOG_PATH")) |env_p| {
+    if (envStr("PTAH_LOG_PATH")) |env_p| {
         const n = @min(env_p.len, c.path_buf.len - 1);
         @memcpy(c.path_buf[0..n], env_p[0..n]);
         c.path_buf[n] = 0;
@@ -202,9 +202,9 @@ fn resolvePath(c: *Config) void {
         return;
     }
     const home = envStr("HOME") orelse "/tmp";
-    const suffix = "/.cache/agent-tts/daemon.log";
+    const suffix = "/.cache/ptah/daemon.log";
     if (home.len + suffix.len + 1 >= c.path_buf.len) {
-        const fallback = "/tmp/agent-tts-daemon.log";
+        const fallback = "/tmp/ptah-daemon.log";
         @memcpy(c.path_buf[0..fallback.len], fallback);
         c.path_buf[fallback.len] = 0;
         c.path_len = fallback.len;
@@ -260,7 +260,7 @@ fn ensureFileOpenLocked(c: *Config) void {
 
     // Make sure the parent directory exists. We mkdir each component
     // ignoring EEXIST so launchd's initial run on a fresh box still
-    // gets ~/.cache/agent-tts/.
+    // gets ~/.cache/ptah/.
     mkdirParents(@ptrCast(&c.path_buf[0]));
 
     // O_WRONLY | O_CREAT | O_APPEND. Append preserves logs across

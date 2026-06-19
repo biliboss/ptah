@@ -1,9 +1,9 @@
 import { test, expect } from '@playwright/test';
 
-// Paths are RELATIVE to baseURL (which ends in /agent-tts/). A leading slash
+// Paths are RELATIVE to baseURL (which ends in /ptah/). A leading slash
 // would escape the base path — see playwright.config.ts for the rationale.
 const pages = [
-  { path: '',              h1: /agent-tts/i,    splash: true },
+  { path: '',              h1: /ptah/i,    splash: true },
   { path: 'arquitetura/',  h1: /Architecture/,  splash: false },
   { path: 'motor/',        h1: /TTS engine/,    splash: false },
   { path: 'roadmap/',      h1: /Roadmap/,       splash: false },
@@ -32,7 +32,7 @@ for (const p of pages) {
   });
 }
 
-test('base path is /agent-tts (root /arquitetura/ must 404)', async ({ page }) => {
+test('base path is /ptah (root /arquitetura/ must 404)', async ({ page }) => {
   // Guards against an accidental `base: '/'` regression in astro.config.mjs.
   const res = await page.goto('https://biliboss.github.io/arquitetura/');
   expect(res?.status()).toBe(404);
@@ -58,7 +58,7 @@ test('home links to the architecture page', async ({ page }) => {
   const link = page.getByRole('link', { name: /architecture/i }).first();
   await expect(link).toBeVisible();
   await link.click();
-  await expect(page).toHaveURL(/\/agent-tts\/arquitetura\/?$/);
+  await expect(page).toHaveURL(/\/ptah\/arquitetura\/?$/);
 });
 
 test('every doc page has an edit-on-github link', async ({ page }) => {
@@ -66,5 +66,5 @@ test('every doc page has an edit-on-github link', async ({ page }) => {
   await page.goto('arquitetura/');
   const edit = page.getByRole('link', { name: /edit page/i }).first();
   await expect(edit).toBeVisible();
-  await expect(edit).toHaveAttribute('href', /github\.com\/biliboss\/agent-tts\/edit\/main/);
+  await expect(edit).toHaveAttribute('href', /github\.com\/biliboss\/ptah\/edit\/main/);
 });

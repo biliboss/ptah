@@ -11,7 +11,7 @@
 #
 # Output: ui/menubar/build/AgentTTSMenubar.app
 #
-# v1.10.2: bundles AppIcon.icns generated from public/logos/agent-tts-logo.png.
+# v1.10.2: bundles AppIcon.icns generated from public/logos/ptah-logo.png.
 # Codesigning + notarization are still out of scope — Gatekeeper treats the
 # unsigned bundle as "from unidentified developer". v1.10.2 wires brew cask.
 
@@ -48,10 +48,10 @@ cp "$BIN" "$APP/Contents/MacOS/$APP_NAME"
 
 # v1.10.2: bake AppIcon.icns from the marketing logo (1024 RGBA → sips →
 # iconutil). Requires `sips` + `iconutil` (macOS native).
-LOGO="$REPO_ROOT/public/logos/agent-tts-logo.png"
+LOGO="$REPO_ROOT/public/logos/ptah-logo.png"
 if [ -f "$LOGO" ]; then
   echo "==> building AppIcon.icns from $LOGO"
-  ICONSET=$(mktemp -d)/agent-tts.iconset
+  ICONSET=$(mktemp -d)/ptah.iconset
   mkdir -p "$ICONSET"
   for sz in 16 32 64 128 256 512; do
     sips -z $sz $sz "$LOGO" --out "$ICONSET/icon_${sz}x${sz}.png" >/dev/null 2>&1
@@ -73,9 +73,9 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 <plist version="1.0">
 <dict>
   <key>CFBundleExecutable</key><string>$APP_NAME</string>
-  <key>CFBundleIdentifier</key><string>io.github.biliboss.agent-tts.menubar</string>
+  <key>CFBundleIdentifier</key><string>io.github.biliboss.ptah.menubar</string>
   <key>CFBundleName</key><string>$APP_NAME</string>
-  <key>CFBundleDisplayName</key><string>agent-tts</string>
+  <key>CFBundleDisplayName</key><string>ptah</string>
   <key>CFBundleVersion</key><string>1.10.13</string>
   <key>CFBundleShortVersionString</key><string>1.10.13</string>
   <key>CFBundlePackageType</key><string>APPL</string>
@@ -83,7 +83,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>LSMinimumSystemVersion</key><string>14.0</string>
   <key>LSUIElement</key><true/>
   <key>NSHighResolutionCapable</key><true/>
-  <key>NSMicrophoneUsageDescription</key><string>agent-tts needs your microphone to record the voice sample used for cloning. Recording only happens when you tap Record in the Clone window.</string>
+  <key>NSMicrophoneUsageDescription</key><string>ptah needs your microphone to record the voice sample used for cloning. Recording only happens when you tap Record in the Clone window.</string>
 </dict>
 </plist>
 PLIST

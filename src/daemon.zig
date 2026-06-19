@@ -7,7 +7,7 @@
 //   - AudioPlayer (zaudio.Engine) initialised at boot. Best-effort: failure
 //     leaves it `.ready = false` and the piper path falls back to
 //     synthToWav + afplay so output still reaches the speakers.
-//   - PiperEngine boot when AGENT_TTS_PIPER=1 (env) AND build_options.enabled.
+//   - PiperEngine boot when PTAH_PIPER=1 (env) AND build_options.enabled.
 //     The engine is held in a Resources struct passed into the worker.
 //   - runOne routes by item.engine. SKIP cancels via AudioPlayer.requestStop
 //     for the piper path, mirroring the SIGTERM path for `say`.
@@ -118,7 +118,7 @@ const Resources = struct {
     piper: ?*piper_mod.MultiPiperEngine,
     io: std.Io,
     /// v1.10.10 — forwarded $HOME so postfx can probe
-    /// `~/.cache/agent-tts/rnnoise/cb.rnnn` for the RNNoise model.
+    /// `~/.cache/ptah/rnnoise/cb.rnnn` for the RNNoise model.
     home: []const u8,
     /// v1.10.2 — id of the row the worker is currently playing. Set when
     /// runOne begins, cleared on completion. IPC PAUSE/RESUME read this to
@@ -204,7 +204,7 @@ pub fn run(arena: std.mem.Allocator, io: std.Io, home: []const u8) !void {
 
     // libpiper engine. Loads on every boot when the binary is built with
     // -Dwith-piper=true. Pt (Faber) mandatory; En (Amy) best-effort. Cold
-    // cost ~700 ms when both load. Opt-out via AGENT_TTS_PIPER=0 (kept for
+    // cost ~700 ms when both load. Opt-out via PTAH_PIPER=0 (kept for
     // CI / debugging — daemon then runs `say`-only like the v1.0 universal
     // binary).
     var piper_engine_storage: ?piper_mod.MultiPiperEngine = null;
@@ -213,7 +213,7 @@ pub fn run(arena: std.mem.Allocator, io: std.Io, home: []const u8) !void {
         const c = @cImport({
             @cInclude("stdlib.h");
         });
-        const env_ptr = c.getenv("AGENT_TTS_PIPER");
+        const env_ptr = c.getenv("PTAH_PIPER");
         const piper_off = env_ptr != null and std.mem.eql(u8, std.mem.span(env_ptr), "0");
         if (!piper_off) {
             if (bootMultiPiper(arena, io, home)) |engine| {
@@ -309,7 +309,7 @@ fn workerLoop(res: *Resources) void {
     }
 }
 
-/// v1.10.12 — true when `AGENT_TTS_BREATH_WAV` env var is set to a
+/// v1.10.12 — true when `PTAH_BREATH_WAV` env var is set to a
 /// non-empty path. Used by the cadence pipeline to decide whether the
 /// `[[breath]]` marker becomes an audible splice. When the env var is
 /// missing we still emit the marker as a literal (it's a noop for piper
@@ -319,7 +319,7 @@ fn breathEnabled() bool {
     const stdlib = @cImport({
         @cInclude("stdlib.h");
     });
-    const ptr = stdlib.getenv("AGENT_TTS_BREATH_WAV");
+    const ptr = stdlib.getenv("PTAH_BREATH_WAV");
     if (ptr == null) return false;
     const s = std.mem.span(ptr);
     return s.len > 0;
@@ -362,7 +362,7 @@ fn runCloned(res: *Resources, io: std.Io, sa: std.mem.Allocator, item: queue_mod
         const ptr = c.getenv("HOME") orelse break :blk "/tmp";
         break :blk std.mem.span(ptr);
     };
-    const voice_dir = try std.fmt.allocPrint(sa, "{s}/.cache/agent-tts/voices/{s}", .{ home_env, item.voice });
+    const voice_dir = try std.fmt.allocPrint(sa, "{s}/.cache/ptah/voices/{s}", .{ home_env, item.voice });
     const embedding_path = try std.fmt.allocPrint(sa, "{s}/embedding.npz", .{voice_dir});
 
     var probe = std.Io.Dir.cwd().openFile(io, embedding_path, .{}) catch {
@@ -430,25 +430,25 @@ fn fallbackCloned(res: *Resources, io: std.Io, sa: std.mem.Allocator, item: queu
 // v1.10.5: resolve `voice_synth.py` + `.venv-voice/bin/python` via probe.
 // Daemon's cwd isn't the repo root (launchd starts under HOME), so the v1.4
 // relative-path spawn fails. Probe order:
-//   1. $AGENT_TTS_REPO_ROOT/scripts/voice_synth.py + $AGENT_TTS_REPO_ROOT/.venv-voice/bin/python
-//   2. /opt/homebrew/share/agent-tts/scripts/voice_synth.py + same prefix venv
-//   3. /usr/local/share/agent-tts/...
+//   1. $PTAH_REPO_ROOT/scripts/voice_synth.py + $PTAH_REPO_ROOT/.venv-voice/bin/python
+//   2. /opt/homebrew/share/ptah/scripts/voice_synth.py + same prefix venv
+//   3. /usr/local/share/ptah/...
 //   4. cwd-relative (legacy, v1.4 dev path)
 fn resolveSidecarPaths(sa: std.mem.Allocator) struct { script: []const u8, venv_python: ?[]const u8 } {
     const c = @cImport({
         @cInclude("stdlib.h");
     });
-    const env_root = c.getenv("AGENT_TTS_REPO_ROOT");
+    const env_root = c.getenv("PTAH_REPO_ROOT");
     const candidates: []const []const u8 = if (env_root != null and std.mem.span(env_root).len > 0)
         &.{
             std.mem.span(env_root),
-            "/opt/homebrew/share/agent-tts",
-            "/usr/local/share/agent-tts",
+            "/opt/homebrew/share/ptah",
+            "/usr/local/share/ptah",
         }
     else
         &.{
-            "/opt/homebrew/share/agent-tts",
-            "/usr/local/share/agent-tts",
+            "/opt/homebrew/share/ptah",
+            "/usr/local/share/ptah",
         };
     for (candidates) |root| {
         const script = std.fmt.allocPrint(sa, "{s}/scripts/voice_synth.py", .{root}) catch continue;
@@ -663,7 +663,7 @@ fn runPiper(res: *Resources, io: std.Io, sa: std.mem.Allocator, item: queue_mod.
     }
 
     // SKIP routes through audio_player.requestStop for piper items; we
-    // still register a sentinel PID so `agent-tts queue` shows "playing".
+    // still register a sentinel PID so `ptah queue` shows "playing".
     res.queue.setPlaying(io, item.id, @intCast(std.c.getpid()));
 
     if (chunks.len == 1) {
@@ -1122,7 +1122,7 @@ fn playWithPostfx(
 // (disk I/O + process spawn) but keeps the piper path functional so a
 // release ships without a hard audio dependency.
 fn playViaAfplay(io: std.Io, sa: std.mem.Allocator, samples: []const i16, sample_rate: u32) !void {
-    const tmp_path = try std.fmt.allocPrint(sa, "/tmp/agent-tts-{d}.wav", .{std.c.getpid()});
+    const tmp_path = try std.fmt.allocPrint(sa, "/tmp/ptah-{d}.wav", .{std.c.getpid()});
     try writeWav(io, tmp_path, samples, sample_rate);
     defer std.Io.Dir.cwd().deleteFile(io, tmp_path) catch {};
 
@@ -1304,7 +1304,7 @@ fn bootPiper(arena: std.mem.Allocator, io: std.Io, home: []const u8) ?piper_mod.
 
     const voice_path = std.fmt.allocPrint(
         arena,
-        "{s}/.cache/agent-tts/voices/pt_BR-faber-medium.onnx",
+        "{s}/.cache/ptah/voices/pt_BR-faber-medium.onnx",
         .{home},
     ) catch return null;
     const espeak_data = "vendor/piper1-gpl/libpiper/dist/share/espeak-ng-data";
@@ -1335,12 +1335,12 @@ fn bootMultiPiper(arena: std.mem.Allocator, io: std.Io, home: []const u8) ?piper
 
     const pt_voice_path = std.fmt.allocPrint(
         arena,
-        "{s}/.cache/agent-tts/voices/pt_BR-faber-medium.onnx",
+        "{s}/.cache/ptah/voices/pt_BR-faber-medium.onnx",
         .{home},
     ) catch return null;
     const en_voice_path = std.fmt.allocPrint(
         arena,
-        "{s}/.cache/agent-tts/voices/en_US-amy-medium.onnx",
+        "{s}/.cache/ptah/voices/en_US-amy-medium.onnx",
         .{home},
     ) catch return null;
     const espeak_data = "vendor/piper1-gpl/libpiper/dist/share/espeak-ng-data";

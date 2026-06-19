@@ -22,8 +22,8 @@
 //
 // The chain `tech` references the `arnndn` filter with a Conjoined Burgers
 // 2018-08-28 RNNoise model. We probe for the model at
-// `$AGENT_TTS_POSTFX_RNNN_MODEL` first, then
-// `$HOME/.cache/agent-tts/rnnoise/cb.rnnn`. When neither exists we drop
+// `$PTAH_POSTFX_RNNN_MODEL` first, then
+// `$HOME/.cache/ptah/rnnoise/cb.rnnn`. When neither exists we drop
 // the `arnndn=…` segment from the chain and use the EQ+deesser+compressor
 // subset — still a quality lift, no hard dependency.
 
@@ -104,7 +104,7 @@ pub fn buildChain(arena: std.mem.Allocator, profile: Postfx, rnnn_path: ?[]const
     };
 }
 
-/// Probe `AGENT_TTS_FFMPEG_PATH` env, then `/opt/homebrew/bin/ffmpeg`,
+/// Probe `PTAH_FFMPEG_PATH` env, then `/opt/homebrew/bin/ffmpeg`,
 /// then `/usr/local/bin/ffmpeg`, then bare `ffmpeg`. Returns the first
 /// path that opens (or `ffmpeg` as last-resort which std.process resolves
 /// against PATH). Caller does NOT free; strings are static literals or
@@ -114,7 +114,7 @@ pub fn resolveFfmpeg() ?[]const u8 {
     const c = @cImport({
         @cInclude("stdlib.h");
     });
-    const env_ptr = c.getenv("AGENT_TTS_FFMPEG_PATH");
+    const env_ptr = c.getenv("PTAH_FFMPEG_PATH");
     if (env_ptr != null) {
         const env_str = std.mem.span(env_ptr);
         if (env_str.len > 0 and pathExecutable(env_str)) return env_str;
@@ -132,21 +132,21 @@ pub fn resolveFfmpeg() ?[]const u8 {
     return "ffmpeg";
 }
 
-/// Probe `AGENT_TTS_POSTFX_RNNN_MODEL`, then
-/// `$HOME/.cache/agent-tts/rnnoise/cb.rnnn`. Returns null when neither
+/// Probe `PTAH_POSTFX_RNNN_MODEL`, then
+/// `$HOME/.cache/ptah/rnnoise/cb.rnnn`. Returns null when neither
 /// exists. Caller owns the returned string (allocated from `arena`).
 pub fn resolveRnnoiseModel(arena: std.mem.Allocator, home: []const u8) ?[]const u8 {
     const c = @cImport({
         @cInclude("stdlib.h");
     });
-    const env_ptr = c.getenv("AGENT_TTS_POSTFX_RNNN_MODEL");
+    const env_ptr = c.getenv("PTAH_POSTFX_RNNN_MODEL");
     if (env_ptr != null) {
         const env_str = std.mem.span(env_ptr);
         if (env_str.len > 0 and pathReadable(env_str)) {
             return arena.dupe(u8, env_str) catch return null;
         }
     }
-    const default_path = std.fmt.allocPrint(arena, "{s}/.cache/agent-tts/rnnoise/cb.rnnn", .{home}) catch return null;
+    const default_path = std.fmt.allocPrint(arena, "{s}/.cache/ptah/rnnoise/cb.rnnn", .{home}) catch return null;
     if (pathReadable(default_path)) return default_path;
     return null;
 }
@@ -188,7 +188,7 @@ fn pathReadable(path: []const u8) bool {
 /// hit the pipe-buffer wall, and the worker thread sat on `writeStreamingAll`
 /// forever — the queue advanced no further. We now spawn a stdout drainer
 /// thread + a watchdog thread that SIGTERMs the subprocess after
-/// `AGENT_TTS_POSTFX_TIMEOUT_MS` (default 5000) so a misbehaving filter or
+/// `PTAH_POSTFX_TIMEOUT_MS` (default 5000) so a misbehaving filter or
 /// runaway ffmpeg can never stall the worker again.
 pub fn apply(
     arena: std.mem.Allocator,
@@ -449,7 +449,7 @@ fn postfxTimeoutMs() u32 {
     const c = @cImport({
         @cInclude("stdlib.h");
     });
-    const ptr = c.getenv("AGENT_TTS_POSTFX_TIMEOUT_MS");
+    const ptr = c.getenv("PTAH_POSTFX_TIMEOUT_MS");
     if (ptr == null) return 5000;
     const s = std.mem.span(ptr);
     if (s.len == 0) return 5000;

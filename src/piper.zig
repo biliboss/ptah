@@ -25,7 +25,7 @@ const c = @cImport({
     @cInclude("stddef.h");
     @cInclude("stdbool.h");
     // Define char32_t before piper.h sees it. uint32_t is ABI-compatible with
-    // char32_t on every platform agent-tts targets.
+    // char32_t on every platform ptah targets.
     @cDefine("char32_t", "uint32_t");
     @cInclude("piper.h");
 });
@@ -42,7 +42,7 @@ pub const Error = error{
 
 /// v1.10.7 — getenv + parseFloat helper. Returns null when the env var is
 /// missing OR fails to parse. Used by `synthToSamplesTuned` to honour
-/// daemon-wide `AGENT_TTS_PIPER_*` overrides when the per-call sentinel
+/// daemon-wide `PTAH_PIPER_*` overrides when the per-call sentinel
 /// says "unset".
 fn envFloat(name: [*:0]const u8) ?f32 {
     const stdlib = @cImport({
@@ -151,8 +151,8 @@ pub const PiperEngine = struct {
 
     /// v1.10.7 — synth with all three Piper inference knobs explicit.
     /// Each `< 0` (or `length_scale == 0`) falls through to:
-    ///   1. `AGENT_TTS_PIPER_LENGTH_SCALE` / `AGENT_TTS_PIPER_NOISE_SCALE`
-    ///      / `AGENT_TTS_PIPER_NOISE_W` environment variables (parsed as
+    ///   1. `PTAH_PIPER_LENGTH_SCALE` / `PTAH_PIPER_NOISE_SCALE`
+    ///      / `PTAH_PIPER_NOISE_W` environment variables (parsed as
     ///      f32 once per call), then
     ///   2. libpiper's default (`piper_default_synthesize_options`).
     ///
@@ -190,21 +190,21 @@ pub const PiperEngine = struct {
         // Resolve length_scale: per-call > env > libpiper default.
         const ls = blk: {
             if (length_scale > 0) break :blk length_scale;
-            if (envFloat("AGENT_TTS_PIPER_LENGTH_SCALE")) |v| break :blk v;
+            if (envFloat("PTAH_PIPER_LENGTH_SCALE")) |v| break :blk v;
             break :blk @as(f32, -1.0); // sentinel meaning "don't override"
         };
         if (ls > 0) opts.length_scale = ls;
 
         const ns = blk: {
             if (noise_scale >= 0) break :blk noise_scale;
-            if (envFloat("AGENT_TTS_PIPER_NOISE_SCALE")) |v| break :blk v;
+            if (envFloat("PTAH_PIPER_NOISE_SCALE")) |v| break :blk v;
             break :blk @as(f32, -1.0);
         };
         if (ns >= 0) opts.noise_scale = ns;
 
         const nw = blk: {
             if (noise_w >= 0) break :blk noise_w;
-            if (envFloat("AGENT_TTS_PIPER_NOISE_W")) |v| break :blk v;
+            if (envFloat("PTAH_PIPER_NOISE_W")) |v| break :blk v;
             break :blk @as(f32, -1.0);
         };
         // libpiper names the field `noise_w_scale`; the public API + docs
@@ -333,7 +333,7 @@ pub const MultiPiperEngine = struct {
 
     /// v1.10.7 — synth with explicit per-call Piper inference knobs.
     /// Sentinel rules (any `< 0`, plus `length_scale == 0`) fall through
-    /// to `AGENT_TTS_PIPER_*` env vars and then libpiper defaults. Worker
+    /// to `PTAH_PIPER_*` env vars and then libpiper defaults. Worker
     /// passes the values straight off the popped queue row so a single
     /// ENQUEUE message can A/B different voices without restart.
     pub fn synthLangTuned(

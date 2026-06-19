@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT OR Apache-2.0
-# voice-clone-bench.sh — measure agent-tts v1.6 cloning end-to-end on macOS.
+# voice-clone-bench.sh — measure ptah v1.6 cloning end-to-end on macOS.
 #
 # Captures:
 #   - sample WAV generation latency (`say` data-format)
-#   - `agent-tts voice clone` wall time (cold sidecar — model on disk)
+#   - `ptah voice clone` wall time (cold sidecar — model on disk)
 #   - `voice_synth.py` first-sample latency (cold; one-shot Python invocation)
 #   - `voice_synth.py` second invocation (model on disk, fresh process)
-#   - file layout under ~/.cache/agent-tts/voices/<slug>/
+#   - file layout under ~/.cache/ptah/voices/<slug>/
 #
 # Writes `_qa/v1.6-baseline.md` next to the rest of the version baselines.
 # Idempotent — re-running overwrites the previous baseline.
@@ -17,7 +17,7 @@
 #
 # Defaults: slug=gabriel-bench. Sample text is ~30s of Pt-BR sentences.
 # Requires: `say` (macOS), `.venv-voice/` from setup-voice-clone.sh, and a
-# built `zig-out/bin/agent-tts` (run `zig build` first).
+# built `zig-out/bin/ptah` (run `zig build` first).
 
 set -euo pipefail
 
@@ -27,10 +27,10 @@ PROJECT_ROOT="$(pwd)"
 SLUG="${1:-gabriel-bench}"
 SAMPLE_WAV="/tmp/voice-clone-bench-${SLUG}.wav"
 BASELINE_FILE="${PROJECT_ROOT}/_qa/v1.6-baseline.md"
-VOICE_DIR="${HOME}/.cache/agent-tts/voices/${SLUG}"
+VOICE_DIR="${HOME}/.cache/ptah/voices/${SLUG}"
 
 PY="${PROJECT_ROOT}/.venv-voice/bin/python"
-BIN="${PROJECT_ROOT}/zig-out/bin/agent-tts"
+BIN="${PROJECT_ROOT}/zig-out/bin/ptah"
 
 log() { printf "[voice-clone-bench] %s\n" "$*" >&2; }
 
@@ -51,8 +51,8 @@ SAY_S=$(awk "BEGIN{printf \"%.2f\", ${SAY_T1} - ${SAY_T0}}")
 SAMPLE_DUR=$(${PY} -c "import wave; w=wave.open('${SAMPLE_WAV}','rb'); print(round(w.getnframes()/w.getframerate(),2))")
 log "step 1: OK in ${SAY_S}s — sample duration ${SAMPLE_DUR}s"
 
-# Step 2 — agent-tts voice clone (Zig CLI -> Python sidecar -> embedding.npz).
-log "step 2: agent-tts voice clone --sample ... --name ${SLUG}"
+# Step 2 — ptah voice clone (Zig CLI -> Python sidecar -> embedding.npz).
+log "step 2: ptah voice clone --sample ... --name ${SLUG}"
 CLONE_T0=$(date +%s.%N)
 "${BIN}" voice clone --sample "${SAMPLE_WAV}" --name "${SLUG}" >/tmp/voice-clone-bench.log 2>&1
 CLONE_T1=$(date +%s.%N)
@@ -89,7 +89,7 @@ WARM_SAMPLES=$((WARM_BYTES / 2))
 WARM_AUDIO_S=$(awk "BEGIN{printf \"%.2f\", ${WARM_SAMPLES}/22050}")
 log "step 4: OK in ${SYNTH_WARM_S}s — wrote ${WARM_SAMPLES} samples (${WARM_AUDIO_S}s of audio)"
 
-# Step 5 — file layout under ~/.cache/agent-tts/voices/<slug>/.
+# Step 5 — file layout under ~/.cache/ptah/voices/<slug>/.
 LAYOUT=$(ls -la "${VOICE_DIR}" | awk 'NR>1 {printf "%s %s\n", $5, $NF}' | sed 's|.*/||')
 EMB_SIZE=$(wc -c <"${VOICE_DIR}/embedding.npz" | tr -d ' ')
 
@@ -108,7 +108,7 @@ XTTS-v2 model (~1.8GB) downloaded once into \`~/Library/Application Support/tts/
 | Step | Wall time |
 |---|---:|
 | Sample WAV generation (\`say\` 28s) | ${SAY_S}s |
-| \`agent-tts voice clone\` (cold sidecar, model on disk) | ${CLONE_S}s |
+| \`ptah voice clone\` (cold sidecar, model on disk) | ${CLONE_S}s |
 | Cold synth (fresh Python, 35-char Pt-BR utterance) | ${SYNTH_COLD_S}s → ${COLD_AUDIO_S}s of audio |
 | 2nd-invocation synth (model on disk, fresh process) | ${SYNTH_WARM_S}s → ${WARM_AUDIO_S}s of audio |
 
@@ -116,7 +116,7 @@ XTTS-v2 model (~1.8GB) downloaded once into \`~/Library/Application Support/tts/
 
 ## File layout
 
-\`~/.cache/agent-tts/voices/${SLUG}/\`:
+\`~/.cache/ptah/voices/${SLUG}/\`:
 
 \`\`\`
 ${LAYOUT}
@@ -149,7 +149,7 @@ Duration + sample-rate columns land in v1.6 (parsed from \`metadata.json\` — s
 - **No A/B vs Faber.** Quality assessment requires a listener evaluation; this bench measures latency + file layout only. The PCM is at \`/tmp/voice-clone-bench-{cold,warm}.pcm\` if you want to \`afplay\`-pipe it.
 - **Mauricio voice not captured.** Spec called for a Mauricio voice alongside Gabriel; only Gabriel-bench was synthesised this session.
 - **No MPS device measurement.** Apple Silicon MPS works on torch 2.8 but XTTS-v2 falls back to CPU for several ops. \`device=cpu\` was used everywhere — the warm-process latency is the same envelope on MPS based on Coqui upstream benchmarks.
-- **Daemon dispatch (\`agent-tts --voice ${SLUG} "..."\`) not exercised end-to-end.** The dispatch path (\`daemon.zig::synthClonedViaSidecar\`) was wired in v1.4; this session only validated the clone-time path. The synthesis sidecar is wire-compatible (same \`embedding.npz\`, same stdout PCM contract), so the daemon route should work — but it's not in this baseline.
+- **Daemon dispatch (\`ptah --voice ${SLUG} "..."\`) not exercised end-to-end.** The dispatch path (\`daemon.zig::synthClonedViaSidecar\`) was wired in v1.4; this session only validated the clone-time path. The synthesis sidecar is wire-compatible (same \`embedding.npz\`, same stdout PCM contract), so the daemon route should work — but it's not in this baseline.
 - **Linux/Ubuntu validation skipped.** Spec was macOS-only this run.
 
 ## Decision
@@ -160,8 +160,8 @@ XTTS-v2 sidecar works on Apple Silicon with the four pins above. The latency sto
 
 - \`zig build\`: green
 - \`zig build test\`: green (64+3 = 67 tests, +3 new \`parseVoiceMetadata\` tests)
-- \`agent-tts voice clone --sample <wav> --name <slug>\`: writes embedding.npz + metadata.json
-- \`agent-tts voice list\`: shows new duration + rate columns
+- \`ptah voice clone --sample <wav> --name <slug>\`: writes embedding.npz + metadata.json
+- \`ptah voice list\`: shows new duration + rate columns
 EOF
 
 log "OK — see ${BASELINE_FILE}"

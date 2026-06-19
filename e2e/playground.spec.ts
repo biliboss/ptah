@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //
-// agent-tts v1.9 — playground widget e2e.
+// ptah v1.9 — playground widget e2e.
 //
 // Targets the same base URL as pages.spec.ts (relative paths resolved against
 // playwright.config.ts baseURL). Asserts the page renders, the voice picker
@@ -21,12 +21,12 @@ test.describe('/playground/ (v1.9 scaffold)', () => {
 
   test('voice dropdown lists four entries', async ({ page }) => {
     await page.goto('playground/');
-    const options = page.locator('.agent-tts-playground select [data-role="voice"]');
+    const options = page.locator('.ptah-playground select [data-role="voice"]');
     // Querying the <select> itself is simpler — count its <option> children.
-    const optionCount = await page.locator('.agent-tts-playground select option').count();
+    const optionCount = await page.locator('.ptah-playground select option').count();
     expect(optionCount, 'four voice options').toBe(4);
 
-    const values = await page.locator('.agent-tts-playground select option').evaluateAll(
+    const values = await page.locator('.ptah-playground select option').evaluateAll(
       (els) => els.map((e) => (e as HTMLOptionElement).value)
     );
     expect(values).toEqual(['faber', 'luciana', 'felipe', 'amy']);
@@ -34,8 +34,8 @@ test.describe('/playground/ (v1.9 scaffold)', () => {
 
   test('text input + Speak button are visible', async ({ page }) => {
     await page.goto('playground/');
-    await expect(page.locator('.agent-tts-playground textarea')).toBeVisible();
-    await expect(page.locator('.agent-tts-playground textarea')).not.toBeDisabled();
+    await expect(page.locator('.ptah-playground textarea')).toBeVisible();
+    await expect(page.locator('.ptah-playground textarea')).not.toBeDisabled();
     await expect(page.getByRole('button', { name: /speak/i })).toBeVisible();
   });
 

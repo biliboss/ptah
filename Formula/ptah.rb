@@ -1,24 +1,24 @@
-# Homebrew formula for agent-tts — Pt-BR TTS CLI for macOS.
+# Homebrew formula for ptah — Pt-BR TTS CLI for macOS.
 #
 # Tap install path (placeholder — biliboss/tap is NOT yet published):
 #   brew tap biliboss/tap https://github.com/biliboss/homebrew-tap
-#   brew install biliboss/tap/agent-tts
+#   brew install biliboss/tap/ptah
 #
 # When the real tap repo lands, drop this formula into its `Formula/`
 # directory unchanged. Until the v1.0 release tarball is published and
 # its sha256 computed, `url` + `sha256` below are placeholders — `brew
 # install` from this file will FAIL until they are replaced. The
-# universal Mach-O artifact ships as `agent-tts-universal` from
+# universal Mach-O artifact ships as `ptah-universal` from
 # `zig build universal` (see ../README.md).
 #
 # Audit:
-#   brew audit --strict --new agent-tts
+#   brew audit --strict --new ptah
 #
-class AgentTts < Formula
+class Ptah < Formula
   desc "Pt-BR TTS CLI for macOS — daemon + queue + libpiper"
-  homepage "https://github.com/biliboss/agent-tts"
+  homepage "https://github.com/biliboss/ptah"
   # placeholder until v1.0 release tarball lands — version 1.0.0 is in the URL.
-  url "https://github.com/biliboss/agent-tts/releases/download/v1.0.0/agent-tts-1.0.0-universal.tar.gz"
+  url "https://github.com/biliboss/ptah/releases/download/v1.0.0/ptah-1.0.0-universal.tar.gz"
   # placeholder — compute with `shasum -a 256 <tarball>` on the real release
   sha256 "0000000000000000000000000000000000000000000000000000000000000000"
   license "MIT"
@@ -29,16 +29,16 @@ class AgentTts < Formula
   depends_on "sqlite"
 
   def install
-    bin.install "agent-tts"
+    bin.install "ptah"
   end
 
   def caveats
     <<~EOS
       To start the daemon at login:
-        agent-tts daemon install
+        ptah daemon install
 
       To remove it:
-        agent-tts daemon uninstall
+        ptah daemon uninstall
 
       Optional libpiper engine: build from source with
         zig build -Doptimize=ReleaseFast -Dwith-piper=true
@@ -47,6 +47,6 @@ class AgentTts < Formula
   end
 
   test do
-    assert_match "agent-tts #{version}", shell_output("#{bin}/agent-tts --version")
+    assert_match "ptah #{version}", shell_output("#{bin}/ptah --version")
   end
 end

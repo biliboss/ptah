@@ -4,10 +4,10 @@ import { defineConfig, devices } from '@playwright/test';
 // or local preview (e.g. http://localhost:4321).
 // Trailing slash matters: Playwright's URL resolution treats paths starting
 // with `/` as origin-absolute, so `/arquitetura/` against
-// `https://biliboss.github.io/agent-tts` would drop the `/agent-tts` base.
+// `https://biliboss.github.io/ptah` would drop the `/ptah` base.
 // With a trailing slash on the baseURL and relative paths in tests, the
-// Starlight `base: '/agent-tts'` is preserved.
-const baseURL = process.env.E2E_BASE_URL || 'https://biliboss.github.io/agent-tts/';
+// Starlight `base: '/ptah'` is preserved.
+const baseURL = process.env.E2E_BASE_URL || 'https://biliboss.github.io/ptah/';
 
 export default defineConfig({
   testDir: './e2e',

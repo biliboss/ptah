@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-// Voice management — `agent-tts voice clone` + `voice list` subcommands (v1.4).
+// Voice management — `ptah voice clone` + `voice list` subcommands (v1.4).
 //
-// Cloned voices live under ~/.cache/agent-tts/voices/<slug>/ with two files
+// Cloned voices live under ~/.cache/ptah/voices/<slug>/ with two files
 // produced by the Python sidecar (`scripts/voice_clone.py`):
 //   - embedding.npz   — XTTS-v2 speaker embedding (numpy archive)
 //   - metadata.json   — slug, created_at, sample sample-rate + duration
@@ -18,21 +18,21 @@ const MAX_SAMPLE_SECONDS: f64 = 120.0;
 const MAX_SLUG_LEN: usize = 32;
 
 pub const HELP =
-    \\agent-tts voice — manage cloned voices (v1.4+)
+    \\ptah voice — manage cloned voices (v1.4+)
     \\
     \\Usage:
-    \\  agent-tts voice clone --sample <wav> --name <slug> [--quiet]
+    \\  ptah voice clone --sample <wav> --name <slug> [--quiet]
     \\      Clone a voice from a 20-120s WAV. Slug must be [a-z0-9-]+, 1-32 chars.
-    \\      Writes ~/.cache/agent-tts/voices/<slug>/{embedding.npz,metadata.json}.
+    \\      Writes ~/.cache/ptah/voices/<slug>/{embedding.npz,metadata.json}.
     \\      Requires the Python sidecar — run scripts/setup-voice-clone.sh once.
     \\      --quiet suppresses the progress chatter and prints only `OK\t<slug>`
     \\      on success — designed for non-tty parents (v1.10.3 menubar app).
     \\
-    \\  agent-tts voice list
+    \\  ptah voice list
     \\      List installed voices (faber + every cloned voice on disk).
     \\
     \\Once installed, use with:
-    \\  agent-tts --voice <slug> "Olá mundo"
+    \\  ptah --voice <slug> "Olá mundo"
     \\
 ;
 
@@ -48,7 +48,7 @@ pub const Error = error{
     SidecarMissing,
 };
 
-/// Top-level dispatch for `agent-tts voice <subcommand> ...`.
+/// Top-level dispatch for `ptah voice <subcommand> ...`.
 pub fn run(
     arena: std.mem.Allocator,
     io: std.Io,
@@ -75,7 +75,7 @@ pub fn run(
     std.process.exit(2);
 }
 
-/// `agent-tts voice clone --sample <wav> --name <slug>`. Validates inputs +
+/// `ptah voice clone --sample <wav> --name <slug>`. Validates inputs +
 /// delegates to scripts/voice_clone.py to produce embedding.npz/metadata.json.
 pub fn cmdClone(
     arena: std.mem.Allocator,
@@ -158,7 +158,7 @@ pub fn cmdClone(
 
     const voice_dir = try std.fmt.allocPrint(
         arena,
-        "{s}/.cache/agent-tts/voices/{s}",
+        "{s}/.cache/ptah/voices/{s}",
         .{ home, name.? },
     );
     std.Io.Dir.cwd().createDirPath(io, voice_dir) catch |e| {
@@ -204,14 +204,14 @@ pub fn cmdClone(
         try w.interface.flush();
     } else {
         std.debug.print(
-            "[voice clone] OK — embedded at {s}\n[voice clone] use: agent-tts --voice {s} \"Olá\"\n",
+            "[voice clone] OK — embedded at {s}\n[voice clone] use: ptah --voice {s} \"Olá\"\n",
             .{ embedding_path, name.? },
         );
     }
 }
 
-/// `agent-tts voice list` — print faber + each cloned voice with a one-line
-/// summary. Format mirrors `agent-tts queue` for visual consistency.
+/// `ptah voice list` — print faber + each cloned voice with a one-line
+/// summary. Format mirrors `ptah queue` for visual consistency.
 pub fn cmdList(arena: std.mem.Allocator, io: std.Io, home: []const u8) !void {
     var stdout_buf: [4096]u8 = undefined;
     var stdout = std.Io.File.stdout().writerStreaming(io, &stdout_buf);
@@ -221,10 +221,10 @@ pub fn cmdList(arena: std.mem.Allocator, io: std.Io, home: []const u8) !void {
     try w.writeAll("  faber                 piper    -          22050Hz  bundled neural Pt-BR (~91ms warm)\n");
     try w.writeAll("  Luciana               say      -          22050Hz  macOS system voice (default for --engine say)\n");
 
-    const voices_dir = try std.fmt.allocPrint(arena, "{s}/.cache/agent-tts/voices", .{home});
+    const voices_dir = try std.fmt.allocPrint(arena, "{s}/.cache/ptah/voices", .{home});
     var dir = std.Io.Dir.cwd().openDir(io, voices_dir, .{ .iterate = true }) catch {
         // No voices dir = nothing cloned yet. faber+say still listed above.
-        try w.writeAll("  (no cloned voices — run `agent-tts voice clone --sample X.wav --name Y`)\n");
+        try w.writeAll("  (no cloned voices — run `ptah voice clone --sample X.wav --name Y`)\n");
         try w.flush();
         return;
     };
@@ -264,7 +264,7 @@ pub fn cmdList(arena: std.mem.Allocator, io: std.Io, home: []const u8) !void {
         count += 1;
     }
     if (count == 0) {
-        try w.writeAll("  (no cloned voices — run `agent-tts voice clone --sample X.wav --name Y`)\n");
+        try w.writeAll("  (no cloned voices — run `ptah voice clone --sample X.wav --name Y`)\n");
     }
     try w.flush();
 }
@@ -533,20 +533,20 @@ fn buildArgv(arena: std.mem.Allocator, script_args: []const []const u8) ![][]con
 }
 
 /// v1.10.6: resolve script + venv via absolute install paths so the CLI
-/// works from any cwd. Probe order: $AGENT_TTS_REPO_ROOT → /opt/homebrew/share/agent-tts
-/// → /usr/local/share/agent-tts → cwd-relative.
+/// works from any cwd. Probe order: $PTAH_REPO_ROOT → /opt/homebrew/share/ptah
+/// → /usr/local/share/ptah → cwd-relative.
 fn installRoots(arena: std.mem.Allocator) []const []const u8 {
     const c = @cImport({
         @cInclude("stdlib.h");
     });
     var roots: std.ArrayList([]const u8) = .empty;
-    const env_root = c.getenv("AGENT_TTS_REPO_ROOT");
+    const env_root = c.getenv("PTAH_REPO_ROOT");
     if (env_root != null) {
         const s = std.mem.span(env_root);
         if (s.len > 0) roots.append(arena, s) catch {};
     }
-    roots.append(arena, "/opt/homebrew/share/agent-tts") catch {};
-    roots.append(arena, "/usr/local/share/agent-tts") catch {};
+    roots.append(arena, "/opt/homebrew/share/ptah") catch {};
+    roots.append(arena, "/usr/local/share/ptah") catch {};
     return roots.toOwnedSlice(arena) catch &.{};
 }
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT OR Apache-2.0
 #
-# agent-tts v1.9 — WASM build scaffold.
+# ptah v1.9 — WASM build scaffold.
 #
 # This script is an executable readme. v1.9 ships the playground UI scaffold
 # only — the real WASM Piper synth lands in v1.9.1. Running this today prints
@@ -16,12 +16,12 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 PIPER_SRC="$REPO_ROOT/vendor/piper1-gpl"
-WASM_BUILD="/tmp/agent-tts-wasm-build"
+WASM_BUILD="/tmp/ptah-wasm-build"
 WASM_OUT="$REPO_ROOT/public/wasm"
 
 usage() {
   cat <<EOF
-build-wasm.sh — agent-tts v1.9 WASM build scaffold
+build-wasm.sh — ptah v1.9 WASM build scaffold
 
 Usage:
   $(basename "$0") --plan       # print the v1.9.1 plan and exit (default)
@@ -43,7 +43,7 @@ esac
 print_plan() {
   cat <<'EOF'
 
-agent-tts v1.9.1 — WASM build plan (4 steps)
+ptah v1.9.1 — WASM build plan (4 steps)
 
   1. Toolchain
      - Install Emscripten SDK 3.1.x:
@@ -54,10 +54,10 @@ agent-tts v1.9.1 — WASM build plan (4 steps)
          zig build -Dtarget=wasm32-emscripten
 
   2. libpiper for wasm32-emscripten
-     - emcmake cmake -S vendor/piper1-gpl/libpiper -B /tmp/agent-tts-wasm-build/libpiper \
+     - emcmake cmake -S vendor/piper1-gpl/libpiper -B /tmp/ptah-wasm-build/libpiper \
          -DCMAKE_BUILD_TYPE=Release -DPIPER_BUILD_SHARED=OFF
-     - emmake make -C /tmp/agent-tts-wasm-build/libpiper -j$(sysctl -n hw.ncpu)
-     - Output: /tmp/agent-tts-wasm-build/libpiper/libpiper.a (static archive)
+     - emmake make -C /tmp/ptah-wasm-build/libpiper -j$(sysctl -n hw.ncpu)
+     - Output: /tmp/ptah-wasm-build/libpiper/libpiper.a (static archive)
 
   3. ONNX Runtime Web
      - npm install onnxruntime-web --save
@@ -66,15 +66,15 @@ agent-tts v1.9.1 — WASM build plan (4 steps)
 
   4. Zig build target
      - Add a wasm target to build.zig:
-         const wasm = b.addExecutable(.{ .name = "agent-tts", .target = wasm32-emscripten });
+         const wasm = b.addExecutable(.{ .name = "ptah", .target = wasm32-emscripten });
          wasm.linkLibrary(libpiper_wasm);
      - zig build -Dtarget=wasm32-emscripten -Dwith-piper-wasm=true
-     - Output: zig-out/bin/agent-tts.wasm + agent-tts.js (Emscripten shim)
+     - Output: zig-out/bin/ptah.wasm + ptah.js (Emscripten shim)
      - Copy both into public/wasm/, the playground widget imports the .js shim
 
 Output layout (public/wasm/ after v1.9.1):
-   agent-tts.wasm           — Zig + libpiper bundle (~3-5 MB)
-   agent-tts.js             — Emscripten loader shim
+   ptah.wasm           — Zig + libpiper bundle (~3-5 MB)
+   ptah.js             — Emscripten loader shim
    ort-wasm-simd.wasm       — ONNX Runtime Web
    ort-wasm-simd.jsep.wasm  — optional JSEP variant for WebGPU acceleration
 

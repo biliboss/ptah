@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT OR Apache-2.0
-# setup-voice-clone.sh — bootstrap the Python sidecar for `agent-tts voice clone`.
+# setup-voice-clone.sh — bootstrap the Python sidecar for `ptah voice clone`.
 #
 # Idempotent. Prefers `uv` (lockfile-clean, fast); falls back to `python3 -m
 # venv` if uv is missing. Installs Coqui TTS (MPL-2.0) into a project-local
@@ -58,7 +58,7 @@ if command -v uv >/dev/null 2>&1; then
         scipy \
         soundfile
     log "OK — voice clone sidecar ready. Try:"
-    log "  agent-tts voice clone --sample me.wav --name gabriel"
+    log "  ptah voice clone --sample me.wav --name gabriel"
     exit 0
 fi
 
@@ -91,4 +91,4 @@ python -m pip install \
 
 log "OK — voice clone sidecar ready. Activate the venv before running scripts:"
 log "  source ${VENV_DIR}/bin/activate"
-log "  agent-tts voice clone --sample me.wav --name gabriel"
+log "  ptah voice clone --sample me.wav --name gabriel"

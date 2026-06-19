@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Start Astro dev on a kernel-assigned random port, then sync the port to
-// puma-dev so http://agent-tts.test always proxies to the live dev server.
+// puma-dev so http://ptah.test always proxies to the live dev server.
 
 import { createServer } from 'node:net';
 import { spawn } from 'node:child_process';
@@ -8,7 +8,7 @@ import { writeFileSync, mkdirSync, existsSync, unlinkSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
-const APP = 'agent-tts';
+const APP = 'ptah';
 const pumaDir = join(homedir(), '.puma-dev');
 const pumaFile = join(pumaDir, APP);
 

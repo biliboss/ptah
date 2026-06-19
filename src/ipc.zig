@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-// Wire protocol between agent-tts client and daemon.
+// Wire protocol between ptah client and daemon.
 //
-// Transport: UNIX stream socket at $HOME/.cache/agent-tts/sock
+// Transport: UNIX stream socket at $HOME/.cache/ptah/sock
 //
 // Request lines (one per connection):
 //   ENQUEUE\t<engine>\t<lang>\t<voice>\t<rate>\t<ssml>\t<tune>\t<extra>\t<postfx>\t<text>\n → v1.10.10 10-field form
@@ -161,13 +161,13 @@ pub const Request = union(Op) {
 };
 
 pub fn socketPath(arena: std.mem.Allocator, io: std.Io, home: []const u8) ![]u8 {
-    const dir = try std.fmt.allocPrint(arena, "{s}/.cache/agent-tts", .{home});
+    const dir = try std.fmt.allocPrint(arena, "{s}/.cache/ptah", .{home});
     std.Io.Dir.cwd().createDirPath(io, dir) catch {};
     return try std.fmt.allocPrint(arena, "{s}/sock", .{dir});
 }
 
 pub fn queueDbPath(arena: std.mem.Allocator, io: std.Io, home: []const u8) ![]u8 {
-    const dir = try std.fmt.allocPrint(arena, "{s}/.cache/agent-tts", .{home});
+    const dir = try std.fmt.allocPrint(arena, "{s}/.cache/ptah", .{home});
     std.Io.Dir.cwd().createDirPath(io, dir) catch {};
     return try std.fmt.allocPrint(arena, "{s}/queue.db", .{dir});
 }
@@ -1179,7 +1179,7 @@ test "v1.10.10 encodeEnqueue with postfx=tech round-trips" {
         .tech = true,
         .sentence_pause_ms = 500,
         .postfx = .tech,
-        .text = "agent-tts versão 1.10.10",
+        .text = "ptah versão 1.10.10",
     };
     const wire = try encodeEnqueue(a, original);
     const line = wire[0 .. wire.len - 1];
@@ -1187,7 +1187,7 @@ test "v1.10.10 encodeEnqueue with postfx=tech round-trips" {
     try std.testing.expectEqual(Postfx.tech, req.enqueue.postfx);
     try std.testing.expectEqual(true, req.enqueue.tech);
     try std.testing.expectApproxEqAbs(@as(f32, 1.05), req.enqueue.length_scale, 0.001);
-    try std.testing.expectEqualStrings("agent-tts versão 1.10.10", req.enqueue.text);
+    try std.testing.expectEqualStrings("ptah versão 1.10.10", req.enqueue.text);
 }
 
 test "v1.10.10 encodeEnqueue with postfx=off omits the postfx field (9-field wire)" {

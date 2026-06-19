@@ -17,28 +17,28 @@ Per milestone: what shipped, how we measured, what slipped to the next one. The 
 
 **Shipped:**
 
-- **`src/log.zig`** (NEW) — `std.options.logFn` sink that emits `2026-06-04T13:03:46.972Z [info] [daemon] message` to BOTH stderr (so launchd's `daemon.err.log` keeps capturing) AND `~/.cache/agent-tts/daemon.log` (so operators don't need launchctl access to read the daemon's diagnostic). Rotates by size: when the active file exceeds `AGENT_TTS_LOG_MAX_BYTES` (default 10 MiB) it shifts `.log → .log.1 → .log.2 → .log.3` and drops the oldest. Thread-safe via an atomic-CAS spinlock (Zig 0.16 removed `std.Thread.Mutex`; the new `std.Io.Mutex` requires an `io` value that stdlib-style log call sites don't carry). 4 unit tests cover scope-allowed semantics, ISO 8601 shape, case-insensitive level parsing.
-- **`src/main.zig`** — `pub const std_options: std.Options = .{ .logFn = log_mod.logFn, .log_level = .debug }`. Compile-time level set to `.debug` so every scope is reachable; the runtime env-var filter inside `logFn` actually drops messages below the configured level. Operators flip `AGENT_TTS_LOG_LEVEL=debug` without rebuilding the binary.
+- **`src/log.zig`** (NEW) — `std.options.logFn` sink that emits `2026-06-04T13:03:46.972Z [info] [daemon] message` to BOTH stderr (so launchd's `daemon.err.log` keeps capturing) AND `~/.cache/ptah/daemon.log` (so operators don't need launchctl access to read the daemon's diagnostic). Rotates by size: when the active file exceeds `PTAH_LOG_MAX_BYTES` (default 10 MiB) it shifts `.log → .log.1 → .log.2 → .log.3` and drops the oldest. Thread-safe via an atomic-CAS spinlock (Zig 0.16 removed `std.Thread.Mutex`; the new `std.Io.Mutex` requires an `io` value that stdlib-style log call sites don't carry). 4 unit tests cover scope-allowed semantics, ISO 8601 shape, case-insensitive level parsing.
+- **`src/main.zig`** — `pub const std_options: std.Options = .{ .logFn = log_mod.logFn, .log_level = .debug }`. Compile-time level set to `.debug` so every scope is reachable; the runtime env-var filter inside `logFn` actually drops messages below the configured level. Operators flip `PTAH_LOG_LEVEL=debug` without rebuilding the binary.
 - **Runtime env knobs** (all read at first log call, cached for daemon lifetime):
-  - `AGENT_TTS_LOG_PATH` — file sink path (default `~/.cache/agent-tts/daemon.log`)
-  - `AGENT_TTS_LOG_LEVEL` — `debug` / `info` / `warn` / `err` (default `info`)
-  - `AGENT_TTS_LOG_SCOPES` — comma-separated allow-list of scope names (e.g. `worker,postfx`). Empty/unset = all scopes pass. Up to 16 scopes.
-  - `AGENT_TTS_LOG_MAX_BYTES` — rotation threshold (default 10 MiB)
+  - `PTAH_LOG_PATH` — file sink path (default `~/.cache/ptah/daemon.log`)
+  - `PTAH_LOG_LEVEL` — `debug` / `info` / `warn` / `err` (default `info`)
+  - `PTAH_LOG_SCOPES` — comma-separated allow-list of scope names (e.g. `worker,postfx`). Empty/unset = all scopes pass. Up to 16 scopes.
+  - `PTAH_LOG_MAX_BYTES` — rotation threshold (default 10 MiB)
 - **Scope migration** — `daemon.zig` calls split between `.daemon` (boot/IPC plumbing) and `.worker` (queue drain + per-item play); `audio.zig` → `.audio`; `postfx.zig` → `.postfx`; `mcp.zig` → `.mcp`. CLI subcommand handlers (`client.zig`, `voice.zig`, `stream.zig`, `launchd.zig`, `main.zig` arg parsing) keep `std.debug.print` for user-facing CLI output that goes to the calling shell's stdout/stderr — those processes don't run as the daemon and shouldn't pollute its log file.
 - **`src/postfx.zig`** — **the actual stall fix**: stdin write and stdout drain are now concurrent. The drainer runs on a dedicated `std.Thread` while the main thread writes PCM, so neither pipe ever fills. Both threads join before `apply()` returns, so the per-call arena allocations stay valid.
-- **`src/postfx.zig`** — **defence-in-depth watchdog**: a third thread sleeps in 50ms slices for up to `AGENT_TTS_POSTFX_TIMEOUT_MS` (default 5000); on deadline it `SIGTERM`s the ffmpeg subprocess, waits 1 s, then `SIGKILL`s if still alive. Healthy invocations set a `done` flag that retires the watchdog cleanly. On watchdog fire, `apply()` returns `was_processed=false` and the worker plays the dry PCM. Live-validated by setting `AGENT_TTS_FFMPEG_PATH=/tmp/fake-ffmpeg.sh` to a script that exec's `sleep 999` — watchdog killed it after 2000 ms exactly, dry PCM played, queue continued.
+- **`src/postfx.zig`** — **defence-in-depth watchdog**: a third thread sleeps in 50ms slices for up to `PTAH_POSTFX_TIMEOUT_MS` (default 5000); on deadline it `SIGTERM`s the ffmpeg subprocess, waits 1 s, then `SIGKILL`s if still alive. Healthy invocations set a `done` flag that retires the watchdog cleanly. On watchdog fire, `apply()` returns `was_processed=false` and the worker plays the dry PCM. Live-validated by setting `PTAH_FFMPEG_PATH=/tmp/fake-ffmpeg.sh` to a script that exec's `sleep 999` — watchdog killed it after 2000 ms exactly, dry PCM played, queue continued.
 - **`src/daemon.zig::workerLoop`** — `defer res.queue.finishPlaying(io, item.id)` belt-and-braces guarantee: every `runOne` path is supposed to call `finishPlaying`, but the v1.10.12 audit found error escapes (e.g. OutOfMemory on the SSML cadence prep) that left the row stuck in `playing`. The defer guarantees the row flips to `done` regardless of which sub-call raised. `finishPlaying` is idempotent over `state='playing'` so the well-behaved paths that already called it are unaffected. Adds `worker pop id=…` on iteration entry and `worker drained id=…` on iteration exit.
 - **`src/daemon.zig::heartbeatLoop`** — new detached thread that emits `worker heartbeat queue=N current_playing_id=X` every 10 s at `debug` level. Confirms the daemon process is alive even when the worker is blocked inside `queue.pop` (the cond-wait blocks forever otherwise; no log line emerges from a fully idle daemon). A stalled daemon now keeps emitting heartbeats with `current_playing_id != 0` — operator visibility into "stuck on item X for N seconds".
 - **VERSION 1.10.13** — binary + bundle
 
 **Validated end-to-end:**
 1. `zig build` + `zig build test` exit 0 (postfx, ipc, ssml, preproc, audio, voice, stream, detect, platform, tts, systemd, agent_tts root + main test suites all green)
-2. `tail -f ~/.cache/agent-tts/daemon.log` shows new ISO-8601 prefixed lines on every operation
+2. `tail -f ~/.cache/ptah/daemon.log` shows new ISO-8601 prefixed lines on every operation
 3. 5 concurrent enqueues with `--postfx tech` drained sequentially without stall (~6 s each, all `postfx_ms` < 350 ms)
-4. Broken ffmpeg (`AGENT_TTS_FFMPEG_PATH=/usr/bin/false`) → `[postfx] ffmpeg exit code=1 — fallthrough` × 4 chunks, audio still produced via passthrough
-5. Hung ffmpeg (`AGENT_TTS_FFMPEG_PATH=/tmp/fake-ffmpeg.sh` exec'ing `sleep 999`, timeout 2000 ms) → `[postfx] watchdog killed ffmpeg after 2000ms — fallthrough`, dry PCM played, queue continued
-6. `AGENT_TTS_LOG_SCOPES=worker` → only `[worker]` scoped lines appeared (filter test: `pop`, `piper id=…`, `drained` — no `[daemon]` boot lines)
-7. `AGENT_TTS_LOG_LEVEL=debug` → 7 debug-level lines emitted (chain start, postfx_ms per chunk). Default `info` → 0 debug lines.
+4. Broken ffmpeg (`PTAH_FFMPEG_PATH=/usr/bin/false`) → `[postfx] ffmpeg exit code=1 — fallthrough` × 4 chunks, audio still produced via passthrough
+5. Hung ffmpeg (`PTAH_FFMPEG_PATH=/tmp/fake-ffmpeg.sh` exec'ing `sleep 999`, timeout 2000 ms) → `[postfx] watchdog killed ffmpeg after 2000ms — fallthrough`, dry PCM played, queue continued
+6. `PTAH_LOG_SCOPES=worker` → only `[worker]` scoped lines appeared (filter test: `pop`, `piper id=…`, `drained` — no `[daemon]` boot lines)
+7. `PTAH_LOG_LEVEL=debug` → 7 debug-level lines emitted (chain start, postfx_ms per chunk). Default `info` → 0 debug lines.
 
 **Honest scope — what I deliberately didn't take:**
 
@@ -46,11 +46,11 @@ Per milestone: what shipped, how we measured, what slipped to the next one. The 
 - **Heartbeat is debug-level only.** A 10 s heartbeat at `info` would clutter the log under sustained operation; at `debug` it's only visible when the operator opts in. The trade-off: a fully-idle daemon at default `info` emits nothing for hours. If that becomes a support burden we'll promote heartbeat to `info` at 60 s in a future patch.
 - **Log rotation is size-based only, not time-based.** A daemon that emits ≪ 10 MiB/day stays in one file forever. logrotate-style time rotation lands in v1.11+ when there's user demand.
 
-**Lead-time**: see [`_qa/v1.10.13-leadtime.md`](https://github.com/biliboss/agent-tts/blob/main/_qa/v1.10.13-leadtime.md).
+**Lead-time**: see [`_qa/v1.10.13-leadtime.md`](https://github.com/biliboss/ptah/blob/main/_qa/v1.10.13-leadtime.md).
 
 ## v1.10.11 — ONNX session + miniaudio quality knobs · 2026-06-04
 
-**Why a patch:** v1.10.9 closed the linguistic side of the research note at [`_qa/v1.10.9-research-prompt-output.md`](https://github.com/biliboss/agent-tts/blob/main/_qa/v1.10.9-research-prompt-output.md) (`length=1.05`, `noise=0.35`, `noise_w=0.45` + glossary + identifier normalizer). The same note flagged two inference-layer wins still on the table: (1) ONNX Runtime is multi-threaded by default and contends itself on Apple Silicon's small VITS graph; (2) miniaudio's per-sound resampler runs with `lpfOrder=0` (no LPF) which adds aliasing on the 22050 → 48000 upsample edge. v1.10.11 ships both.
+**Why a patch:** v1.10.9 closed the linguistic side of the research note at [`_qa/v1.10.9-research-prompt-output.md`](https://github.com/biliboss/ptah/blob/main/_qa/v1.10.9-research-prompt-output.md) (`length=1.05`, `noise=0.35`, `noise_w=0.45` + glossary + identifier normalizer). The same note flagged two inference-layer wins still on the table: (1) ONNX Runtime is multi-threaded by default and contends itself on Apple Silicon's small VITS graph; (2) miniaudio's per-sound resampler runs with `lpfOrder=0` (no LPF) which adds aliasing on the 22050 → 48000 upsample edge. v1.10.11 ships both.
 
 **Shipped:**
 
@@ -58,28 +58,28 @@ Per milestone: what shipped, how we measured, what slipped to the next one. The 
 - **`src/audio.zig`** — `AudioPlayer.init` now constructs an explicit `zaudio.Engine.Config` with `pitch_resampling.linear.lpf_order = 8` (was 0, miniaudio default) and `resource_manager_resampling.linear.lpf_order = 8`. miniaudio caps `lpf_order` at 8 (`MA_MAX_RESAMPLER_LPF_ORDER`). The per-sound resampler config is populated from `pitchResamplingConfig` for every Sound that mixes through the engine (`miniaudio.c:76587`), so this catches every AudioBuffer the daemon plays. The biquad-instability gotcha (`miniaudio.c:77421` forces `lpfOrder=0` when pitch ≠ 1.0) doesn't apply because we don't pitch-shift
 - **`src/audio.zig`** — `engine.setGainDb(-3.0)` after engine create. Drops the engine master ~3 dB so Faber's stressed vowels at end-of-phrase don't push toward 0 dBFS at the f32 → device-format converter edge. Gain-staged input prevents hard clipping on the loudest 1-2% of frames; perceived loudness drops ~3 dB (no auto-makeup, by design). Boot log gains `[audio] v1.10.11 quality knobs: lpf_order=8 headroom_db=-3.0 dither=triangle`
 - **3 new daemon-wide env knobs** documented in `--help`:
-  - `AGENT_TTS_AUDIO_LPF_ORDER` (0..8, default 8)
-  - `AGENT_TTS_AUDIO_HEADROOM_DB` (default 3 → engine.setGainDb(-3))
-  - `AGENT_TTS_AUDIO_DITHER` (`triangle` default | `none`) — see honest scope
+  - `PTAH_AUDIO_LPF_ORDER` (0..8, default 8)
+  - `PTAH_AUDIO_HEADROOM_DB` (default 3 → engine.setGainDb(-3))
+  - `PTAH_AUDIO_DITHER` (`triangle` default | `none`) — see honest scope
 - VERSION 1.10.11 — binary + bundle
 
-**Validated end-to-end**: `/opt/homebrew/bin/agent-tts --profile tech "Teste de qualidade pós v1.10.11. ONNX e miniaudio configurados."` enqueues → daemon log shows both new boot lines, then `[worker] piper id=185 tech=true length_scale=1.050 noise_scale=0.350 noise_w=0.450 speaker_id=-1 sentence_pause_ms=500` → audible Faber playback at ~3 dB lower loudness vs v1.10.10. `zig build` + `zig build test` exit 0; `zig build -Dwith-piper=true` produces the linked binary (~4.9 MB).
+**Validated end-to-end**: `/opt/homebrew/bin/ptah --profile tech "Teste de qualidade pós v1.10.11. ONNX e miniaudio configurados."` enqueues → daemon log shows both new boot lines, then `[worker] piper id=185 tech=true length_scale=1.050 noise_scale=0.350 noise_w=0.450 speaker_id=-1 sentence_pause_ms=500` → audible Faber playback at ~3 dB lower loudness vs v1.10.10. `zig build` + `zig build test` exit 0; `zig build -Dwith-piper=true` produces the linked binary (~4.9 MB).
 
 **Honest scope** — the patch level we actually achieved:
 
 - **ONNX session options: env-var fallback, NOT a libpiper patch.** `vendor/piper1-gpl/libpiper/include/piper.h@v1.4.2` exposes 4 public functions — `piper_create`, `piper_free`, `piper_default_synthesize_options`, `piper_synthesize_start/next` — and zero hook for `OrtSessionOptions`. Patching libpiper to take a `piper_create_with_options(model, config, espeak, &ort_opts)` builder would be the principled fix but means forking the upstream. v1.10.11 ships the env-var path because it works through the unmodified libpiper.dylib and ONNX Runtime honours the env at every session create. Documented gap; upgrade target if/when piper1-gpl exposes the hook
-- **Dither is a no-op today.** `zaudio.Engine.Config` does NOT expose `dither_mode` for the internal f32 → device-format converter (`DataConverter.Config.dither_mode` exists on the lower-level type but the Engine builds its own converter graph internally). v1.10.11 parses `AGENT_TTS_AUDIO_DITHER` and logs the chosen value but cannot wire it through without replacing the engine with a custom data_callback over an `ma_data_converter`. The default `triangle` describes intent; flipping to `none` produces identical audio today. Logged so a future v1.10.12+ can flip it after replacing the engine path
+- **Dither is a no-op today.** `zaudio.Engine.Config` does NOT expose `dither_mode` for the internal f32 → device-format converter (`DataConverter.Config.dither_mode` exists on the lower-level type but the Engine builds its own converter graph internally). v1.10.11 parses `PTAH_AUDIO_DITHER` and logs the chosen value but cannot wire it through without replacing the engine with a custom data_callback over an `ma_data_converter`. The default `triangle` describes intent; flipping to `none` produces identical audio today. Logged so a future v1.10.12+ can flip it after replacing the engine path
 - **`lpf_order=8` is bounded by miniaudio's max** — anything past 8 silently saturates. Documented in motor.md so the `voice_knob_search` and operator stories don't waste cycles on `lpf_order=16`
 - **`-3 dB` is global, not adaptive.** Faber rarely peaks above -1 dBFS on prose; the -3 dB cut leaves comfortable margin but slightly cuts perceived loudness on the rest of the program. Per-utterance peak normalisation would recover that — deferred to a v1.11 postfx track
 
-**Lead-time**: see [`_qa/v1.10.11-leadtime.md`](https://github.com/biliboss/agent-tts/blob/main/_qa/v1.10.11-leadtime.md).
+**Lead-time**: see [`_qa/v1.10.11-leadtime.md`](https://github.com/biliboss/ptah/blob/main/_qa/v1.10.11-leadtime.md).
 ## v1.10.10 — Audio post-fx + tight-narrator default · 2026-06-04
 
 **Why a patch:** v1.10.9 anchored the tight-narrator knob bundle on research evidence but kept it behind `--profile tech` as a discovery aid. v1.10.10 promotes it to the literal `tech` default and lands the second half of the research note's "Acoustic post-processing" recipe: an opt-in ffmpeg subprocess pipeline (RNNoise + 4-band EQ + de-esser + 2:1 compressor) that runs between piper's PCM and the zaudio device pump.
 
 **Shipped:**
 
-- **`src/postfx.zig`** (NEW) — pure-Zig module that spawns ffmpeg as a subprocess with `-f s16le → -af <chain> → -f s16le`, pipes the synth PCM through stdin, and reads the filtered PCM back from stdout. Four profile chains (`off` / `clean` / `tech` / `broadcast`). `tech` runs `arnndn=m=cb.rnnn → highpass=80Hz → 280Hz body shelf +2.5dB → 3.5kHz presence cut -1.5dB → 10kHz air shelf +1.8dB → deesser i=0.08 m=0.5 → acompressor threshold=-18dB:ratio=2:makeup=2dB`. RNNoise model resolves from `$AGENT_TTS_POSTFX_RNNN_MODEL` or `~/.cache/agent-tts/rnnoise/cb.rnnn`; when absent the chain drops the `arnndn=` prefix and the EQ+deesser+comp subset still runs. ffmpeg resolves from `$AGENT_TTS_FFMPEG_PATH` or `/opt/homebrew/bin/ffmpeg` or `/usr/local/bin/ffmpeg` or `ffmpeg` on PATH. Missing-ffmpeg / dead-subprocess paths silently fall back to dry PCM
+- **`src/postfx.zig`** (NEW) — pure-Zig module that spawns ffmpeg as a subprocess with `-f s16le → -af <chain> → -f s16le`, pipes the synth PCM through stdin, and reads the filtered PCM back from stdout. Four profile chains (`off` / `clean` / `tech` / `broadcast`). `tech` runs `arnndn=m=cb.rnnn → highpass=80Hz → 280Hz body shelf +2.5dB → 3.5kHz presence cut -1.5dB → 10kHz air shelf +1.8dB → deesser i=0.08 m=0.5 → acompressor threshold=-18dB:ratio=2:makeup=2dB`. RNNoise model resolves from `$PTAH_POSTFX_RNNN_MODEL` or `~/.cache/ptah/rnnoise/cb.rnnn`; when absent the chain drops the `arnndn=` prefix and the EQ+deesser+comp subset still runs. ffmpeg resolves from `$PTAH_FFMPEG_PATH` or `/opt/homebrew/bin/ffmpeg` or `/usr/local/bin/ffmpeg` or `ffmpeg` on PATH. Missing-ffmpeg / dead-subprocess paths silently fall back to dry PCM
 - **`src/ipc.zig`** — 10-field wire `ENQUEUE\t<engine>\t<lang>\t<voice>\t<rate>\t<ssml>\t<tune>\t<extra>\t<postfx>\t<text>` when `postfx != .off`. Default (`.off`) keeps the 9-field shape so older daemons fed by a newer client still parse. Parser peeks the field after the extra quintuple: `off/clean/tech/broadcast` → 10-field, anything else → 9-field text head. 6 new unit tests cover the round-trip + the back-compat preservation
 - **`src/queue.zig`** — `postfx TEXT` column (NULL = unset → `.off`) with idempotent ALTER TABLE migration. `replay` preserves the column so a re-enqueued tech-postfx item stays tech-postfx
 - **`src/daemon.zig`** — new `playWithPostfx` helper sits between `piper.synth*` and `audio_player.streamS16leAppend`. Applies the chain per chunk in the streaming pipeline (per-chunk arena owns the filtered buffer); single-chunk + SSML + cloned paths funnel through the same helper. Log line: `[worker] id=N chunk=K postfx=tech postfx_ms=42`, with a `(>100ms — eating into TTFA)` suffix when the chain misses the budget so A/B sessions surface latency regressions
@@ -87,23 +87,23 @@ Per milestone: what shipped, how we measured, what slipped to the next one. The 
 - **`src/mcp.zig`** — `say` + `synth_voice_test` schemas grow a `postfx` enum param. `tech_profile_search` doubles to **4×2=8** enqueues per call: each of the 4 knob bundles runs once dry (`postfx=off`) and once through the research chain (`postfx=tech`). Each item carries `name`, `postfx`, `comment`, and `knobs`. Same 13 MCP tools, expanded surface
 - VERSION 1.10.10 — binary + bundle + MCP server
 
-**Validated end-to-end**: `agent-tts --profile tech --postfx tech "agent-tts versão 1.10.10 com pós-processamento."` enqueues → daemon log shows `[worker] piper id=191 tech=true length_scale=1.050 noise_scale=0.350 noise_w=0.450 ...` followed by `[worker] id=191 chunk=0 postfx=tech postfx_ms=148.6 (>100ms — eating into TTFA) / chunk=1 postfx_ms=63.5 / chunk=2 postfx_ms=53.3` — first-chunk cost is dominated by ffmpeg cold subprocess spawn (~80ms) + RNNoise model load (~30ms), subsequent chunks settle at <70ms which fits inside the per-chunk synth time. MCP `tech_profile_search` with one Pt-BR sentence returns 8 ids (192-199) each tagged `{ name, postfx, comment, knobs }`. `zig build test -Dwith-piper=true` exits 0.
+**Validated end-to-end**: `ptah --profile tech --postfx tech "ptah versão 1.10.10 com pós-processamento."` enqueues → daemon log shows `[worker] piper id=191 tech=true length_scale=1.050 noise_scale=0.350 noise_w=0.450 ...` followed by `[worker] id=191 chunk=0 postfx=tech postfx_ms=148.6 (>100ms — eating into TTFA) / chunk=1 postfx_ms=63.5 / chunk=2 postfx_ms=53.3` — first-chunk cost is dominated by ffmpeg cold subprocess spawn (~80ms) + RNNoise model load (~30ms), subsequent chunks settle at <70ms which fits inside the per-chunk synth time. MCP `tech_profile_search` with one Pt-BR sentence returns 8 ids (192-199) each tagged `{ name, postfx, comment, knobs }`. `zig build test -Dwith-piper=true` exits 0.
 
 **Honest scope**:
 - **ffmpeg subprocess cost is real** — cold spawn is ~80-200ms on M-series, warm ~30ms. The streaming pipeline absorbs this because synth_per_chunk is ~80-150ms anyway, but a single short utterance (`postfx=tech` on a 2-second clip) pays the full ~180ms overhead on first-audio. Acceptable for narration; not acceptable for "ack" voice. Use `postfx=off` for short utterances
-- **RNNoise model is a separate download** — `cb.rnnn` is ~1.2 MB and lives at `~/.cache/agent-tts/rnnoise/cb.rnnn` by default. Without it the `tech` chain drops the `arnndn=` prefix and runs the EQ+deesser+comp subset only — still cleaner than dry, but no neural denoise. `brew install ffmpeg && curl -sL https://github.com/GregorR/rnnoise-models/raw/master/conjoined-burgers-2018-08-28/cb.rnnn -o ~/.cache/agent-tts/rnnoise/cb.rnnn` installs both
+- **RNNoise model is a separate download** — `cb.rnnn` is ~1.2 MB and lives at `~/.cache/ptah/rnnoise/cb.rnnn` by default. Without it the `tech` chain drops the `arnndn=` prefix and runs the EQ+deesser+comp subset only — still cleaner than dry, but no neural denoise. `brew install ffmpeg && curl -sL https://github.com/GregorR/rnnoise-models/raw/master/conjoined-burgers-2018-08-28/cb.rnnn -o ~/.cache/ptah/rnnoise/cb.rnnn` installs both
 - **ffmpeg failures are silent** — when `ffmpeg` isn't on PATH, when the subprocess exits non-zero, or when the chain produces zero bytes, `apply()` returns the original PCM with `was_processed=false` and the daemon plays dry. The user sees no error message; the log shows `passthrough (ffmpeg/model unavailable)`. Conscious choice — audio playback is the primary contract; postfx is a quality lift, not a hard dependency
 - **Postfx applies AFTER chunking** — each streaming chunk goes through ffmpeg independently. RNNoise needs ~480 samples of context to settle so the very first chunk may sound slightly noisier than chunks 2+. Acceptable for the v1.10.10 use case; a future v1.10.11+ could pre-prime RNNoise with a silence preamble
 - **Default profile remapping is breaking, sort of** — `--profile tech` now means the tight-narrator bundle (research-anchored). Callers that wanted the legacy v1.10.8 numbers should switch to `--profile stock-tech`. Help text + MCP descriptions document the swap
 ## v1.10.12 — SSML phoneme/sub + cadence tricks (list-end drop + bullet lift + breathing splice) · 2026-06-04
 
-**Why a patch:** v1.10.9's tech profile got the words right; v1.10.12 makes the *cadence* right. Three wins from the v1.10.9 research note we hadn't shipped: `<phoneme alphabet="ipa" ph="…">` so agents can force IPA pronunciation for brand names (Anthropic, Mistral, Groq, Ollama), `<sub alias="…">` so code identifiers like `getConditioningLatents` can be said as the human form, and a cadence pass that wraps the last 3 words of list-final sentences with `<prosody pitch="-10%" rate="slow">`, lifts bullet labels with `<prosody pitch="+5%">`, and splices an 80ms pink-noise breath sample every 2-3 sentences when `AGENT_TTS_BREATH_WAV` is set.
+**Why a patch:** v1.10.9's tech profile got the words right; v1.10.12 makes the *cadence* right. Three wins from the v1.10.9 research note we hadn't shipped: `<phoneme alphabet="ipa" ph="…">` so agents can force IPA pronunciation for brand names (Anthropic, Mistral, Groq, Ollama), `<sub alias="…">` so code identifiers like `getConditioningLatents` can be said as the human form, and a cadence pass that wraps the last 3 words of list-final sentences with `<prosody pitch="-10%" rate="slow">`, lifts bullet labels with `<prosody pitch="+5%">`, and splices an 80ms pink-noise breath sample every 2-3 sentences when `PTAH_BREATH_WAV` is set.
 
 **Shipped:**
 
 - **`src/ssml.zig`** — `<phoneme alphabet="ipa" ph="ˌæn.θɹəˈpɪk">` parses into a `phoneme_open`/`phoneme_close` token pair carrying alphabet + ph. `<sub alias="…">` parses into `sub_open` with the alias string. Parser default `alphabet="ipa"` when omitted. `transpileToSay` strips phoneme tags silently (macOS has no IPA passthrough — body text rides through), and replaces the body of `<sub>` with the alias verbatim
 - **`src/piper.zig::synthLangSSML`** — phoneme open emits `[[<ipa>]]` Kirshenbaum brackets into the espeak-ng phonemizer (libpiper accepts the bracket form natively). `<sub>` open emits the alias text. Body text inside both is suppressed via a depth counter so the displayed form never reaches the engine
-- **`src/preproc.zig::applyCadenceTricks`** — three independent rules toggled by `CadenceOptions`. List-end drop: sentences with ≥2 commas wrap their last 3 word tokens in `<prosody pitch="-10%" rate="slow">…</prosody>`. Bullet lift: lines starting with `-` / `*` / `•` wrap the leading label (up to `:` or `—`) in `<prosody pitch="+5%">…</prosody>`. Breathing splice: state machine emits `<break time="80ms"/>[[breath]]` every 2-3 sentences; daemon swaps `[[breath]]` for a pre-loaded WAV sample when `AGENT_TTS_BREATH_WAV` env var points at one
+- **`src/preproc.zig::applyCadenceTricks`** — three independent rules toggled by `CadenceOptions`. List-end drop: sentences with ≥2 commas wrap their last 3 word tokens in `<prosody pitch="-10%" rate="slow">…</prosody>`. Bullet lift: lines starting with `-` / `*` / `•` wrap the leading label (up to `:` or `—`) in `<prosody pitch="+5%">…</prosody>`. Breathing splice: state machine emits `<break time="80ms"/>[[breath]]` every 2-3 sentences; daemon swaps `[[breath]]` for a pre-loaded WAV sample when `PTAH_BREATH_WAV` env var points at one
 - **`src/daemon.zig`** — when `item.cadence == true`, the tech path runs `applyCadenceTricks` BEFORE the SSML walker. The cadence output is SSML so the resulting `<prosody>` / `<break>` survive into the synth pipeline. Falls back to the silent break when the breath WAV env var is missing
 - **`src/ipc.zig`** — 10-field wire format with the cadence flag between the extra quintuple and text. Backward-compat: v1.10.8 9-field still parses (the parser peeks the slot after the extra quintuple — `0`/`1` is the cadence slot, anything else is the text head)
 - **`src/queue.zig`** — `cadence INTEGER` column with an idempotent migration. Replay copies the cadence flag along with every other knob
@@ -114,20 +114,20 @@ Per milestone: what shipped, how we measured, what slipped to the next one. The 
 **Sox one-liner for the breath WAV:**
 
 ```bash
-sox -n -r 22050 -c 1 ~/.cache/agent-tts/breath.wav synth 0.08 pinknoise vol 0.006
+sox -n -r 22050 -c 1 ~/.cache/ptah/breath.wav synth 0.08 pinknoise vol 0.006
 # then point the daemon at it:
-export AGENT_TTS_BREATH_WAV=$HOME/.cache/agent-tts/breath.wav
+export PTAH_BREATH_WAV=$HOME/.cache/ptah/breath.wav
 ```
 
 **IPA examples:**
 
 ```bash
-agent-tts --ssml '<phoneme alphabet="ipa" ph="ˌæn.θɹəˈpɪk">Anthropic</phoneme> lançou Claude.'
-agent-tts --ssml '<phoneme alphabet="ipa" ph="miˈstɾal">Mistral</phoneme> rodou.'
-agent-tts --ssml 'Use <sub alias="get conditioning latents">getConditioningLatents</sub> aqui.'
+ptah --ssml '<phoneme alphabet="ipa" ph="ˌæn.θɹəˈpɪk">Anthropic</phoneme> lançou Claude.'
+ptah --ssml '<phoneme alphabet="ipa" ph="miˈstɾal">Mistral</phoneme> rodou.'
+ptah --ssml 'Use <sub alias="get conditioning latents">getConditioningLatents</sub> aqui.'
 ```
 
-**Validated end-to-end**: `AGENT_TTS_BREATH_WAV=$HOME/.cache/agent-tts/breath.wav agent-tts --profile tech --cadence "A Anthropic, a Mistral, a Groq, quatro LLM labs. Cada uma com sua API."` → daemon log shows `[worker] piper-ssml id=200 tokens=5 parse=173.7µs synth=700.5ms play=5603.6ms samples=122112` (cadence flipped to SSML path, list-end drop wrapped "quatro LLM labs"). MCP `say` with `{"cadence":true,"tech":true}` persists `cadence=1, tech=1` to the queue row. **All tests passed** (`zig build test` exit 0).
+**Validated end-to-end**: `PTAH_BREATH_WAV=$HOME/.cache/ptah/breath.wav ptah --profile tech --cadence "A Anthropic, a Mistral, a Groq, quatro LLM labs. Cada uma com sua API."` → daemon log shows `[worker] piper-ssml id=200 tokens=5 parse=173.7µs synth=700.5ms play=5603.6ms samples=122112` (cadence flipped to SSML path, list-end drop wrapped "quatro LLM labs"). MCP `say` with `{"cadence":true,"tech":true}` persists `cadence=1, tech=1` to the queue row. **All tests passed** (`zig build test` exit 0).
 
 **Honest scope**:
 - **IPA passthrough quality is espeak-ng-bound** — `[[<ipa>]]` brackets are accepted by libpiper's phonemizer but the audible result depends on whether espeak-ng's IPA→phoneme table covers the symbols you pass. Anthropic-style ASCII-IPA (`ˌæn.θɹəˈpɪk`) tends to land cleanly; exotic diacritics may fall back to the default Pt-BR mapping. Listen first before declaring a brand "fixed"
@@ -138,7 +138,7 @@ agent-tts --ssml 'Use <sub alias="get conditioning latents">getConditioningLaten
 
 ## v1.10.9 — Research-informed tech profile + glossary expansion · 2026-06-04
 
-**Why a patch:** v1.10.8 shipped a working tech-report mode but the Faber defaults (`length_scale=0.95`, `noise_scale=0.667`, `noise_w=0.85`) were guesses. The external LLM research distillation in [`_qa/v1.10.9-research-prompt-output.md`](https://github.com/biliboss/agent-tts/blob/main/_qa/v1.10.9-research-prompt-output.md) anchored the numbers on MCV read-speech evidence — `length=1.05 / noise=0.35 / noise_w=0.45` recovers intelligibility on symbol-heavy strings without flattening prosody. Same research distilled four more missing pieces this version ships: extra acronym/unit/brand glossary entries, a CamelCase splitter, and a path/version/commit-hash/URL normalizer so Piper stops mispronouncing identifiers.
+**Why a patch:** v1.10.8 shipped a working tech-report mode but the Faber defaults (`length_scale=0.95`, `noise_scale=0.667`, `noise_w=0.85`) were guesses. The external LLM research distillation in [`_qa/v1.10.9-research-prompt-output.md`](https://github.com/biliboss/ptah/blob/main/_qa/v1.10.9-research-prompt-output.md) anchored the numbers on MCV read-speech evidence — `length=1.05 / noise=0.35 / noise_w=0.45` recovers intelligibility on symbol-heavy strings without flattening prosody. Same research distilled four more missing pieces this version ships: extra acronym/unit/brand glossary entries, a CamelCase splitter, and a path/version/commit-hash/URL normalizer so Piper stops mispronouncing identifiers.
 
 **Shipped:**
 
@@ -150,13 +150,13 @@ agent-tts --ssml 'Use <sub alias="get conditioning latents">getConditioningLaten
 - **`src/mcp.zig`** — new **`tech_profile_search(text)`** tool: enqueues a curated 4-variant matrix (tight-narrator / stock-tech / broadcast / expressive — subset of the Resolution IV 2⁴⁻¹ generator from the research note). Each variant routes to Faber piper with `tech=true`. Returns `{ items: [{id, name, knobs}], count }` so Claude Code can ask the user to pick. Total: **13 tools** (was 12)
 - VERSION 1.10.9 — binary + bundle + MCP server
 
-**Validated end-to-end**: `agent-tts --profile tech "agent-tts v1.10.8 roda em CPU. Commit bdd352e. Veja https://github.com/biliboss/agent-tts/blob/main/src/preproc.zig"` enqueues → daemon log shows `[worker] piper id=170 tech=true length_scale=1.050 noise_scale=0.350 noise_w=0.450 speaker_id=-1 sentence_pause_ms=500` → playback says the version (`um ponto dez ponto oito`), commit hash (`commit bê dê dê três cinco dois é`), and URL (protocol stripped, `.` → `ponto`, `/` → `barra`) correctly. MCP `tech_profile_search` with one sentence returns 4 IDs (171/172/173/174) each tagged with its variant name. **307/307 tests passed** (`zig build test`).
+**Validated end-to-end**: `ptah --profile tech "ptah v1.10.8 roda em CPU. Commit bdd352e. Veja https://github.com/biliboss/ptah/blob/main/src/preproc.zig"` enqueues → daemon log shows `[worker] piper id=170 tech=true length_scale=1.050 noise_scale=0.350 noise_w=0.450 speaker_id=-1 sentence_pause_ms=500` → playback says the version (`um ponto dez ponto oito`), commit hash (`commit bê dê dê três cinco dois é`), and URL (protocol stripped, `.` → `ponto`, `/` → `barra`) correctly. MCP `tech_profile_search` with one sentence returns 4 IDs (171/172/173/174) each tagged with its variant name. **307/307 tests passed** (`zig build test`).
 
 **Honest scope**:
 - **CamelCase splitter is ASCII-only** — Pt-BR accented letters (UTF-8 continuation bytes) never trigger a split. That's intentional: Piper's espeak-ng frontend handles word-internal accents well; the splitter only fires on engineering identifiers (`SwiftUI`, `MultiPiperEngine`)
 - **URL normalizer is conservative** — recognizes `http://` / `https://` only. Bare hostnames (no scheme) pass through; ftp/git/ssh URLs read as-is. Adding more schemes is a future extension once we see real misreads in the daemon log
 - **Commit hash needs at least one letter** — pure-digit runs like `12345678` are NOT treated as commit hashes; they go to the version/number stage. Means a pure-numeric SHA prefix would be misread, but those are rare and ambiguous anyway
-- **Glossary now runs AFTER normalize** — a URL tail like `agent-tts` sees `tts` get spelled to `T T S` on the second glossary pass. Spec called for `glossary → camelCase → glossary → normalize`; we flipped to `normalize → glossary → camelCase → glossary` because glossary-first caught `https` substring inside URLs. Documented in `techPipeline`'s doc-comment
+- **Glossary now runs AFTER normalize** — a URL tail like `ptah` sees `tts` get spelled to `T T S` on the second glossary pass. Spec called for `glossary → camelCase → glossary → normalize`; we flipped to `normalize → glossary → camelCase → glossary` because glossary-first caught `https` substring inside URLs. Documented in `techPipeline`'s doc-comment
 
 ---
 
@@ -175,7 +175,7 @@ agent-tts --ssml 'Use <sub alias="get conditioning latents">getConditioningLaten
 - **`src/mcp.zig`** — `say` + `synth_voice_test` schemas grow the five new params with strict range gates. New **`voice_knob_search(text, variants, max_variants?)`** tool enqueues up to 16 variants in one round-trip (each carries the same knob bundle as `say` plus a free-form `comment`) and returns `{ items: [{id, comment, knobs}], truncated }` — Claude Code automates the empirical loop without 16 separate MCP calls. Total: **12 tools** (was 11)
 - VERSION 1.10.8 — binary + bundle + MCP server
 
-**Validated end-to-end**: `agent-tts --profile tech "API e MCP rodam em CPU. 250 ms warm synth, 64 MB ONNX."` enqueues → daemon log shows `[worker] piper id=144 tech=true length_scale=0.950 noise_scale=0.667 noise_w=0.850 speaker_id=-1 sentence_pause_ms=500` → audible engineering cadence with acronyms spelled. MCP `voice_knob_search` with 3 variants returns 3 distinct IDs (145/146/147) each logged with its own knob bundle.
+**Validated end-to-end**: `ptah --profile tech "API e MCP rodam em CPU. 250 ms warm synth, 64 MB ONNX."` enqueues → daemon log shows `[worker] piper id=144 tech=true length_scale=0.950 noise_scale=0.667 noise_w=0.850 speaker_id=-1 sentence_pause_ms=500` → audible engineering cadence with acronyms spelled. MCP `voice_knob_search` with 3 variants returns 3 distinct IDs (145/146/147) each logged with its own knob bundle.
 
 **Honest scope**:
 - **Piper pause behaviour** — Piper synthesizes continuous PCM, so `--sentence-pause` doesn't directly stretch breaks inside a chunk. The streaming pipeline already inserts the audible break between sentences via chunking, and tech profile bumps `length_scale` to 0.95 (slightly faster overall). For dramatic breaks use `--engine say` where `[[slnc]]` directives map 1:1
@@ -186,23 +186,23 @@ agent-tts --ssml 'Use <sub alias="get conditioning latents">getConditioningLaten
 
 ## v1.10.7 — Per-call piper knobs · 2026-06-04
 
-**Why a patch:** v1.10.6 added daemon-wide `AGENT_TTS_PIPER_*` env knobs, but A/B testing still required `launchctl kickstart -k` between profiles. Now any single `agent-tts "…"` or MCP `say` call can override `length_scale`, `noise_scale`, and `noise_w` per item — no daemon restart, no envless rewrite.
+**Why a patch:** v1.10.6 added daemon-wide `PTAH_PIPER_*` env knobs, but A/B testing still required `launchctl kickstart -k` between profiles. Now any single `ptah "…"` or MCP `say` call can override `length_scale`, `noise_scale`, and `noise_w` per item — no daemon restart, no envless rewrite.
 
 **Shipped:**
 
 - **`src/ipc.zig`** — `Message` gains `length_scale` (sentinel `0.0`=unset), `noise_scale` (sentinel `<0`=unset), `noise_w` (sentinel `<0`=unset). Wire format becomes 8-field `ENQUEUE\t<engine>\t<lang>\t<voice>\t<rate>\t<ssml>\t<tune>\t<text>` where `<tune>` is `length:noise:noise_w` with `-` for any unset component (e.g. `-:-:0.95`) or empty `""` when all defaults. Parser still accepts v0.6/v0.7/v1.1/v1.8 layouts unchanged
 - **`src/queue.zig`** — three new REAL columns (`length_scale`, `noise_scale`, `noise_w`), each NULL when caller didn't override. Idempotent ALTER TABLE migration runs at daemon boot. `replay` preserves NULLs so a default item stays default after re-enqueue
-- **`src/piper.zig`** — new `synthToSamplesTuned(arena, text, length_scale, noise_scale, noise_w)` precedence chain: per-call > `AGENT_TTS_PIPER_*` env > libpiper voice default. `synthToSamplesScaled` becomes a thin shim so the SSML walker keeps its signature. `MultiPiperEngine.synthLangTuned` dispatches to Pt/En per route
+- **`src/piper.zig`** — new `synthToSamplesTuned(arena, text, length_scale, noise_scale, noise_w)` precedence chain: per-call > `PTAH_PIPER_*` env > libpiper voice default. `synthToSamplesScaled` becomes a thin shim so the SSML walker keeps its signature. `MultiPiperEngine.synthLangTuned` dispatches to Pt/En per route
 - **`src/daemon.zig`** — `runPiperSingle` + streaming `synthWorker` thread their per-call knobs through, and log `[worker] piper id=N length_scale=… noise_scale=… noise_w=…` whenever any override is set
 - **`src/client.zig`** — `--length-scale <f>` / `--noise-scale <f>` / `--noise-w <f>` flags with range validation (0.1..3.0 / 0..2 / 0..2). New `enqueueLineTuned` (MCP shared) funnels through `ipc.encodeEnqueue`
 - **`src/mcp.zig`** — `say` schema gains three optional number params with range gates. New `synth_voice_test(text, length_scale, noise_scale, noise_w)` tool returns enqueue id + the parsed knobs (helpful for Claude Code A/B sessions). Total: 11 tools
 - VERSION 1.10.7
 
-**Validated end-to-end**: `agent-tts --length-scale 1.05 --noise-scale 0.8 --noise-w 1.0 "Teste warm Faber."` enqueues → daemon log shows `[worker] piper id=… length_scale=1.050 noise_scale=0.800 noise_w=1.000` → audible warm profile. MCP path: `tools/call say` with knobs likewise reaches the daemon.
+**Validated end-to-end**: `ptah --length-scale 1.05 --noise-scale 0.8 --noise-w 1.0 "Teste warm Faber."` enqueues → daemon log shows `[worker] piper id=… length_scale=1.050 noise_scale=0.800 noise_w=1.000` → audible warm profile. MCP path: `tools/call say` with knobs likewise reaches the daemon.
 
 **Honest scope**:
 - **Sentinels matter** — `length_scale=0.0` means "unset". `noise_scale<0` and `noise_w<0` likewise. Pass real floats to override; omit (or pass the sentinel) to keep the voice/env default
-- **Cloned ignores** — XTTS-v2 has its own (separate) knobs. We don't repurpose `length_scale` for the cloned route in v1.10.7; users wanting cloned tuning continue to use `AGENT_TTS_*` env vars at clone time
+- **Cloned ignores** — XTTS-v2 has its own (separate) knobs. We don't repurpose `length_scale` for the cloned route in v1.10.7; users wanting cloned tuning continue to use `PTAH_*` env vars at clone time
 - **SSML still wins length** — when `--ssml` is set, the `<prosody rate>` scope inside the markup overrides any `--length-scale` (the SSML walker computes per-chunk length_scale itself). `noise_scale` / `noise_w` still apply because the walker doesn't touch those
 
 ---
@@ -213,15 +213,15 @@ agent-tts --ssml 'Use <sub alias="get conditioning latents">getConditioningLaten
 
 **Tuned**:
 
-- **`scripts/voice_synth.py`** — inference now passes `temperature=0.65`, `length_penalty=1.0`, `repetition_penalty=10.0`, `top_k=50`, `top_p=0.85`, `enable_text_splitting=True`. Each is overridable via `AGENT_TTS_*` env var so A/B work is one shell-export away
+- **`scripts/voice_synth.py`** — inference now passes `temperature=0.65`, `length_penalty=1.0`, `repetition_penalty=10.0`, `top_k=50`, `top_p=0.85`, `enable_text_splitting=True`. Each is overridable via `PTAH_*` env var so A/B work is one shell-export away
 - **`scripts/voice_clone.py`** — `get_conditioning_latents` called with `max_ref_length=60` (was 30 default), `gpt_cond_len=30` (was 6), `sound_norm_refs=True`. Longer + normalised reference window means the GPT conditioning sees varied prosody, not just the first phrase
 - VERSION 1.10.6
 
-**Validated end-to-end**: re-cloned `bogdo` from the same 35 s mic capture, played via `agent-tts --voice bogdo "…"` → daemon log `cloned id=130 slug=bogdo synth=162506ms play=4924ms samples=106752`. Cold synth still dominated by torch + XTTS model load (~150 s); warm synth keeps prior envelope.
+**Validated end-to-end**: re-cloned `bogdo` from the same 35 s mic capture, played via `ptah --voice bogdo "…"` → daemon log `cloned id=130 slug=bogdo synth=162506ms play=4924ms samples=106752`. Cold synth still dominated by torch + XTTS model load (~150 s); warm synth keeps prior envelope.
 
 **Honest scope**:
 - **Re-cloning required after tuning** — the new latents are different from v1.10.5's. Existing voices stay at the old conditioning until you re-run `voice clone`
-- **MPS / GPU still not wired** — `AGENT_TTS_DEVICE=mps` works on the synth path but speeds up only the autoregressive decoder; voice load still hits CPU first
+- **MPS / GPU still not wired** — `PTAH_DEVICE=mps` works on the synth path but speeds up only the autoregressive decoder; voice load still hits CPU first
 
 ---
 
@@ -231,11 +231,11 @@ agent-tts --ssml 'Use <sub alias="get conditioning latents">getConditioningLaten
 
 **Fixed**:
 
-- **`src/daemon.zig::resolveSidecarPaths`** — probes `$AGENT_TTS_REPO_ROOT` → `/opt/homebrew/share/agent-tts` → `/usr/local/share/agent-tts`, picking the first one where `scripts/voice_synth.py` exists. The matching `.venv-voice/bin/python` is paired so the daemon spawns the pinned interpreter directly (no `uv run` / `python3` fallback when the venv is on disk)
-- **`src/voice.zig::resolveScriptPath` + `venvPythonExists`** — same probe applied to the CLI side so `agent-tts voice clone` works from any cwd, not just the repo root
-- **Install convention** — symlink the repo's `scripts/` + `.venv-voice/` into `/opt/homebrew/share/agent-tts/` so daemons started by launchd find them without an env tweak
+- **`src/daemon.zig::resolveSidecarPaths`** — probes `$PTAH_REPO_ROOT` → `/opt/homebrew/share/ptah` → `/usr/local/share/ptah`, picking the first one where `scripts/voice_synth.py` exists. The matching `.venv-voice/bin/python` is paired so the daemon spawns the pinned interpreter directly (no `uv run` / `python3` fallback when the venv is on disk)
+- **`src/voice.zig::resolveScriptPath` + `venvPythonExists`** — same probe applied to the CLI side so `ptah voice clone` works from any cwd, not just the repo root
+- **Install convention** — symlink the repo's `scripts/` + `.venv-voice/` into `/opt/homebrew/share/ptah/` so daemons started by launchd find them without an env tweak
 
-**Validated end-to-end**: `agent-tts --voice bogdo "..."` → daemon log `[worker] cloned id=112 slug=bogdo synth=98995ms play=3294ms samples=72192` (cold sidecar). The previous run played piper Faber because the spawn failed.
+**Validated end-to-end**: `ptah --voice bogdo "..."` → daemon log `[worker] cloned id=112 slug=bogdo synth=98995ms play=3294ms samples=72192` (cold sidecar). The previous run played piper Faber because the spawn failed.
 
 ---
 
@@ -253,13 +253,13 @@ agent-tts --ssml 'Use <sub alias="get conditioning latents">getConditioningLaten
 
 ## v1.10.3 — Guided voice clone UI · 2026-06-03
 
-**Why**: v1.4 shipped `voice clone --sample X.wav --name Y` as a CLI affordance — Gabriel could only clone a voice if he already had a 20-120 s WAV lying around. v1.10.3 closes the loop: the menubar app gains a "Clone my voice…" button that opens a guided window with a Pt-BR reading script, a one-tap recorder, a live VU meter, and a Save & Clone button that hands the freshly captured WAV to `agent-tts voice clone --quiet` and shows the sidecar's progress live. Zero terminal required.
+**Why**: v1.4 shipped `voice clone --sample X.wav --name Y` as a CLI affordance — Gabriel could only clone a voice if he already had a 20-120 s WAV lying around. v1.10.3 closes the loop: the menubar app gains a "Clone my voice…" button that opens a guided window with a Pt-BR reading script, a one-tap recorder, a live VU meter, and a Save & Clone button that hands the freshly captured WAV to `ptah voice clone --quiet` and shows the sidecar's progress live. Zero terminal required.
 
 **Shipped — menubar (Swift)**:
 
-- `ui/menubar/Sources/AgentTTSMenubar/CloneVoiceWindow.swift` (NEW, ~440 LOC) — 520 × 640 `NSWindow` with a SwiftUI root. Slug input mirrors `voice.zig::validateSlug` (`[a-z0-9-]{1,32}`) and surfaces an inline regex hint when invalid. The reading script is hard-coded as five Pt-BR sentences (declarative + interrogative + exclamative + list + numbers + emotion) so XTTS sees broad prosody signal in a 30-90 s window; an auto-advance timer highlights the current sentence every 7 s. Big red Record button toggles to Stop. Status row covers idle / requestingPermission / permissionDenied / recording / finishedRecording / processing / done / failed. Live processing log textbox streams the `agent-tts voice clone` subprocess's stdout+stderr so the user sees XTTS progress (currently noisy by design). Save & Clone spawns `agent-tts voice clone --sample ~/.cache/agent-tts/voices/.tmp-<slug>.wav --name <slug> --quiet`; on exit code 0 the button changes to **Done** and the catalogue reloads.
+- `ui/menubar/Sources/AgentTTSMenubar/CloneVoiceWindow.swift` (NEW, ~440 LOC) — 520 × 640 `NSWindow` with a SwiftUI root. Slug input mirrors `voice.zig::validateSlug` (`[a-z0-9-]{1,32}`) and surfaces an inline regex hint when invalid. The reading script is hard-coded as five Pt-BR sentences (declarative + interrogative + exclamative + list + numbers + emotion) so XTTS sees broad prosody signal in a 30-90 s window; an auto-advance timer highlights the current sentence every 7 s. Big red Record button toggles to Stop. Status row covers idle / requestingPermission / permissionDenied / recording / finishedRecording / processing / done / failed. Live processing log textbox streams the `ptah voice clone` subprocess's stdout+stderr so the user sees XTTS progress (currently noisy by design). Save & Clone spawns `ptah voice clone --sample ~/.cache/ptah/voices/.tmp-<slug>.wav --name <slug> --quiet`; on exit code 0 the button changes to **Done** and the catalogue reloads.
 - `ui/menubar/Sources/AgentTTSMenubar/VoiceRecorder.swift` (NEW, ~170 LOC) — `AVAudioRecorder` wrapper configured for 22 050 Hz mono 16-bit s16le PCM (matches Faber + what `voice.zig::sniffWav` validates). Microphone permission handled via `AVCaptureDevice.requestAccess(for: .audio)` with `notDetermined → prompt`, `denied/restricted → actionable error`, `authorized → record`. `peakLevel()` polls `averagePower(forChannel:0)` and maps –50 … 0 dB → 0 … 1 for the VU meter. `cancel()` deletes the partial file so failed sessions don't leave WAV droppings around.
-- `ui/menubar/Sources/AgentTTSMenubar/AppDelegate.swift` — `openCloneWindow()` action wired to a new popover row. Strong-references a `CloneVoiceWindowController` so the SwiftUI scene survives transient dismissal. Reload-on-close refreshes `VoicePickerModel` so the new slug appears immediately in the picker. Hidden `AGENT_TTS_AUTOSHOW_CLONE=1` env triggers auto-open at launch — used for live validation, no-op in production.
+- `ui/menubar/Sources/AgentTTSMenubar/AppDelegate.swift` — `openCloneWindow()` action wired to a new popover row. Strong-references a `CloneVoiceWindowController` so the SwiftUI scene survives transient dismissal. Reload-on-close refreshes `VoicePickerModel` so the new slug appears immediately in the picker. Hidden `PTAH_AUTOSHOW_CLONE=1` env triggers auto-open at launch — used for live validation, no-op in production.
 - `ui/menubar/Sources/AgentTTSMenubar/QueueView.swift` — popover gains a "Clone my voice…" row above the queue list. Popover height bumped 420 → 460 to accommodate it. Row is driven by an injectable closure so previews/tests don't depend on the AppDelegate.
 
 **Shipped — daemon (Zig)**:
@@ -278,19 +278,19 @@ agent-tts --ssml 'Use <sub alias="get conditioning latents">getConditioningLaten
 2. `zig build test` — green; 12 voice.zig tests pass (10 baseline + 2 new for `--quiet` HELP contract).
 3. `swift build -c release` — green, 7.5 s clean build, 0 warnings.
 4. `bash scripts/build-menubar.sh` — produces `ui/menubar/build/AgentTTSMenubar.app`, plist verified via `plutil -p` (NSMicrophoneUsageDescription present).
-5. App installed to `/Applications/AgentTTSMenubar.app`, launched via `AGENT_TTS_AUTOSHOW_CLONE=1 open`.
+5. App installed to `/Applications/AgentTTSMenubar.app`, launched via `PTAH_AUTOSHOW_CLONE=1 open`.
 6. **Clone window opened** — screenshot at `_qa/v1.10.3-clone-window.png` shows slug field, [a-z0-9-]{1,32} regex hint, full Pt-BR script with first sentence highlighted via accent-color background, Record button, VU meter strip, status row, Cancel + Save & Clone buttons.
 7. **Microphone permission prompt granted** (first run; cached for subsequent launches).
-8. Typed slug `gabriel`, clicked Record, ~40 s of mic capture observed (VU meter active, 00:40 elapsed). Stopped recording → produced `/var/folders/.../T/agent-tts-clone-<UUID>.wav` 1.8 MB, staged to `~/.cache/agent-tts/voices/.tmp-gabriel.wav`.
-9. Save & Clone subprocess spawned (`agent-tts voice clone --quiet`); the popover-level catalog reload landed cleanly.
-10. **Independent `--quiet` contract validation**: invoked `agent-tts voice clone --sample <wav> --name unit-test-quiet --quiet` against the staged WAV with a stub sidecar — produced exactly `OK\tunit-test-quiet\n` (single line, no progress chatter, exit 0). Verbose mode regression check still emits the full `[voice clone] …` banners.
+8. Typed slug `gabriel`, clicked Record, ~40 s of mic capture observed (VU meter active, 00:40 elapsed). Stopped recording → produced `/var/folders/.../T/ptah-clone-<UUID>.wav` 1.8 MB, staged to `~/.cache/ptah/voices/.tmp-gabriel.wav`.
+9. Save & Clone subprocess spawned (`ptah voice clone --quiet`); the popover-level catalog reload landed cleanly.
+10. **Independent `--quiet` contract validation**: invoked `ptah voice clone --sample <wav> --name unit-test-quiet --quiet` against the staged WAV with a stub sidecar — produced exactly `OK\tunit-test-quiet\n` (single line, no progress chatter, exit 0). Verbose mode regression check still emits the full `[voice clone] …` banners.
 11. WAV metadata after clone: `duration_seconds: 40.44`, `sample_rate: 22050`, `channels: 1` — exactly the recorder's 22 050 Hz mono s16le contract.
 
 **Honest scope**:
 
 - **XTTS sidecar end-to-end** — this session ran without `.venv-voice` provisioned, so the live test exercised the clone window's spawn path with a stub sidecar (validated `--quiet` round-trip + exit-code routing + log streaming) rather than producing a real cloned voice. Users with `scripts/setup-voice-clone.sh` already run will get the real XTTS-v2 embedding on the same code path; nothing in the v1.10.3 changeset alters the sidecar contract.
 - **Microphone permission denied path** — surfaced via `VoiceRecorderError.permissionDenied` + the `.permissionDenied` phase, which prints the actionable "open System Settings → Privacy & Security → Microphone" string in the status row. Tested manually by toggling the permission off in System Settings (covered by an inline error path, not a screenshot).
-- **AGENT_TTS_AUTOSHOW_CLONE env hook** — present so the live-validation flow can auto-open the window without driving the popover via AppleScript. Production launches without the env var behave identically to v1.10.2 until the user clicks the new popover row.
+- **PTAH_AUTOSHOW_CLONE env hook** — present so the live-validation flow can auto-open the window without driving the popover via AppleScript. Production launches without the env var behave identically to v1.10.2 until the user clicks the new popover row.
 
 **Lead time**: see `_qa/v1.10.3-leadtime.md`.
 
@@ -298,7 +298,7 @@ agent-tts --ssml 'Use <sub alias="get conditioning latents">getConditioningLaten
 
 ## v1.10.2 — History + pause/resume + floating player · 2026-06-03
 
-**Why**: v1.10 shipped a one-shot enqueue UI — once an item left the queue, it was gone. No way to pause mid-utterance, no way to replay a past message, no always-on-top widget surfacing what's currently playing. v1.10.2 turns agent-tts into a proper voice player: persistent history, mid-playback pause/resume, replay any past item by id, and a floating overlay panel on macOS that shows the active item plus controls. Same four ops surface through CLI, MCP, and the menubar overlay.
+**Why**: v1.10 shipped a one-shot enqueue UI — once an item left the queue, it was gone. No way to pause mid-utterance, no way to replay a past message, no always-on-top widget surfacing what's currently playing. v1.10.2 turns ptah into a proper voice player: persistent history, mid-playback pause/resume, replay any past item by id, and a floating overlay panel on macOS that shows the active item plus controls. Same four ops surface through CLI, MCP, and the menubar overlay.
 
 **Shipped — daemon (Zig)**:
 
@@ -312,7 +312,7 @@ agent-tts --ssml 'Use <sub alias="get conditioning latents">getConditioningLaten
 **Shipped — menubar (Swift)**:
 
 - `ui/menubar/Sources/AgentTTSMenubar/FloatingPlayer.swift` (NEW, 187 LOC) — `NSPanel` with `level = .floating` + `.hudWindow` style + `.canJoinAllSpaces`. Compact 320×60 panel: current item text (1-line truncated), engine·voice·rate badge, pause/resume toggle (SF Symbol switches `pause.fill`↔`play.fill`), skip, replay buttons. Frame persists to `UserDefaults` under `AgentTTSMenubar.floatingFrame` (NSStringFromRect); drag handle works via `isMovableByWindowBackground`. The `FloatingPlayerModel` is a published-property view-model; `FloatingPlayerController.enabled` is the toggle persisted under `AgentTTSMenubar.floatingPlayerEnabled` (default OFF — upgrades from v1.10.1 don't surprise anyone).
-- `ui/menubar/Sources/AgentTTSMenubar/AppDelegate.swift` — 750 ms `Timer` polls `agent-tts queue` continuously (regardless of popover state). When a `state=="playing"` row appears AND the user toggled the widget on, the panel shows; when the queue empties or no playing row, it hides.
+- `ui/menubar/Sources/AgentTTSMenubar/AppDelegate.swift` — 750 ms `Timer` polls `ptah queue` continuously (regardless of popover state). When a `state=="playing"` row appears AND the user toggled the widget on, the panel shows; when the queue empties or no playing row, it hides.
 - `ui/menubar/Sources/AgentTTSMenubar/VoicePicker.swift` — settings row gains a "Show floating player while speaking" SwiftUI `Toggle` mirroring `FloatingPlayerController.enabled`.
 - `ui/menubar/Sources/AgentTTSMenubarCore/SocketClient.swift` — `pause()`, `resumePlayback()`, `replay(id:)`, `history(limit:)`, plus a `HistoryItem` Sendable struct + `parseHistoryItem` (7-column wire shape). 4 new XCTest cases + 4 new `SocketProtocolCheck` assertions (Xcode-free smoke runs).
 
@@ -320,16 +320,16 @@ agent-tts --ssml 'Use <sub alias="get conditioning latents">getConditioningLaten
 
 - `zig build -Doptimize=ReleaseFast -Dwith-piper=true` clean (1.3 MB binary)
 - `zig build test` green (all suites: ipc gains 8 tests, audio gains 2)
-- New binary `cp`'d to `/opt/homebrew/bin/agent-tts` + `codesign --force --sign -` + `launchctl kickstart -k gui/$UID/io.github.biliboss.agent-tts`
-- Enqueue → wait 2 s → `agent-tts pause` → daemon ack `paused id=100` → audio actually stopped (verified by ear during 3 s pause window) → `agent-tts resume` → daemon ack `resumed id=100` → audio resumed from the exact spot
-- `agent-tts history --limit 5` → 5 rows of real data printed with `finished_at` epoch column populated
-- `agent-tts replay 99` → daemon ack `replayed id=99 as new id=101` → row 101 immediately appeared in `queue` as `playing` with the same text
-- `agent-tts replay 999999` → daemon ack `ERR\titem not found` → client exits 1
-- `agent-tts pause` while idle → `ERR\tnothing playing` (exit 1); `agent-tts resume` while idle → `ERR\tnot paused`
+- New binary `cp`'d to `/opt/homebrew/bin/ptah` + `codesign --force --sign -` + `launchctl kickstart -k gui/$UID/io.github.biliboss.ptah`
+- Enqueue → wait 2 s → `ptah pause` → daemon ack `paused id=100` → audio actually stopped (verified by ear during 3 s pause window) → `ptah resume` → daemon ack `resumed id=100` → audio resumed from the exact spot
+- `ptah history --limit 5` → 5 rows of real data printed with `finished_at` epoch column populated
+- `ptah replay 99` → daemon ack `replayed id=99 as new id=101` → row 101 immediately appeared in `queue` as `playing` with the same text
+- `ptah replay 999999` → daemon ack `ERR\titem not found` → client exits 1
+- `ptah pause` while idle → `ERR\tnothing playing` (exit 1); `ptah resume` while idle → `ERR\tnot paused`
 - MCP `tools/list` over stdio (real JSON-RPC handshake) returned exactly 10 tool descriptors with the v1.10.2 four prepended after `say_stream`
 - MCP `tools/call` for `history(limit=3)` returned 3 most-recent items with `finished_at` populated; `pause` while idle returned `daemon error` (isError=true); `pause` while playing returned `{"paused_id":102}` (isError=false)
-- `bash scripts/build-menubar.sh` → bundle 1.10.2 → installed `/Applications/AgentTTSMenubar.app` → launched → enqueued long item → **floating widget appeared at bottom-left of screen** with title "agent-tts", playing text, and pause/skip/replay controls. Screenshot saved to `_qa/v1.10.2-floating-player-full.png`.
-- Settings persistence: `defaults read io.github.biliboss.agent-tts.menubar AgentTTSMenubar.floatingPlayerEnabled` returned `1` after toggle.
+- `bash scripts/build-menubar.sh` → bundle 1.10.2 → installed `/Applications/AgentTTSMenubar.app` → launched → enqueued long item → **floating widget appeared at bottom-left of screen** with title "ptah", playing text, and pause/skip/replay controls. Screenshot saved to `_qa/v1.10.2-floating-player-full.png`.
+- Settings persistence: `defaults read io.github.biliboss.ptah.menubar AgentTTSMenubar.floatingPlayerEnabled` returned `1` after toggle.
 
 **Honest scope deferred**:
 
@@ -350,7 +350,7 @@ agent-tts --ssml 'Use <sub alias="get conditioning latents">getConditioningLaten
 
 - **`public/playground/widget.js` + `widget.css` (NEW)** — externalized the inline script + style from `src/content/docs/playground.mdx`. Reference via Starlight's `head` frontmatter (`<link rel="stylesheet">` + `<script defer>`). Reliably ships on GitHub Pages
 - **`src/content/docs/playground.mdx`** — rewritten to load external assets, drop inline JS/CSS. Voice picker + Speak button now interactive on live URL
-- **`scripts/build-menubar.sh`** — bakes `AppIcon.icns` from `public/logos/agent-tts-logo.png` via `sips` + `iconutil`. Bundle now ships with the agent-tts robot logo at 16×16 → 512×512@2x. `CFBundleIconFile = AppIcon` added to Info.plist. Bumped bundle version to 1.10.1
+- **`scripts/build-menubar.sh`** — bakes `AppIcon.icns` from `public/logos/ptah-logo.png` via `sips` + `iconutil`. Bundle now ships with the ptah robot logo at 16×16 → 512×512@2x. `CFBundleIconFile = AppIcon` added to Info.plist. Bumped bundle version to 1.10.1
 - **`src/content/docs/menubar.md`** — placeholder image swapped for a real screenshot at `public/screenshots/menubar-v1.10.1.png`, captured from the running `/Applications/AgentTTSMenubar.app`
 - **`build.zig.zon` + `src/main.zig`** — `VERSION = "1.10.1"`
 
@@ -358,7 +358,7 @@ agent-tts --ssml 'Use <sub alias="get conditioning latents">getConditioningLaten
 
 - `npm run build` clean
 - Menubar `.app` installed to `/Applications/AgentTTSMenubar.app` and running (PID confirmed)
-- Live URL https://biliboss.github.io/agent-tts/playground/ will re-validate on next Pages deploy (CI run linked from commit)
+- Live URL https://biliboss.github.io/ptah/playground/ will re-validate on next Pages deploy (CI run linked from commit)
 
 **Honest scope still deferred**:
 - v1.10.2 = CoreAudio ducking + signed brew cask + Linux GTK4
@@ -369,7 +369,7 @@ agent-tts --ssml 'Use <sub alias="get conditioning latents">getConditioningLaten
 
 ## v1.6 → v1.10 fan-out summary · 2026-06-03
 
-Parent dispatch fanned out **5 parallel sub-agents** in git worktrees off `main` (`16696e6`), each shipped to its own branch (`agent-tts/v1.X`), gated on `zig build` + `zig build test`, merged serially into `main`.
+Parent dispatch fanned out **5 parallel sub-agents** in git worktrees off `main` (`16696e6`), each shipped to its own branch (`ptah/v1.X`), gated on `zig build` + `zig build test`, merged serially into `main`.
 
 | Version | Theme | Lead time (agent wall) | Tests | Build gate |
 |---|---|---|---|---|
@@ -394,8 +394,8 @@ Each version's leadtime file (`_qa/v1.X-leadtime.md`) records the agent's own st
 - `SocketClient.swift` — POSIX UNIX-socket client. Implements ENQUEUE/QUEUE/SKIP/CLEAR against v1.1 6-field TSV. Permissive parser accepts v0.6 legacy ITEM layout. Raw `Darwin.socket` over `Network.framework` to keep warm-path latency near the 0.2-0.4 ms CLI floor
 - `AppDelegate.swift` — NSStatusItem with `speaker.wave.2` SF Symbol. Popover `.transient`. Polling on open / off on close. `LSUIElement` via setActivationPolicy + Info.plist (no dock icon)
 - `QueueView.swift` — SwiftUI list, 750 ms polling while popover open, click-to-skip on playing row, Skip + Clear footer, round-trip readout
-- `VoicePicker.swift` + `VoiceCatalog.swift` — Luciana/Felipe/Faber/Amy + cloned voices discovered under `~/.cache/agent-tts/voices/`. Selection persists to UserDefaults
-- `scripts/build-menubar.sh` — wraps `swift build -c release`, assembles `build/AgentTTSMenubar.app` (Info.plist LSUIElement=true, bundle id `io.github.biliboss.agent-tts.menubar`, version 1.10.0). Unsigned for v1.10
+- `VoicePicker.swift` + `VoiceCatalog.swift` — Luciana/Felipe/Faber/Amy + cloned voices discovered under `~/.cache/ptah/voices/`. Selection persists to UserDefaults
+- `scripts/build-menubar.sh` — wraps `swift build -c release`, assembles `build/AgentTTSMenubar.app` (Info.plist LSUIElement=true, bundle id `io.github.biliboss.ptah.menubar`, version 1.10.0). Unsigned for v1.10
 - New docs page `src/content/docs/menubar.md` + sidebar entry in `astro.config.mjs`
 - `src/main.zig` + `build.zig.zon` → 1.10.0
 
@@ -488,7 +488,7 @@ Parse cost below 0.2 µs even for 280-char message — three orders of magnitude
 **Shipped**:
 
 - `src/preproc.zig` — new `IncrementalChunker` state machine. Caller owns one instance + a long-lived arena; `feed(arena, bytes) → []Chunk` appends bytes to the internal buffer, scans for sentence boundaries from a `scan_idx` cursor (O(1) amortized per byte), emits completed sentences with the bytes dup'd into the caller's arena. `flush(arena)` drains the remainder at EOF. Same abbreviation list as `chunkSentences` (`Sr./Dr./Sra./Dra./Av./cf./etc./vs.`) so the streaming path can't split a token the batch path wouldn't. Eager-emit policy: a terminator-run touching end-of-buffer emits anyway — splitting an ellipsis across packet boundaries is the accepted trade-off for low-latency voice
-- `src/stream.zig` — new `agent-tts stream [--engine X] [--voice V] [--rate R]` subcommand. Reads stdin via `readSliceShort` (no '\n' assumption — LLM streams ship partial tokens), feeds each read into the chunker, forwards each emitted sentence to the running daemon via `client.enqueueLine`. EOF triggers `flush` then exits 0
+- `src/stream.zig` — new `ptah stream [--engine X] [--voice V] [--rate R]` subcommand. Reads stdin via `readSliceShort` (no '\n' assumption — LLM streams ship partial tokens), feeds each read into the chunker, forwards each emitted sentence to the running daemon via `client.enqueueLine`. EOF triggers `flush` then exits 0
 - `src/mcp.zig` — new tool `say_stream(stream_id, chunk, final?)`. Per-stream state in process-scoped `StringHashMapUnmanaged(StreamSession)` keyed by caller-chosen `stream_id`. `final=true` flushes and drops the session. Tools list grows from 5 → 6
 - `src/main.zig` — dispatches `stream` to `stream.run`; HELP gains the new lines; `VERSION = "1.7.0"`. `ttfa-bench --input stream` simulates token-by-token feed (10 ms inter-token gap)
 - `build.zig` / `build.zig.zon` — `.version = "1.7.0"`; new test step for `src/stream.zig`
@@ -500,7 +500,7 @@ Parse cost below 0.2 µs even for 280-char message — three orders of magnitude
 | `zig build` | clean |
 | `zig build test` | **166/166** (up from 67/67 at v1.6; +9 chunker + 1 stream integration + 89 reused) |
 | MCP `say_stream` "Hello. Wor"+"ld." (final=true) | 2 chunks enqueued |
-| CLI `echo "Olá. Tudo bem?" \| agent-tts stream` | 2 chunks enqueued, exit 0 |
+| CLI `echo "Olá. Tudo bem?" \| ptah stream` | 2 chunks enqueued, exit 0 |
 | `ttfa-bench --input stream` first-audio | informational — requires piper rebuild, deferred to `_qa/v1.7-baseline.md` |
 
 **Lead time**: see `_qa/v1.7-leadtime.md`. Elapsed **831 s (13m 51s)** from dispatch (2026-06-03 22:52:11 UTC).
@@ -512,7 +512,7 @@ Parse cost below 0.2 µs even for 280-char message — three orders of magnitude
 **Shipped**:
 
 - `scripts/setup-voice-clone.sh` validated end-to-end on macOS arm64 (Mac Air M4, macOS 26.5). Five real install blockers surfaced + fixed: `coqui-tts` doesn't declare `torch` so we install it explicitly; `transformers>=5` removed `isin_mps_friendly` so we pin `transformers<5`; `torch>=2.9` forces `torchcodec` which links against ffmpeg 4.x and host has ffmpeg 8.x so we pin `torch<2.9` + `torchaudio<2.9`; XTTS-v2 prompts for CPML licence on first download and the stdin=ignore Zig parent EOFs the prompt so we set `COQUI_TOS_AGREED=1` at the top of both Python scripts; and `uv run --with TTS` would create an ephemeral env that re-resolves the same broken pins so `buildArgv` in `src/voice.zig` now prefers `.venv-voice/bin/python` when present
-- `scripts/voice_clone.py` + `scripts/voice_synth.py` exercised end-to-end through `agent-tts voice clone` — XTTS-v2 1.8GB model downloaded once into `~/Library/Application Support/tts/`, speaker latents extracted from a 28s Pt-BR sample, `~/.cache/agent-tts/voices/gabriel/{embedding.npz,metadata.json,clone-info.json}` produced
+- `scripts/voice_clone.py` + `scripts/voice_synth.py` exercised end-to-end through `ptah voice clone` — XTTS-v2 1.8GB model downloaded once into `~/Library/Application Support/tts/`, speaker latents extracted from a 28s Pt-BR sample, `~/.cache/ptah/voices/gabriel/{embedding.npz,metadata.json,clone-info.json}` produced
 - `scripts/voice-clone-bench.sh` (NEW) — measures sample WAV gen, clone wall time, cold synth, 2nd-invocation synth, writes `_qa/v1.6-baseline.md` end-to-end. Idempotent — re-running overwrites the previous baseline
 - `voice list` UX: now shows `duration` + `rate` columns alongside the slug. Cloned voices read both fields from `metadata.json`; faber + Luciana hardcode 22050Hz. New hand-rolled `parseVoiceMetadata` (no std.json round-trip per voice — see `src/voice.zig`)
 - `src/voice.zig::buildArgv` — three-tier interpreter preference (`.venv-voice/bin/python` → `uv run --with TTS` → `python3`). Means a clean `setup-voice-clone.sh` run gives you a deterministic interpreter on every clone/synth without polluting the system Python
@@ -523,7 +523,7 @@ Parse cost below 0.2 µs even for 280-char message — three orders of magnitude
 | Metric | Value | Notes |
 |---|---|---|
 | Sample WAV generation (`say` 28s Pt-BR) | 0.76s | mono 22050Hz s16le |
-| `agent-tts voice clone` wall time | **23.35s** | cold sidecar, model on disk; extracts speaker latents |
+| `ptah voice clone` wall time | **23.35s** | cold sidecar, model on disk; extracts speaker latents |
 | Cold synth (fresh Python, 35-char Pt-BR) | **26.39s** → 4.30s of audio | dominated by torch + XTTS load (~22s of the 26s) |
 | 2nd-invocation synth | **24.13s** → 2.17s of audio | each call reloads the model — no resident sidecar in v1.6 |
 | `zig build` | green | host arm64 binary |
@@ -550,7 +550,7 @@ Parse cost below 0.2 µs even for 280-char message — three orders of magnitude
 ```
 
 Bench script: `scripts/voice-clone-bench.sh` (rerun: `./scripts/voice-clone-bench.sh`).
-Baseline: [`_qa/v1.6-baseline.md`](https://github.com/biliboss/agent-tts/blob/main/_qa/v1.6-baseline.md).
+Baseline: [`_qa/v1.6-baseline.md`](https://github.com/biliboss/ptah/blob/main/_qa/v1.6-baseline.md).
 
 ---
 
@@ -558,13 +558,13 @@ Baseline: [`_qa/v1.6-baseline.md`](https://github.com/biliboss/agent-tts/blob/ma
 
 **Shipped**:
 
-- `src/mcp.zig` — stdio JSON-RPC 2.0 server bundled in the same Zig binary. New subcommand `agent-tts mcp` opens a newline-delimited JSON loop on stdin/stdout. No new dependencies; uses `std.json` for parse and `std.json.Stringify.valueAlloc` for serialize
+- `src/mcp.zig` — stdio JSON-RPC 2.0 server bundled in the same Zig binary. New subcommand `ptah mcp` opens a newline-delimited JSON loop on stdin/stdout. No new dependencies; uses `std.json` for parse and `std.json.Stringify.valueAlloc` for serialize
 - Three JSON-RPC methods implemented: `initialize` (returns `protocolVersion: 2024-11-05`, `capabilities.tools.listChanged=false`, `serverInfo`), `notifications/initialized` (acked, no response), `tools/list` (returns the 5 tools), `tools/call` (dispatches by name)
-- 5 tools exposed: `say(text, engine?, voice?, rate?)`, `queue()`, `skip(id?)`, `clear()`, `voices()`. Each is a thin shim over the existing UNIX socket protocol — no changes to `daemon.zig`, `ipc.zig`, `queue.zig`. `voices` enumerates hardcoded Luciana + Felipe and scans `~/.cache/agent-tts/voices/*.onnx` for piper voices
+- 5 tools exposed: `say(text, engine?, voice?, rate?)`, `queue()`, `skip(id?)`, `clear()`, `voices()`. Each is a thin shim over the existing UNIX socket protocol — no changes to `daemon.zig`, `ipc.zig`, `queue.zig`. `voices` enumerates hardcoded Luciana + Felipe and scans `~/.cache/ptah/voices/*.onnx` for piper voices
 - `src/client.zig` — extracted four pure helpers (`enqueueLine`, `queueLines`, `skipOp`, `clearOp`) plus a `QueueItem` struct. CLI surface unchanged; helpers are silent (no stdout, no process.exit) so the MCP server can compose them
-- `src/main.zig` — `VERSION = "1.5.0"`, HELP updated with `agent-tts mcp` line and a one-line Claude Code config snippet
+- `src/main.zig` — `VERSION = "1.5.0"`, HELP updated with `ptah mcp` line and a one-line Claude Code config snippet
 - `build.zig.zon` — `.version = "1.5.0"`
-- `scripts/install-mcp.sh` — idempotent installer that merges the `mcpServers."agent-tts"` block into `~/.claude.json` via `jq`. Backs up before writing, refuses to touch a non-object JSON, prints the snippet when jq is missing
+- `scripts/install-mcp.sh` — idempotent installer that merges the `mcpServers."ptah"` block into `~/.claude.json` via `jq`. Backs up before writing, refuses to touch a non-object JSON, prints the snippet when jq is missing
 - New docs page `src/content/docs/mcp.md` (TL;DR + install + 5 tools + JSON-RPC samples + Claude Code walkthrough), added to the Starlight sidebar between "What's next" and "Changelog". `arquitetura.md` got an MCP subsection; `roadmap.md` got the v1.5 row; `whats-next.md` lost the v1.5 section
 
 **Measurements** (Mac Air M4, ReleaseFast, libpiper OFF):
@@ -581,7 +581,7 @@ Baseline: [`_qa/v1.6-baseline.md`](https://github.com/biliboss/agent-tts/blob/ma
 **Honest scope**:
 
 - **Tools only.** MCP also defines `prompts/*`, `resources/*`, `sampling/*`, `logging/*`, and server-initiated progress notifications. v1.5 ships none of those. A voice agent needs tools and only tools. The other primitives land when somebody asks
-- **End-to-end against a real Claude Code session not validated.** Smoke-tested via `echo '{...}\n' | agent-tts mcp` — initialize handshake correct, tools/list returns 5 entries, tools/call → voices returns the expected ONNX-scan output, tools/call → queue returns the right `isError: true` when no daemon is running
+- **End-to-end against a real Claude Code session not validated.** Smoke-tested via `echo '{...}\n' | ptah mcp` — initialize handshake correct, tools/list returns 5 entries, tools/call → voices returns the expected ONNX-scan output, tools/call → queue returns the right `isError: true` when no daemon is running
 - **`skip` ignores the `id` parameter** — the daemon's SKIP command always targets the currently playing item. The schema documents this. v1.6 will route by id when the queue knows how to interrupt non-head items
 - **`voices` enumerates `say` voices from a hardcoded list** (Luciana, Felipe). Querying `say -v ?` would spawn a process per call; defer to v1.6
 - Errors from `client.queueLines` / `enqueueLine` are wrapped into `isError: true` MCP responses with a `text` block explaining the failure ("daemon not running", "daemon error", "daemon unexpected response"). The MCP loop itself never crashes the process — parse errors become `-32700`, missing methods become `-32601`
@@ -591,15 +591,15 @@ Baseline: [`_qa/v1.6-baseline.md`](https://github.com/biliboss/agent-tts/blob/ma
 ```json
 {
   "mcpServers": {
-    "agent-tts": {
-      "command": "/opt/homebrew/bin/agent-tts",
+    "ptah": {
+      "command": "/opt/homebrew/bin/ptah",
       "args": ["mcp"]
     }
   }
 }
 ```
 
-**Why a single subcommand instead of a dedicated binary**: MCP clients spawn the server on demand and pipe stdio. Bundling the server in the same `agent-tts` binary means one install path, one version number, one set of tests.
+**Why a single subcommand instead of a dedicated binary**: MCP clients spawn the server on demand and pipe stdio. Bundling the server in the same `ptah` binary means one install path, one version number, one set of tests.
 
 ### CLI vs MCP — end-to-end latency
 
@@ -607,9 +607,9 @@ Captured against a warm daemon on Mac Air M4, ReleaseFast, libpiper ON, daemon r
 
 | Path | Cold (first call) | Warm (subsequent) | Notes |
 |---|---|---|---|
-| `agent-tts "texto"` (CLI shell-out) | ~33 ms (process boot + socket connect + ack) | **0.2-0.4 ms** ack round-trip | Each invocation is a fresh process. Warm = arena cache + socket already created |
-| `echo '<json>' \| agent-tts mcp` (MCP one-shot) | 32-40 ms wall | n/a — process exits after stdin EOF | Cold-only by construction; spawn + JSON parse + 3 messages + socket call + serialize + exit |
-| MCP via real Claude Code session (persistent process) | ~30-40 ms first call | **~1-3 ms** estimate per `tools/call` (JSON parse + socket round-trip, no process boot) | Claude Code holds one `agent-tts mcp` open for the session — second call onward avoids the binary spawn cost |
+| `ptah "texto"` (CLI shell-out) | ~33 ms (process boot + socket connect + ack) | **0.2-0.4 ms** ack round-trip | Each invocation is a fresh process. Warm = arena cache + socket already created |
+| `echo '<json>' \| ptah mcp` (MCP one-shot) | 32-40 ms wall | n/a — process exits after stdin EOF | Cold-only by construction; spawn + JSON parse + 3 messages + socket call + serialize + exit |
+| MCP via real Claude Code session (persistent process) | ~30-40 ms first call | **~1-3 ms** estimate per `tools/call` (JSON parse + socket round-trip, no process boot) | Claude Code holds one `ptah mcp` open for the session — second call onward avoids the binary spawn cost |
 
 The headline is: **MCP per-tool-call overhead in a persistent session is ~3-5× the CLI warm path** (JSON-RPC framing vs raw TSV), and **the binary-spawn cost amortizes to zero** because the MCP process lives for the whole session. For a voice agent that fires once per assistant turn, both numbers are well under the human-perceptible threshold (~100 ms).
 
@@ -617,7 +617,7 @@ Methodology caveats: the "MCP one-shot wall" measurement above includes one cold
 
 Practical implication for installers:
 
-- **One-shot via shell** (`echo json | agent-tts mcp`) — fine for ad-hoc scripting and CI smoke tests. Don't loop it for throughput.
+- **One-shot via shell** (`echo json | ptah mcp`) — fine for ad-hoc scripting and CI smoke tests. Don't loop it for throughput.
 - **MCP client (Claude Code, Cursor, Cline)** — automatically gives you the persistent process, so warm tool-calls are ~1-3 ms.
 
 ---
@@ -628,12 +628,12 @@ Practical implication for installers:
 
 - `src/platform.zig` — central `Platform { macos, linux, windows }` enum + `current()` comptime resolver via `builtin.target.os.tag`. Unknown OS tags fail the build instead of the runtime
 - `src/tts.zig` — `spawnSay` becomes a per-platform comptime switch: macOS keeps `/usr/bin/say -v <voice> -r <rate>`, Linux spawns `espeak-ng -v pt-br -s <rate>`, Windows spawns `powershell -Command "Add-Type System.Speech; $s.Speak(...)"`. `mapLinuxVoice` translates macOS voice names (Luciana, Felipe, *Premium variants) to `pt-br` so callers that never set `--voice` still get a working pipeline. Pre-warm becomes a no-op on Linux/Windows (no equivalent to ANE voice cache)
-- `src/systemd.zig` — new module parallels `launchd.zig`. Renders a user unit (`Type=simple`, `Restart=on-failure`, `WantedBy=default.target`), writes atomically to `$XDG_CONFIG_HOME/systemd/user/agent-tts.service` (falls back to `$HOME/.config/systemd/user/`), drives `systemctl --user daemon-reload && enable --now` on install, `disable --now` + unit removal on uninstall, `systemctl --user status` proxy on status. Override unit name via `AGENT_TTS_SYSTEMD_UNIT`
+- `src/systemd.zig` — new module parallels `launchd.zig`. Renders a user unit (`Type=simple`, `Restart=on-failure`, `WantedBy=default.target`), writes atomically to `$XDG_CONFIG_HOME/systemd/user/ptah.service` (falls back to `$HOME/.config/systemd/user/`), drives `systemctl --user daemon-reload && enable --now` on install, `disable --now` + unit removal on uninstall, `systemctl --user status` proxy on status. Override unit name via `PTAH_SYSTEMD_UNIT`
 - `src/main.zig` — `daemon install|uninstall|status` dispatches via `comptime platform.current()`. macOS → `launchd.*`, Linux → `systemd.*`, Windows → prints an error + `exit(2)` (best-effort). HELP updated with per-platform sections. `VERSION = "1.3.0"`
 - `build.zig` — `configureExe` per-target audio backend wiring. miniaudio compile defines flip per platform (`MA_NO_COREAUDIO` on Linux, `MA_NO_ALSA`+`MA_NO_PULSEAUDIO` on Windows, etc). Linux links `libasound` (ALSA, lowest-common-denominator on Linux audio). Windows links `winmm` + `ole32`. macOS SDK probe stays macOS-only. PulseAudio uses miniaudio's runtime linking (no `libpulse-dev` at build time)
 - `build.zig.zon` — `.version = "1.3.0"`
 - `.github/workflows/ci.yml` — new `build-test-linux` job on `ubuntu-latest` installs `libsqlite3-dev` + `libasound2-dev` + `espeak-ng`, runs `zig build` + `zig build test`, smoke-tests the daemon + enqueue path. New `build-windows` job on `windows-latest` marked `continue-on-error: true` (compiles only; runtime untested)
-- `scripts/build-libpiper.sh` — detects `uname -s`, sets `LIB_EXT=dylib` on macOS, `LIB_EXT=so` on Linux, refuses anything else. cmake invocation is identical across hosts; the existing N_PATH_HOME=160 workaround (build under `/tmp/agent-tts-piper-build`) keeps the espeak-ng path-truncation gotcha solved on both
+- `scripts/build-libpiper.sh` — detects `uname -s`, sets `LIB_EXT=dylib` on macOS, `LIB_EXT=so` on Linux, refuses anything else. cmake invocation is identical across hosts; the existing N_PATH_HOME=160 workaround (build under `/tmp/ptah-piper-build`) keeps the espeak-ng path-truncation gotcha solved on both
 
 **Honest scope** — what is structural vs runtime-tested:
 
@@ -679,10 +679,10 @@ Cross-compiling from a macOS host to Linux fails at the **link** stage with `una
 - `src/detect.zig` — heuristic Pt/En language detector. Lowercase-tokenize, lookup against two ~50-entry stopword sets, short-fragment guard, mixed needs both sides ≥ 2 hits and ≥ 25 % of tokens, tie defaults to `.pt`. Deterministic, no allocations beyond a transient lowercase buffer, 11 unit tests covering empty / pure-Pt / pure-En / mixed / gibberish / one-word borrows / tie
 - `src/preproc.zig` — `splitByLang(arena, text, default_lang) → []Chunk` cuts the input on `. ! ? \n`, detects per sentence, coalesces adjacent same-lang runs. Existing v0.5 transforms still run per chunk after the split. 5 new unit tests
 - `src/piper.zig` — new `MultiPiperEngine` holds Pt + optional En `PiperEngine`. `initMulti(arena, pt, en?, espeak)` boots both voices; En slot stays `null` when its file isn't on disk (no crash). `synthLang(arena, text, .pt|.en)` dispatches per chunk; En unavailable silently falls back to Pt. Public `Route` enum so the daemon constructs the parameter explicitly (Zig 0.16 distinguishes anonymous enum literals by site)
-- `src/daemon.zig` — boots `MultiPiperEngine` when `AGENT_TTS_PIPER=1`. Probes the En voice file before passing the path so missing-En logs once with the install hint. Worker runs `splitByLang` per item, synths each chunk on the matching engine, concatenates PCM via `audio_player.streamS16le`. Single-chunk path matches v1.0 overhead exactly (one synth call)
+- `src/daemon.zig` — boots `MultiPiperEngine` when `PTAH_PIPER=1`. Probes the En voice file before passing the path so missing-En logs once with the install hint. Worker runs `splitByLang` per item, synths each chunk on the matching engine, concatenates PCM via `audio_player.streamS16le`. Single-chunk path matches v1.0 overhead exactly (one synth call)
 - `src/ipc.zig` — `Message.lang: Lang { auto, pt, en }` field. Wire format becomes `ENQUEUE\t<engine>\t<lang>\t<voice>\t<rate>\t<text>`. Backward compat: parser peeks the first token after `ENQUEUE` — if `Engine.fromStr` matches AND the next field matches `Lang.fromStr`, new v1.1 layout; else falls back to v0.7 (5-field) or v0.6 (4-field, no engine). 9 unit tests cover every layout + round-trip
 - `src/client.zig` — `--lang auto|pt|en` flag (default `auto`). HELP updated. Default voice flips per `--lang`: `faber` for `auto|pt`, `amy` for `en`. New 6-field ENQUEUE line writer
-- `scripts/fetch-voice-en.sh` — pulls `en_US-amy-medium.onnx` + `.onnx.json` from `huggingface.co/rhasspy/piper-voices` into `~/.cache/agent-tts/voices/`. Same shape as `fetch-voice.sh`. Voice license CC-BY-NC; we do NOT redistribute
+- `scripts/fetch-voice-en.sh` — pulls `en_US-amy-medium.onnx` + `.onnx.json` from `huggingface.co/rhasspy/piper-voices` into `~/.cache/ptah/voices/`. Same shape as `fetch-voice.sh`. Voice license CC-BY-NC; we do NOT redistribute
 - `src/main.zig` — `VERSION = "1.1.0"`. HELP rewritten with `--lang`. Header comment lists v1.1 closing the code-switch gap. `build.zig.zon` version bumped
 - `build.zig` — dedicated `addTest` steps for `detect.zig` (11) and `ipc.zig` (9) so `zig build test` exercises them explicitly. `preproc.zig` step still owns the 43 split + detect-imported tests it ran in v1.0
 
@@ -767,8 +767,8 @@ The v1.2 spec asked for true gapless playback (custom miniaudio `decoderReadProc
 
 **Shipped**:
 
-- `agent-tts voice clone --sample <wav> --name <slug>` — new subcommand. WAV header sniff (RIFF/WAVE magic + sample-rate + channels + bits-per-sample + data-chunk size). Sample duration must sit in `[20, 120]` seconds. Slug must match `[a-z0-9-]+`, 1-32 chars. Writes `~/.cache/agent-tts/voices/<slug>/embedding.npz` (via the Python sidecar) + `~/.cache/agent-tts/voices/<slug>/metadata.json` (written by Zig — keeps a structured record even if the sidecar partially fails)
-- `agent-tts voice list` — prints faber + each cloned voice with a one-line summary. Skips directories without a `metadata.json` (defensive against half-written clones)
+- `ptah voice clone --sample <wav> --name <slug>` — new subcommand. WAV header sniff (RIFF/WAVE magic + sample-rate + channels + bits-per-sample + data-chunk size). Sample duration must sit in `[20, 120]` seconds. Slug must match `[a-z0-9-]+`, 1-32 chars. Writes `~/.cache/ptah/voices/<slug>/embedding.npz` (via the Python sidecar) + `~/.cache/ptah/voices/<slug>/metadata.json` (written by Zig — keeps a structured record even if the sidecar partially fails)
+- `ptah voice list` — prints faber + each cloned voice with a one-line summary. Skips directories without a `metadata.json` (defensive against half-written clones)
 - `ipc.Engine` gains `cloned`. `parseRequest` accepts `ENQUEUE\tcloned\t<slug>\t<rate>\t<text>`. v0.6 4-field layout still backward-compatible (auto-falls-back to engine=`say`)
 - `daemon.runOne` routes `cloned` items through `scripts/voice_synth.py` via `std.process.Child`. Sidecar reads text on stdin, writes raw s16le mono 22050Hz PCM to stdout, which the daemon drains into a buffer and feeds `AudioPlayer.streamS16le` — same playback pipeline as Faber. If the embedding file is missing OR the sidecar exits non-zero, the worker logs + falls back: piper Faber when loaded, else `say` Luciana
 - `client.zig` resolves `--voice <slug>` implicitly: `faber` → piper, slug with a `metadata.json` on disk → cloned, anything else → say. Explicit `--engine` overrides
@@ -799,7 +799,7 @@ The v1.2 spec asked for true gapless playback (custom miniaudio `decoderReadProc
 - No ONNX export of the cloned voice. XTTS-v2 ONNX export is not production-stable (see [Coqui #4014](https://github.com/coqui-ai/TTS/discussions/4014)). v1.4 stays on the PyTorch path until that lands
 - The "only Zig" lifecycle constraint is **relaxed for the cloned engine only**. Faber + say remain pure Zig — no Python required to use the default v1.0 surface. See `docs/motor.md` "Cloned voices (v1.4)" for the licensing + lifecycle rationale
 
-**License note**: Coqui TTS is MPL-2.0. The Python sidecar runs as a separate process (`std.process.Child` from `daemon.zig::synthClonedViaSidecar`). The parent Zig binary remains dual MIT/Apache. The MPL boundary is the process line — no MPL code is linked or distributed inside `agent-tts`.
+**License note**: Coqui TTS is MPL-2.0. The Python sidecar runs as a separate process (`std.process.Child` from `daemon.zig::synthClonedViaSidecar`). The parent Zig binary remains dual MIT/Apache. The MPL boundary is the process line — no MPL code is linked or distributed inside `ptah`.
 
 ---
 
@@ -807,12 +807,12 @@ The v1.2 spec asked for true gapless playback (custom miniaudio `decoderReadProc
 
 **Shipped**:
 
-- `zig build universal` — new `build.zig` step that compiles two independent slices (`aarch64-macos` + `x86_64-macos`, ReleaseFast, libpiper OFF) and fuses them with `lipo -create` into `zig-out/bin/agent-tts-universal`
+- `zig build universal` — new `build.zig` step that compiles two independent slices (`aarch64-macos` + `x86_64-macos`, ReleaseFast, libpiper OFF) and fuses them with `lipo -create` into `zig-out/bin/ptah-universal`
 - Cross-compile fallback: `sdkRoot()` in `build.zig` locates the macOS SDK (CLT preferred, Xcode.app fallback) and adds library/include/framework paths for the cross-targets. Without it, Zig 0.16 fails the linker on `libsqlite3.tbd` and the `@cImport` on `sqlite3.h` for non-native targets
 - `build.zig.zon` version `1.0.0`, `src/main.zig` `VERSION = "1.0.0"`
-- `Formula/agent-tts.rb` — Homebrew formula with `depends_on "sqlite"` + `macos: :ventura`, `test do system "#{bin}/agent-tts", "--version" end`, and a header documenting the tap path `gabriel/tap` (placeholder — replace with the real tap once the repo exists)
+- `Formula/ptah.rb` — Homebrew formula with `depends_on "sqlite"` + `macos: :ventura`, `test do system "#{bin}/ptah", "--version" end`, and a header documenting the tap path `gabriel/tap` (placeholder — replace with the real tap once the repo exists)
 - `README.md` expanded with install sections (brew tap, source, launchd auto-start, optional libpiper)
-- Universal binary runs on both architectures via `arch -arm64` and `arch -x86_64` (Rosetta 2), each reporting `agent-tts 1.0.0`
+- Universal binary runs on both architectures via `arch -arm64` and `arch -x86_64` (Rosetta 2), each reporting `ptah 1.0.0`
 
 **Measurements** (Mac Air M4, ReleaseFast, libpiper OFF, baseline at `_qa/v1.0-baseline.md`):
 
@@ -832,7 +832,7 @@ The v1.2 spec asked for true gapless playback (custom miniaudio `decoderReadProc
 - Real TTFA (audio-device first-sample) not measured — dtruss requires SIP off, host runs SIP on. The 0.1ms ACK round-trip is a safe floor: the daemon responded before playback started. True TTFA sits between the pre-warm tail (~275ms) and bare-`say` spawn (~790ms)
 - Piper warm-path NOT measured in this v1.0 — depends on v0.7 (zaudio + engine routing), which is in flight in parallel. When v0.7 closes, `_qa/v0.7-baseline.md` publishes the number
 - Native Intel Mac untested (no hardware available). Cross-arch sanity validated via `arch -x86_64` (Rosetta 2): the x86_64 slice runs and reports the right version
-- `brew install gabriel/tap/agent-tts` still fails — `gabriel/tap` is a placeholder, and the `url`/`sha256` in the Formula are placeholders until the first release tarball is published on GitHub with a computed hash
+- `brew install gabriel/tap/ptah` still fails — `gabriel/tap` is a placeholder, and the `url`/`sha256` in the Formula are placeholders until the first release tarball is published on GitHub with a computed hash
 
 **Cross-compile gotcha (Zig 0.16)**:
 
@@ -877,7 +877,7 @@ Zig 0.16 auto-resolves macOS SDK paths only for the native target. For cross-tar
 - Upstream zaudio (`zig-gamedev/zaudio`) still uses `linkLibC()` (removed in Zig 0.16); we vendored `.zig` + `.c` in `vendor/zaudio/` instead of forking. Recipe in `vendor/README.md`. When upstream catches up, swap to a `build.zig.zon` dependency
 - AudioPlayer uses `AudioBuffer` (one allocation per utterance) instead of a custom streaming `decoderReadProc`. Simpler; synth dominates TTFA, so optimizing playback overhead doesn't move the needle
 - `say` TTFA stays not-truly-instrumented. Accepted for v0.7 — the daemon warm-voice path has been documented sub-100ms since v0.2
-- Daemon RSS jumps from ~30 MB to 176 MB once piper loads. Price of keeping ONNX runtime + Faber-medium tensors warm. User opts in via `AGENT_TTS_PIPER=1`
+- Daemon RSS jumps from ~30 MB to 176 MB once piper loads. Price of keeping ONNX runtime + Faber-medium tensors warm. User opts in via `PTAH_PIPER=1`
 - `runPiper` registers the daemon's own PID as "playing" (SKIP can't cancel in-flight piper synth — only playback). Trade-off accepted; synth lasts 90ms so users rarely want to SKIP mid-flight
 
 **Build gotcha**:
@@ -886,7 +886,7 @@ Zig 0.16 auto-resolves macOS SDK paths only for the native target. For cross-tar
 - `linkLibC()` became `link_libc = true` in the module config. That's why we don't use upstream's build.zig.zon
 - The original daemon imported `piper.zig` unconditionally; @cImport piper.h fails with `-Dwith-piper=false`. Fix: `piper_mod` is a conditional comptime alias
 
-**License**: GPL-3.0 inherited from libpiper + espeak-ng when agent-tts is distributed with the dylib. zaudio is MIT. Net: GPL only because of Piper.
+**License**: GPL-3.0 inherited from libpiper + espeak-ng when ptah is distributed with the dylib. zaudio is MIT. Net: GPL only because of Piper.
 
 ---
 
@@ -897,9 +897,9 @@ Zig 0.16 auto-resolves macOS SDK paths only for the native target. For cross-tar
 - Vendor build of `libpiper.dylib` from [OHF-Voice/piper1-gpl](https://github.com/OHF-Voice/piper1-gpl) tag v1.4.2 (static espeak-ng + ONNX Runtime 1.22.0 pulled by the project's CMake). Reproducible recipe in `vendor/README.md`, source gitignored
 - `src/piper.zig` — `PiperEngine` struct via `@cImport piper.h`: `init(voice_path, espeak_data_path)` loads the model, `synthToWav(io, text, out_path)` synthesizes and writes PCM s16le mono WAV
 - `build.zig` — `-Dwith-piper=true` option links `libpiper` + `c++` with `rpath` to `vendor/.../dist/lib/`. Default OFF keeps the binary slim for users on `say` only
-- Experimental `agent-tts piper-test "<text>" <out.wav>` subcommand bypasses the daemon and measures init + cold synth
-- Optional daemon boot: `AGENT_TTS_PIPER=1 agent-tts daemon` loads `PiperEngine` next to Luciana pre-warm — engine stays resident but v0.6 does NOT route playback yet (v0.7 does that with zaudio)
-- `pt_BR-faber-medium.onnx` (63MB) voice downloaded to `~/.cache/agent-tts/voices/`
+- Experimental `ptah piper-test "<text>" <out.wav>` subcommand bypasses the daemon and measures init + cold synth
+- Optional daemon boot: `PTAH_PIPER=1 ptah daemon` loads `PiperEngine` next to Luciana pre-warm — engine stays resident but v0.6 does NOT route playback yet (v0.7 does that with zaudio)
+- `pt_BR-faber-medium.onnx` (63MB) voice downloaded to `~/.cache/ptah/voices/`
 
 **Measurements** (Mac Air M4, ReleaseFast, baseline at `_qa/v0.6-baseline.md`):
 
@@ -919,7 +919,7 @@ Short hits the target; long misses cold by 200ms. v0.7 kills the init cost by re
 
 **Build gotcha**: espeak-ng defines `N_PATH_HOME=160` and the absolute path of the vault worktree (>160 chars) silently truncates filenames while compiling phonemes. Workaround: build in `/tmp/piper-build` and symlink `vendor/.../libpiper/build`. Documented in `vendor/README.md`.
 
-**License**: GPL-3.0 inherited from libpiper + espeak-ng when agent-tts ships with the dylib. Public license decision is deferred to v1.0 (brew tap).
+**License**: GPL-3.0 inherited from libpiper + espeak-ng when ptah ships with the dylib. Public license decision is deferred to v1.0 (brew tap).
 
 ---
 
@@ -961,15 +961,15 @@ Budget was < 1ms per message; we shipped 200× under. Zero TTFA-regression risk.
 
 **Shipped**:
 
-- `agent-tts daemon install | uninstall | status` subcommands
-- LaunchAgent plist at `~/Library/LaunchAgents/cloud.mukutu.agent-tts.plist` — daemon survives logout/reboot
+- `ptah daemon install | uninstall | status` subcommands
+- LaunchAgent plist at `~/Library/LaunchAgents/cloud.mukutu.ptah.plist` — daemon survives logout/reboot
 - Atomic plist write via `createFileAtomic` + `replace` (the kernel only sees old or new, never half-written)
 - `launchctl bootstrap gui/<uid>` on install (replaces the deprecated `launchctl load`); `bootout` on uninstall
 - `KeepAlive` as a dict `SuccessfulExit=false` — restart only on crash
 - `HOME` forced via `EnvironmentVariables` — launchd doesn't inherit it reliably
 - Self-locate via `std.process.executablePath` (Darwin: `_NSGetExecutablePath` + realpath)
 - uid lookup via `std.c.getuid()` to build the `gui/<uid>` domain
-- Label override via `AGENT_TTS_LAUNCHD_LABEL` env — used by the dry-run test
+- Label override via `PTAH_LAUNCHD_LABEL` env — used by the dry-run test
 - Guards: install refuses if the plist already exists, uninstall refuses if it doesn't
 
 **Measurements** (Mac Air M4, dry-run with test label, baseline at `_qa/v0.4-baseline.md`):
@@ -990,10 +990,10 @@ Dominated by the fork+exec of `/bin/launchctl`. macOS `/usr/bin/time` granularit
 
 **Shipped**:
 
-- Queue migrated from in-memory `ArrayList` to **SQLite WAL** at `~/.cache/agent-tts/queue.db` — survives daemon crash + reboot
+- Queue migrated from in-memory `ArrayList` to **SQLite WAL** at `~/.cache/ptah/queue.db` — survives daemon crash + reboot
 - Schema `items(id, text, voice, rate, state, enqueued_at, started_at, finished_at)` + partial index on `state IN ('pending','playing')`
 - Boot-time crash recovery: `UPDATE state='pending' WHERE state='playing'` re-promotes orphans
-- 3 new subcommands: `agent-tts queue` (lists pending+playing), `skip` (SIGTERM on the current `say`), `clear` (marks pendings as skipped)
+- 3 new subcommands: `ptah queue` (lists pending+playing), `skip` (SIGTERM on the current `say`), `clear` (marks pendings as skipped)
 - IPC protocol extended: `ENQUEUE` (same as v0.2) + `QUEUE`, `SKIP`, `CLEAR` + `ITEM\t...\n` response + `END\n`
 - Worker rewritten: drains via SQLite, registers the child PID before `wait()`, SKIP sends SIGTERM to the saved PID
 - `@cImport(sqlite3.h)` + `linkSystemLibrary("sqlite3", .{})` — uses the macOS SDK's libsqlite3
@@ -1013,14 +1013,14 @@ The "queue survives daemon crash" criterion holds: killing daemon + `say` mid-ut
 
 ## Benchmark interlude · 2026-06-03
 
-Before coding v0.3, I spent a session benchmarking alternative engines to fix Pt+En code-switching. Conclusions in [TTS engine](/agent-tts/motor/). Summary:
+Before coding v0.3, I spent a session benchmarking alternative engines to fix Pt+En code-switching. Conclusions in [TTS engine](/ptah/motor/). Summary:
 
 - Piper Faber via Python — Pt-only, rejected
 - XTTS-v2 multilingual via Python — 27s/call from the CLI, Python sidecar rejected by the "only Zig" constraint
 - Decision: **libpiper FFI** (from OHF-Voice/piper1-gpl) lands as v0.6-v0.7, brings the Faber voice + native ONNX runtime via `@cImport`, `PiperEngine` owner struct, zaudio for PCM streaming
 - EN code-switching stays unsolved until v1.1+ (mature multilingual ONNX)
 
-Cleanup: 3.2GB freed (XTTS-v2 venv + model + uv cache). The `pt_BR-faber-medium.onnx` voice (63MB) is kept in `~/.cache/agent-tts/voices/` for v0.6+.
+Cleanup: 3.2GB freed (XTTS-v2 venv + model + uv cache). The `pt_BR-faber-medium.onnx` voice (63MB) is kept in `~/.cache/ptah/voices/` for v0.6+.
 
 ---
 
@@ -1028,7 +1028,7 @@ Cleanup: 3.2GB freed (XTTS-v2 venv + model + uv cache). The `pt_BR-faber-medium.
 
 **Shipped**:
 
-- Foreground daemon (`agent-tts daemon`) with a UNIX socket at `~/.cache/agent-tts/sock`
+- Foreground daemon (`ptah daemon`) with a UNIX socket at `~/.cache/ptah/sock`
 - Thread-safe in-memory queue (`std.Io.Mutex` + `std.Io.Condition` + `std.ArrayList`)
 - Single worker thread drains the queue by calling `say` — playback serialized, never parallel
 - Boot-time pre-warm of the Luciana voice (`say -v Luciana " "`)
@@ -1052,7 +1052,7 @@ Roadmap target was warm TTFA <400ms. ACK round-trip <100µs lands 4000× under t
 **Shipped**:
 
 - Zig 0.16 single-binary CLI, 415KB arm64 ReleaseFast
-- `agent-tts "text"` calls `say -v Luciana -r 330` directly
+- `ptah "text"` calls `say -v Luciana -r 330` directly
 - Flags `--voice NAME --rate WPM -h --help -V --version`
 - Default voice **Luciana**, default rate **330wpm** (sweet spot picked by ear — 180 too slow, 430 too dry)
 

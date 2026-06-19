@@ -34,7 +34,7 @@ jobs:
       - run: npm run build
         env:
           SITE: https://biliboss.github.io
-          BASE: /agent-tts
+          BASE: /ptah
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:

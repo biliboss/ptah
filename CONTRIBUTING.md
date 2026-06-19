@@ -1,4 +1,4 @@
-# Contributing to agent-tts
+# Contributing to ptah
 
 Thanks for hacking on a Pt-BR TTS CLI. Inner loop is fast, KPI is real, scope is tight.
 
@@ -10,8 +10,8 @@ Requires:
 - Node 22+ for the docs site (`npm` ships with Node)
 
 ```bash
-git clone https://github.com/biliboss/agent-tts.git
-cd agent-tts
+git clone https://github.com/biliboss/ptah.git
+cd ptah
 zig build                  # debug
 zig build test --summary all
 ```
@@ -28,13 +28,13 @@ zig build -Doptimize=ReleaseFast -Dwith-piper=true
 
 | Command | What it does |
 |---------|--------------|
-| `zig build` | debug build → `zig-out/bin/agent-tts` |
+| `zig build` | debug build → `zig-out/bin/ptah` |
 | `zig build -Doptimize=ReleaseFast` | release build, ~918KB without piper, ~975KB with |
 | `zig build test --summary all` | 27 tests (preproc + root + launchd) |
 | `zig fmt --check src build.zig` | lint |
 | `zig build universal` | arm64 + x86_64 fused via `lipo -create` |
 | `zig build bench-preproc` | microbench preprocessor (1000 iter per case) |
-| `npm run dev` | Astro docs at `agent-tts.test` via puma-dev (random port) |
+| `npm run dev` | Astro docs at `ptah.test` via puma-dev (random port) |
 | `npm run build` | static docs → `dist/` |
 
 ## File layout

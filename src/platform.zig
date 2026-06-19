@@ -38,7 +38,7 @@ pub fn current() Platform {
         .macos => .macos,
         .linux => .linux,
         .windows => .windows,
-        else => @compileError("agent-tts: unsupported target OS '" ++ @tagName(builtin.target.os.tag) ++ "'"),
+        else => @compileError("ptah: unsupported target OS '" ++ @tagName(builtin.target.os.tag) ++ "'"),
     };
 }
 

@@ -26,6 +26,6 @@ Unacceptable behavior:
 
 ## Enforcement
 
-Instances of abusive, harassing, or otherwise unacceptable behavior may be reported to the project maintainers via [GitHub private security advisory](https://github.com/biliboss/agent-tts/security/advisories/new). All complaints will be reviewed and investigated promptly and fairly.
+Instances of abusive, harassing, or otherwise unacceptable behavior may be reported to the project maintainers via [GitHub private security advisory](https://github.com/biliboss/ptah/security/advisories/new). All complaints will be reviewed and investigated promptly and fairly.
 
 Full text and enforcement guidelines: <https://www.contributor-covenant.org/version/2/1/code_of_conduct/>.

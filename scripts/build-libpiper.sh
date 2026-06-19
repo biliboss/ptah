@@ -18,14 +18,14 @@
 #
 # Gotcha: espeak-ng caps phoneme source paths at N_PATH_HOME=160. Long absolute
 # paths (>160 chars) silently truncate filenames during cmake. We build in
-# /tmp/agent-tts-piper-build and symlink the result into vendor/.
+# /tmp/ptah-piper-build and symlink the result into vendor/.
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 VENDOR_DIR="$REPO_ROOT/vendor/piper1-gpl"
-BUILD_ROOT="/tmp/agent-tts-piper-build"
+BUILD_ROOT="/tmp/ptah-piper-build"
 PIPER_TAG="v1.4.2"   # pinned in CI; bump deliberately
 
 # v1.3 — Per-platform shared-library extension. macOS = .dylib, Linux = .so.

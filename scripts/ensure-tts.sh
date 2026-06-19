@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ensure-tts.sh — idempotent guarantee that agent-tts can speak:
+# ensure-tts.sh — idempotent guarantee that ptah can speak:
 #   1. libpiper.dylib exists at the vendor path the binary expects
 #   2. faber pt voice is installed
 #   3. daemon socket is live
@@ -9,13 +9,13 @@
 
 set -euo pipefail
 
-REPO="$HOME/.obsidian/99-development/agent-tts"
+REPO="$HOME/.obsidian/99-development/ptah"
 VENDOR_LIB="$REPO/vendor/piper1-gpl/libpiper/dist/lib"
 DYLIB="$VENDOR_LIB/libpiper.dylib"
-SOCK="$HOME/.cache/agent-tts/sock"
-VOICE_DIR="$HOME/.cache/agent-tts/voices"
+SOCK="$HOME/.cache/ptah/sock"
+VOICE_DIR="$HOME/.cache/ptah/voices"
 FABER_ONNX="$VOICE_DIR/pt_BR-faber-medium.onnx"
-LOG_DIR="$HOME/.cache/agent-tts"
+LOG_DIR="$HOME/.cache/ptah"
 LOG_FILE="$LOG_DIR/ensure.log"
 
 mkdir -p "$LOG_DIR"
@@ -45,10 +45,10 @@ else
   log "libpiper.dylib present"
 fi
 
-# Sanity: can the agent-tts binary load it?
-if ! /opt/homebrew/bin/agent-tts --version >/dev/null 2>&1; then
-  log "ERROR: agent-tts binary still cannot link libpiper.dylib"
-  /opt/homebrew/bin/agent-tts --version 2>>"$LOG_FILE" || true
+# Sanity: can the ptah binary load it?
+if ! /opt/homebrew/bin/ptah --version >/dev/null 2>&1; then
+  log "ERROR: ptah binary still cannot link libpiper.dylib"
+  /opt/homebrew/bin/ptah --version 2>>"$LOG_FILE" || true
   exit 1
 fi
 
@@ -77,10 +77,10 @@ fi
 if [[ "${1:-}" == "--exec" ]]; then
   log "exec'ing daemon (launchd mode)"
   rm -f "$SOCK"
-  exec /opt/homebrew/bin/agent-tts daemon
+  exec /opt/homebrew/bin/ptah daemon
 fi
 
-if [[ -S "$SOCK" ]] && /opt/homebrew/bin/agent-tts queue >/dev/null 2>&1; then
+if [[ -S "$SOCK" ]] && /opt/homebrew/bin/ptah queue >/dev/null 2>&1; then
   log "daemon already responding on $SOCK"
   exit 0
 fi
@@ -88,13 +88,13 @@ fi
 log "daemon not responsive — starting (background mode)"
 rm -f "$SOCK"
 
-nohup /opt/homebrew/bin/agent-tts daemon \
+nohup /opt/homebrew/bin/ptah daemon \
   >>"$LOG_DIR/daemon.out.log" 2>>"$LOG_DIR/daemon.err.log" &
 DAEMON_PID=$!
 log "spawned daemon pid=$DAEMON_PID"
 
 for i in {1..20}; do
-  if [[ -S "$SOCK" ]] && /opt/homebrew/bin/agent-tts queue >/dev/null 2>&1; then
+  if [[ -S "$SOCK" ]] && /opt/homebrew/bin/ptah queue >/dev/null 2>&1; then
     log "daemon up after ${i}x0.5s"
     exit 0
   fi

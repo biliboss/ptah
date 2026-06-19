@@ -2,19 +2,19 @@
 // systemd user-unit integration (Linux auto-start) — v1.3.
 //
 // Parallels launchd.zig. Writes a per-user unit to
-// `$XDG_CONFIG_HOME/systemd/user/agent-tts.service` (falling back to
+// `$XDG_CONFIG_HOME/systemd/user/ptah.service` (falling back to
 // `$HOME/.config/systemd/user/`) and drives the lifecycle via
 // `systemctl --user`. Same install / uninstall / status surface so
-// `agent-tts daemon install` reads the same on Linux as on macOS.
+// `ptah daemon install` reads the same on Linux as on macOS.
 //
-// Unit path: $XDG_CONFIG_HOME/systemd/user/agent-tts.service
-// Unit name: agent-tts.service  (override via AGENT_TTS_SYSTEMD_UNIT —
-//            same role as AGENT_TTS_LAUNCHD_LABEL on macOS)
+// Unit path: $XDG_CONFIG_HOME/systemd/user/ptah.service
+// Unit name: ptah.service  (override via PTAH_SYSTEMD_UNIT —
+//            same role as PTAH_LAUNCHD_LABEL on macOS)
 //
 // Three subcommands wire in from main.zig:
-//   agent-tts daemon install    → write unit + systemctl --user enable --now
-//   agent-tts daemon uninstall  → systemctl --user disable --now + delete unit
-//   agent-tts daemon status     → systemctl --user status agent-tts
+//   ptah daemon install    → write unit + systemctl --user enable --now
+//   ptah daemon uninstall  → systemctl --user disable --now + delete unit
+//   ptah daemon status     → systemctl --user status ptah
 //
 // Constraints (mirror launchd.zig):
 //   - Unit write is atomic: createFileAtomic into the unit dir then replace().
@@ -33,8 +33,8 @@
 
 const std = @import("std");
 
-pub const DEFAULT_UNIT = "agent-tts.service";
-pub const UNIT_ENV = "AGENT_TTS_SYSTEMD_UNIT";
+pub const DEFAULT_UNIT = "ptah.service";
+pub const UNIT_ENV = "PTAH_SYSTEMD_UNIT";
 
 const Paths = struct {
     unit: []const u8,
@@ -62,7 +62,7 @@ fn computePaths(
     } else try std.fmt.allocPrint(arena, "{s}/.config/systemd/user", .{home});
 
     const unit_abs = try std.fmt.allocPrint(arena, "{s}/{s}", .{ unit_dir, unit });
-    const cache_dir = try std.fmt.allocPrint(arena, "{s}/.cache/agent-tts", .{home});
+    const cache_dir = try std.fmt.allocPrint(arena, "{s}/.cache/ptah", .{home});
     return .{
         .unit = unit,
         .unit_dir = unit_dir,
@@ -80,7 +80,7 @@ fn resolveExePath(arena: std.mem.Allocator, io: std.Io) ![]u8 {
 // Render the unit file. Restart=on-failure mirrors the launchd KeepAlive=
 // {SuccessfulExit=false} contract: clean exit stays down, crash recovers.
 // StandardOutput / StandardError go to journald — `journalctl --user -u
-// agent-tts` is the canonical debugging path on Linux.
+// ptah` is the canonical debugging path on Linux.
 fn renderUnit(
     arena: std.mem.Allocator,
     exe_path: []const u8,
@@ -89,8 +89,8 @@ fn renderUnit(
 ) ![]u8 {
     return std.fmt.allocPrint(arena,
         \\[Unit]
-        \\Description=agent-tts daemon (Pt-BR TTS)
-        \\Documentation=https://biliboss.github.io/agent-tts/
+        \\Description=ptah daemon (Pt-BR TTS)
+        \\Documentation=https://biliboss.github.io/ptah/
         \\After=default.target sound.target
         \\
         \\[Service]
@@ -331,7 +331,7 @@ pub fn renderUnitForTest(
     exe_path: []const u8,
     home: []const u8,
 ) ![]u8 {
-    const cache_dir = try std.fmt.allocPrint(arena, "{s}/.cache/agent-tts", .{home});
+    const cache_dir = try std.fmt.allocPrint(arena, "{s}/.cache/ptah", .{home});
     return renderUnit(arena, exe_path, home, cache_dir);
 }
 
@@ -343,14 +343,14 @@ test "renderUnit contains required sections" {
 
     const text = try renderUnitForTest(
         arena,
-        "/home/test/bin/agent-tts",
+        "/home/test/bin/ptah",
         "/home/test",
     );
 
     try std.testing.expect(std.mem.indexOf(u8, text, "[Unit]") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "[Service]") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "[Install]") != null);
-    try std.testing.expect(std.mem.indexOf(u8, text, "ExecStart=/home/test/bin/agent-tts daemon") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "ExecStart=/home/test/bin/ptah daemon") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "Restart=on-failure") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "WantedBy=default.target") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "Environment=HOME=/home/test") != null);
@@ -368,10 +368,10 @@ test "computePaths honours XDG_CONFIG_HOME" {
     defer arena_state.deinit();
     const arena = arena_state.allocator();
 
-    const with_xdg = try computePaths(arena, "/home/test", "/home/test/.cfg", "agent-tts.service");
+    const with_xdg = try computePaths(arena, "/home/test", "/home/test/.cfg", "ptah.service");
     try std.testing.expectEqualStrings("/home/test/.cfg/systemd/user", with_xdg.unit_dir);
-    try std.testing.expectEqualStrings("/home/test/.cfg/systemd/user/agent-tts.service", with_xdg.unit_abs);
+    try std.testing.expectEqualStrings("/home/test/.cfg/systemd/user/ptah.service", with_xdg.unit_abs);
 
-    const fallback = try computePaths(arena, "/home/test", null, "agent-tts.service");
+    const fallback = try computePaths(arena, "/home/test", null, "ptah.service");
     try std.testing.expectEqualStrings("/home/test/.config/systemd/user", fallback.unit_dir);
 }

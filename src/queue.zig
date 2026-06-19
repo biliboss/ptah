@@ -5,7 +5,7 @@
 //
 // Why SQLite instead of in-memory ArrayList:
 //   - Survives daemon crash + reboot (was v0.2 gap)
-//   - Enables `agent-tts queue` (read pending while worker drains)
+//   - Enables `ptah queue` (read pending while worker drains)
 //   - WAL mode = single-writer (worker) never blocks readers (queue cmd)
 //
 // Concurrency model:
@@ -544,7 +544,7 @@ pub const Queue = struct {
     }
 
     /// v1.10.2 — SELECT the last `limit` rows regardless of state. Most
-    /// recent first. Used by the new `HISTORY` IPC op and the `agent-tts
+    /// recent first. Used by the new `HISTORY` IPC op and the `ptah
     /// history` client subcommand. Slices live in `arena` so callers can
     /// release everything by dropping the arena.
     ///

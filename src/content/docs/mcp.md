@@ -1,11 +1,11 @@
 ---
 title: MCP server
-description: Native Claude Code / Cursor / Cline voice — agent-tts speaks via stdio JSON-RPC since v1.5, 13 tools as of v1.10.13.
+description: Native Claude Code / Cursor / Cline voice — ptah speaks via stdio JSON-RPC since v1.5, 13 tools as of v1.10.13.
 ---
 
 ## TL;DR
 
-`agent-tts mcp` runs a stdio JSON-RPC 2.0 server that exposes the daemon to any [Model Context Protocol](https://modelcontextprotocol.io) client. Claude Code, Cursor, Cline, Continue — same wire, same **13 tools** as of v1.10.13. Curated knob+post-fx discovery (`tech_profile_search`) landed in v1.10.9 / v1.10.10, on top of the v1.10.7 / v1.10.8 per-call Piper knobs and the v1.10.2 player ops. No shell-out, no permission prompt per call, no stdout parsing.
+`ptah mcp` runs a stdio JSON-RPC 2.0 server that exposes the daemon to any [Model Context Protocol](https://modelcontextprotocol.io) client. Claude Code, Cursor, Cline, Continue — same wire, same **13 tools** as of v1.10.13. Curated knob+post-fx discovery (`tech_profile_search`) landed in v1.10.9 / v1.10.10, on top of the v1.10.7 / v1.10.8 per-call Piper knobs and the v1.10.2 player ops. No shell-out, no permission prompt per call, no stdout parsing.
 
 Bundled in the same Zig binary as the CLI and the daemon. `+115 KB` over v1.0. Tools only — `prompts/`, `resources/`, `sampling/` are deferred and remain so through v1.10.13.
 
@@ -16,8 +16,8 @@ Canonical Claude Code config — paste into `~/.claude.json` (or your MCP client
 ```json
 {
   "mcpServers": {
-    "agent-tts": {
-      "command": "/opt/homebrew/bin/agent-tts",
+    "ptah": {
+      "command": "/opt/homebrew/bin/ptah",
       "args": ["mcp"]
     }
   }
@@ -27,7 +27,7 @@ Canonical Claude Code config — paste into `~/.claude.json` (or your MCP client
 One-shot via the Claude Code CLI (project-scoped — checks the config into `.mcp.json` in the repo):
 
 ```bash
-claude mcp add agent-tts /opt/homebrew/bin/agent-tts mcp --scope project
+claude mcp add ptah /opt/homebrew/bin/ptah mcp --scope project
 ```
 
 Or use the bundled installer that merges into `~/.claude.json` idempotently with a backup:
@@ -39,7 +39,7 @@ Or use the bundled installer that merges into `~/.claude.json` idempotently with
 The installer refuses to touch a JSON file that does not parse as an object. Restart Claude Code (or your client) so it picks up the new server. Verify:
 
 ```bash
-echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | agent-tts mcp
+echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | ptah mcp
 ```
 
 You should get back a single JSON line listing the 13 tools.
@@ -52,7 +52,7 @@ You should get back a single JSON line listing the 13 tools.
 | `queue` | list pending + playing items | none | `{ items: [...] }` |
 | `skip` | skip the currently playing item | `{ id? }` (currently ignored — always skips the head) | `{ skipped_id }` (0 = nothing was playing) |
 | `clear` | drop all pending items | none | `{ cleared_count }` |
-| `voices` | list installed voices for `say` + piper ONNX models in `~/.cache/agent-tts/voices/` | none | `{ voices: [...] }` |
+| `voices` | list installed voices for `say` + piper ONNX models in `~/.cache/ptah/voices/` | none | `{ voices: [...] }` |
 | `say_stream` (v1.7+) | streaming chunk-by-chunk enqueue; sentences flush as terminators arrive | `stream_id`, `chunk`, `final?`, `engine?`, `voice?`, `rate?` | `{ enqueued_count, final }` |
 | `pause` (v1.10.2+) | pause the active piper / cloned playback | none | `{ paused_id }` (0 = nothing playing) |
 | `resume` (v1.10.2+) | resume a paused item | none | `{ resumed_id }` (0 = not paused) |
@@ -75,13 +75,13 @@ Each tool is a thin shim over the same UNIX socket the CLI uses. Tool-level erro
 | `broadcast` | 1.00 | 0.50 | 0.60 | balanced read for narrated release notes |
 | `expressive` | 1.10 | 0.80 | 1.00 | wider prosody range — better for marketing copy, worse for acronyms |
 
-Each profile is enqueued **twice** — once dry (`postfx=off`) and once with the v1.10.10 research-anchored chain (`postfx=tech` = RNNoise + 4-band EQ + de-esser + 2:1 compressor). The returned `comment` is `"<profile> + postfx=<mode>"` so a caller can A/B both knob AND post-fx in one round-trip. See [motor → Audio post-processing](/agent-tts/motor/#audio-post-processing-v11010) for the exact ffmpeg filter graphs and the RNNoise model install.
+Each profile is enqueued **twice** — once dry (`postfx=off`) and once with the v1.10.10 research-anchored chain (`postfx=tech` = RNNoise + 4-band EQ + de-esser + 2:1 compressor). The returned `comment` is `"<profile> + postfx=<mode>"` so a caller can A/B both knob AND post-fx in one round-trip. See [motor → Audio post-processing](/ptah/motor/#audio-post-processing-v11010) for the exact ffmpeg filter graphs and the RNNoise model install.
 
 ### v1.10.10 — `postfx` on `say` and `synth_voice_test`
 
-Both tools accept an optional `postfx` enum routing the synth PCM through an ffmpeg subprocess before zaudio plays it. Values: `off` (default — dry path) / `clean` (highpass + light comp) / `tech` (RNNoise + EQ + de-esser + 2:1 comp) / `broadcast` (EQ + de-esser + 3:1 comp). ffmpeg must be on `PATH` (or at `$AGENT_TTS_FFMPEG_PATH`); when missing the chain falls back to dry PCM silently. RNNoise also needs a model at `$AGENT_TTS_POSTFX_RNNN_MODEL` or `~/.cache/agent-tts/rnnoise/cb.rnnn`.
+Both tools accept an optional `postfx` enum routing the synth PCM through an ffmpeg subprocess before zaudio plays it. Values: `off` (default — dry path) / `clean` (highpass + light comp) / `tech` (RNNoise + EQ + de-esser + 2:1 comp) / `broadcast` (EQ + de-esser + 3:1 comp). ffmpeg must be on `PATH` (or at `$PTAH_FFMPEG_PATH`); when missing the chain falls back to dry PCM silently. RNNoise also needs a model at `$PTAH_POSTFX_RNNN_MODEL` or `~/.cache/ptah/rnnoise/cb.rnnn`.
 
-> v1.10.13 fixed a postfx two-pipe deadlock — the stdin write and stdout drain now run concurrently with a 5-second watchdog (`AGENT_TTS_POSTFX_TIMEOUT_MS`). Postfx calls are safe to drive at queue depth ≥10 again.
+> v1.10.13 fixed a postfx two-pipe deadlock — the stdin write and stdout drain now run concurrently with a 5-second watchdog (`PTAH_POSTFX_TIMEOUT_MS`). Postfx calls are safe to drive at queue depth ≥10 again.
 
 ### v1.10.7 — Per-call Piper knobs on `say`
 
@@ -132,7 +132,7 @@ Sample:
 
 ```json
 → {"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}
-← {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05","capabilities":{"tools":{"listChanged":false}},"serverInfo":{"name":"agent-tts","version":"1.10.13"}}}
+← {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05","capabilities":{"tools":{"listChanged":false}},"serverInfo":{"name":"ptah","version":"1.10.13"}}}
 ```
 
 `tools/list` — enumerate the 13 tools (order: `say`, `queue`, `skip`, `clear`, `voices`, `say_stream`, `pause`, `resume`, `replay`, `history`, `synth_voice_test`, `voice_knob_search`, `tech_profile_search`):
@@ -179,14 +179,14 @@ Tool error path — daemon not running:
 
 ## Claude Code walkthrough
 
-1. Build + install agent-tts:
+1. Build + install ptah:
    ```bash
    zig build -Doptimize=ReleaseFast -Dwith-piper=true
-   cp zig-out/bin/agent-tts /opt/homebrew/bin/
-   agent-tts daemon install   # autostart at login
+   cp zig-out/bin/ptah /opt/homebrew/bin/
+   ptah daemon install   # autostart at login
    ```
-2. Register the MCP server (paste the snippet above into `~/.claude.json`, or run `./scripts/install-mcp.sh`, or `claude mcp add agent-tts /opt/homebrew/bin/agent-tts mcp --scope project`).
-3. Restart Claude Code. All 13 tools show up under the `agent-tts` server.
+2. Register the MCP server (paste the snippet above into `~/.claude.json`, or run `./scripts/install-mcp.sh`, or `claude mcp add ptah /opt/homebrew/bin/ptah mcp --scope project`).
+3. Restart Claude Code. All 13 tools show up under the `ptah` server.
 4. Ask Claude to use one: *"Use tech_profile_search to read this release-note paragraph in Portuguese — I want to pick the best knob+post-fx combo."* The agent will enqueue the 4×2 matrix and report back the 8 ids.
 
 The daemon does the actual synthesis — the MCP server is a stateless bridge. Killing the MCP process between calls is fine; Claude Code spawns one per session.
@@ -197,16 +197,16 @@ The daemon does the actual synthesis — the MCP server is a stateless bridge. K
 |------------|--------|-----|
 | `prompts/*` | not implemented | voice agents do not need prompt templates |
 | `resources/*` | not implemented | the daemon owns no addressable content |
-| `sampling/*` | not implemented | nothing in agent-tts asks the LLM to think |
-| `logging/*` | not implemented | daemon logs land in `~/.cache/agent-tts/daemon.log` (v1.10.13 rotating sink) already |
+| `sampling/*` | not implemented | nothing in ptah asks the LLM to think |
+| `logging/*` | not implemented | daemon logs land in `~/.cache/ptah/daemon.log` (v1.10.13 rotating sink) already |
 | `notifications/tools/list_changed` | declared off (`listChanged: false`) | tool list never changes mid-session |
 | `skip(id)` | argument accepted, ignored | the daemon's SKIP only targets the head; per-id skip pending |
 | `voices` enumerating all installed `say` voices | hardcoded to Luciana + Felipe | `say -v ?` would cost a process per call |
-| End-to-end test against a real Claude Code | partial | scaffolded via `echo | agent-tts mcp` smoke tests; full client validation done for `say`/`queue`/`history`/`pause` in v1.10.2 live session |
+| End-to-end test against a real Claude Code | partial | scaffolded via `echo | ptah mcp` smoke tests; full client validation done for `say`/`queue`/`history`/`pause` in v1.10.2 live session |
 
 ## Related
 
-- [Architecture](/agent-tts/arquitetura/) — MCP server slots into "Components"
-- [Motor](/agent-tts/motor/) — `postfx=tech` filter graph + RNNoise model wiring
-- [Changelog](/agent-tts/changelog/) — v1.10.9 (`tech_profile_search`) and v1.10.10 (`postfx` + 4×2 matrix) entries
-- [MCP spec](https://modelcontextprotocol.io/specification/2024-11-05) — the protocol agent-tts speaks
+- [Architecture](/ptah/arquitetura/) — MCP server slots into "Components"
+- [Motor](/ptah/motor/) — `postfx=tech` filter graph + RNNoise model wiring
+- [Changelog](/ptah/changelog/) — v1.10.9 (`tech_profile_search`) and v1.10.10 (`postfx` + 4×2 matrix) entries
+- [MCP spec](https://modelcontextprotocol.io/specification/2024-11-05) — the protocol ptah speaks

@@ -1,17 +1,17 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-// `agent-tts stream` — incremental stdin → daemon sentence pipe (v1.7).
+// `ptah stream` — incremental stdin → daemon sentence pipe (v1.7).
 //
 // Reads stdin in small chunks, feeds bytes into `preproc.IncrementalChunker`,
 // forwards each completed sentence to the running daemon via the same
 // `client.enqueueLine` helper the MCP server already uses.
 //
-// Why this exists. Today `agent-tts "text"` enqueues a single complete
+// Why this exists. Today `ptah "text"` enqueues a single complete
 // utterance. For a Claude Code reply being streamed token-by-token, that
 // blocks audio until the assistant finishes thinking — the streaming
 // advantage of the LLM is lost at the voice layer.
 //
 // Wire shape:
-//   $ agent-tts stream [--engine X] [--voice V] [--rate R]
+//   $ ptah stream [--engine X] [--voice V] [--rate R]
 //   < bytes from stdin until EOF
 //   > stderr: one diagnostic per chunk emitted ("[stream] enqueued id=N ...")
 //   > exit 0 on EOF after flush, exit 2 on usage error, exit 1 on daemon error
@@ -128,7 +128,7 @@ fn forwardChunk(
     const id_str = client.enqueueLine(arena, io, home, engine, voice, rate, text) catch |e| switch (e) {
         error.DaemonUnreachable => {
             std.debug.print(
-                "error: cannot reach daemon. start with: agent-tts daemon\n",
+                "error: cannot reach daemon. start with: ptah daemon\n",
                 .{},
             );
             std.process.exit(1);
